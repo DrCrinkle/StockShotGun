@@ -1,5 +1,5 @@
 
-<h3 align="center">StockShotGun</h3>
+<h1 align="center">StockShotGun</h1>
 <p align="center">
   A one click solution to submitting orders to multiple brokers at the same time
 </p>
@@ -30,6 +30,7 @@ py main.py buy 1 TSLA 650.45
 ```
 
 ## To Do
+* Add encryption to credentials
 * Fully automate by tracking FINRA and/or SEC filings
 * Add more brokers (Robinhood, Tradier, Webull, Ally, Schwab(if the TDA API sticks around when the companies are consolidated))
 * Add per trade logging to a CSV
