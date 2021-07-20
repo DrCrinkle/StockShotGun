@@ -1,6 +1,7 @@
-from init import initAlpaca
+import requests
+from init import initAlpaca, initRobinHood
 from setup import setup
-from brokers import alpacaTrade
+from brokers import alpacaTrade, robinTrade
 from sys import argv
 
 # script.py buy/sell qty ticker price(optional, if given, order is a limit order, otherwise it is a market order)
@@ -32,16 +33,27 @@ except IndexError:
               """)
         exit()
 
-# could use a match case statement here but im not using python 3.10 :/
-if side == "buy" or side == "sell":
-    alpaca = initAlpaca()
-    alpacaTrade(side, qty, ticker, price, alpaca)
-elif side == "setup":
+if side == "setup":
     print("""
           Great, now that credentials are setup, please rerun the script with the below usage
 
           Usage: buy/sell/setup quantity ticker price(optional)
           """)
+    exit()
+
+# using Tradier sandbox to get exchange data
+response = requests.get('https://sandbox.tradier.com/v1/markets/quotes',
+                        params={'symbols': {ticker}},
+                        headers={'Authorization': 'Bearer 3AWwPaG2P5jqLgTLqdTYuU928qbx', 'Accept': 'application/json'})
+
+json_response = response.json()
+
+# could use a match case statement here but im not using python 3.10 :/
+if (side == "buy" or side == "sell") and json_response['quotes']['quote']['exch'] == "V":
+    print("Trading OTC")
+elif side == "buy" or side == "sell":
+    alpacaTrade(side, qty, ticker, price, initAlpaca())
+    robinTrade(side, qty, ticker, price, initRobinHood())
 else:
     print("""
           Invalid Argument 

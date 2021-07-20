@@ -30,6 +30,7 @@ py main.py buy 1 TSLA 650.45
 ```
 
 ## To Do
+* Add async support ?
 * Add encryption to credentials
 * Fully automate by tracking FINRA and/or SEC filings
 * Add more brokers (Robinhood, Tradier, Webull, Ally, Schwab(if the TDA API sticks around when the companies are consolidated))
