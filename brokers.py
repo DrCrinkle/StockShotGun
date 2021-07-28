@@ -8,6 +8,8 @@ load_dotenv(dotenv_path=dotenv_path)
 
 
 def alpacaTrade(side, qty, ticker, price, alpaca):
+    if not alpaca:
+        return False
     try:
         if price is not None:
             alpaca.submit_order(symbol=ticker,
@@ -37,6 +39,8 @@ def alpacaTrade(side, qty, ticker, price, alpaca):
 
 
 def robinTrade(side, qty, ticker, price, rh):
+    if not rh:
+        return False
     try:
         if side == 'buy':
             if price is not None:
@@ -58,6 +62,10 @@ def robinTrade(side, qty, ticker, price, rh):
 def tradierTrade(side, qty, ticker, price):
     TRADIER_ACCOUNT_ID = os.getenv("TRADIER_ACCOUNT_ID")
     TRADIER_ACCESS_TOKEN = os.getenv("TRADIER_ACCESS_TOKEN")
+
+    if not (TRADIER_ACCOUNT_ID or TRADIER_ACCESS_TOKEN):
+        print("No Tradier credentials supplied, skipping")
+        return None
 
     try:
         if price is not None:
