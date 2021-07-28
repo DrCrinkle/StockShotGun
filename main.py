@@ -1,7 +1,7 @@
 import requests
 from init import initAlpaca, initRobinHood
 from setup import setup
-from brokers import alpacaTrade, robinTrade
+from brokers import alpacaTrade, robinTrade, tradierTrade
 from sys import argv
 
 # script.py buy/sell qty ticker price(optional, if given, order is a limit order, otherwise it is a market order)
@@ -54,6 +54,7 @@ if (side == "buy" or side == "sell") and json_response['quotes']['quote']['exch'
 elif side == "buy" or side == "sell":
     alpacaTrade(side, qty, ticker, price, initAlpaca())
     robinTrade(side, qty, ticker, price, initRobinHood())
+    tradierTrade(side, qty, ticker, price)
 else:
     print("""
           Invalid Argument 

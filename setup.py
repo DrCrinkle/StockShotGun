@@ -25,6 +25,13 @@ def setup():
     os.environ["SSG_ROBINHOOD_PASS"] = ROBINHOOD_PASS or os.getenv("ROBINHOOD_PASS") or ""
     os.environ["SSG_ROBINHOOD_MFA"] = ROBINHOOD_MFA or os.getenv("ROBINHOOD_MFA") or ""
 
+    print("-" * 10 + "Tradier" + "-" * 10)
+    TRADIER_ACCOUNT_ID = input("Tradier Account ID: ")
+    TRADIER_ACCESS_TOKEN = input("Tradier Access Token: ")
+
+    os.environ["SSG_TRADIER_ACCOUNT_ID"] = TRADIER_ACCOUNT_ID or os.getenv("TRADIER_ACCOUNT_ID") or ""
+    os.environ["SSG_TRADIER_ACCESS_TOKEN"] = TRADIER_ACCESS_TOKEN or os.getenv("TRADIER_ACCESS_TOKEN") or ""
+
     print("-" * 5 + "Saving credentials to .env" + "-" * 5)
     variables = dumper.dump(prefixes=["SSG_"])
 
