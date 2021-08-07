@@ -11,6 +11,7 @@ I partake in [Reverse Split Arbitrage](https://www.reversesplitarbitrage.com/) a
 First you will need to set up authentication
 ```
 git clone 
+py -m pip install -r requirements.txt
 py main.py setup 
 ```
 The set up will ask for your API keys or credentials and add them to a ```.env``` file
