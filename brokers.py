@@ -2,6 +2,7 @@ import requests
 import os
 from dotenv import load_dotenv
 from pathlib import Path
+import ally
 
 dotenv_path = Path('.') / '.env'
 load_dotenv(dotenv_path=dotenv_path)
@@ -94,3 +95,44 @@ def tradierTrade(side, qty, ticker, price):
     except:
         return False
     return True
+
+
+def allyTrade(side, qty, ticker, price):
+    try:
+        a = ally.Ally()
+    except ally.exception.ApiKeyException:
+        print("No Ally credentials supplied, skipping")
+        return None
+
+    try:
+        if price is not None:
+            o = ally.Order.Order(
+                buysell=side,
+                symbol=ticker,
+                price=ally.Order.Limit(limpx=price),
+                time='day',
+                qty=qty
+            )
+            a.submit(o, preview=False)
+            if side == "buy":
+                print(f"Bought {ticker} on Ally")
+            else:
+                print(f"Sold {ticker} on Ally")
+            return True
+        else:
+            o = ally.Order.Order(
+                buysell=side,
+                symbol=ticker,
+                price=ally.Order.Market(),
+                time='day',
+                qty=qty
+            )
+            a.submit(o, preview=False)
+            if side == "buy":
+                print(f"Bought {ticker} on Ally")
+            else:
+                print(f"Sold {ticker} on Ally")
+            return True
+    except ally.exception.ExecutionException as e:
+        print(f"Ally: {e}")
+        return False

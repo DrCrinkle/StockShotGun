@@ -32,6 +32,19 @@ def setup():
     os.environ["SSG_TRADIER_ACCOUNT_ID"] = TRADIER_ACCOUNT_ID or os.getenv("TRADIER_ACCOUNT_ID") or ""
     os.environ["SSG_TRADIER_ACCESS_TOKEN"] = TRADIER_ACCESS_TOKEN or os.getenv("TRADIER_ACCESS_TOKEN") or ""
 
+    print("-" * 10 + "Ally" + "-" * 10)
+    ALLY_CONSUMER_SECRET = input("Ally Consumer Secret: ")
+    ALLY_CONSUMER_KEY = input("Ally Consumer Key: ")
+    ALLY_OAUTH_SECRET = input("Ally OAuth Secret: ")
+    ALLY_OAUTH_TOKEN = input("Ally OAuth Token: ")
+    ALLY_ACCOUNT_NBR = input("Ally Account Number: ")
+
+    os.environ["SSG_ALLY_CONSUMER_SECRET"] = ALLY_CONSUMER_SECRET or os.getenv("ALLY_CONSUMER_SECRET") or ""
+    os.environ["SSG_ALLY_CONSUMER_KEY"] = ALLY_CONSUMER_KEY or os.getenv("ALLY_CONSUMER_KEY") or ""
+    os.environ["SSG_ALLY_OAUTH_SECRET"] = ALLY_OAUTH_SECRET or os.getenv("ALLY_OAUTH_SECRET") or ""
+    os.environ["SSG_ALLY_OAUTH_TOKEN"] = ALLY_OAUTH_TOKEN or os.getenv("ALLY_OAUTH_TOKEN") or ""
+    os.environ["SSG_ALLY_ACCOUNT_NBR"] = ALLY_ACCOUNT_NBR or os.getenv("ALLY_ACCOUNT_NBR") or ""
+
     print("-" * 5 + "Saving credentials to .env" + "-" * 5)
     variables = dumper.dump(prefixes=["SSG_"])
 
