@@ -7,6 +7,12 @@
 ## About The Project
 I partake in [Reverse Split Arbitrage](https://www.reversesplitarbitrage.com/) and wanted to semi-automate the buying and selling of tickers that were going through a reverse split instead of scrambling around each brokerage to get orders in manually.
 
+## Current Broker Support
+* **Alpaca**: requires secret and public access key
+* **Ally**: requires account number, consumer key and secret, OAuth token and secret (this can be obtained by making an API app in Ally)
+* **Tradier**: requires account id and access token
+* **Robinhood**: requires username, password and MFA setup token
+
 ## Getting Started
 First you will need to set up authentication
 ```
@@ -34,5 +40,5 @@ py main.py buy 1 TSLA 650.45
 * Add async support ?
 * Add encryption to credentials
 * Fully automate by tracking FINRA and/or SEC filings
-* Add more brokers (Robinhood, Tradier, Webull, Ally, Schwab(if the TDA API sticks around when the companies are consolidated))
+* Add more brokers (Firstrade, Webull, Schwab(if the TDA API sticks around when the companies are consolidated))
 * Add per trade logging to a CSV
