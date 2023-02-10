@@ -61,7 +61,13 @@ def robinTrade(side, qty, ticker, price, rh):
 
 
 def tradierTrade(side, qty, ticker, price):
-    TRADIER_ACCOUNT_ID = os.getenv("TRADIER_ACCOUNT_ID")
+    # get tradier accounts
+    env = os.environ
+    TRADIER_ACCOUNT_ID = []
+    for key, value in env.items():
+        if key.startswith("TRADIER_ACCOUNT"):
+            TRADIER_ACCOUNT_ID.append(value)
+
     TRADIER_ACCESS_TOKEN = os.getenv("TRADIER_ACCESS_TOKEN")
 
     if not (TRADIER_ACCOUNT_ID or TRADIER_ACCESS_TOKEN):
@@ -70,28 +76,30 @@ def tradierTrade(side, qty, ticker, price):
 
     try:
         if price is not None:
-            response = requests.post(f'https://api.tradier.com/v1/accounts/{TRADIER_ACCOUNT_ID}/orders',
-                                     data={'class': 'equity', 'symbol': f'{ticker}', 'side': f'{side}',
-                                           'quantity': f'{qty}', 'type': 'limit', 'duration': 'day',
-                                           'price': f'{price}'},
-                                     headers={'Authorization': f'Bearer {TRADIER_ACCESS_TOKEN}',
-                                              'Accept': 'application/json'}
-                                     )
-            if side == "buy":
-                print(f"Bought {ticker} on Tradier")
-            else:
-                print(f"Sold {ticker} on Tradier")
+            for i in range(len(TRADIER_ACCOUNT_ID)):
+                response = requests.post(f'https://api.tradier.com/v1/accounts/{TRADIER_ACCOUNT_ID[i]}/orders',
+                                        data={'class': 'equity', 'symbol': f'{ticker}', 'side': f'{side}',
+                                            'quantity': f'{qty}', 'type': 'limit', 'duration': 'day',
+                                            'price': f'{price}'},
+                                        headers={'Authorization': f'Bearer {TRADIER_ACCESS_TOKEN}',
+                                                'Accept': 'application/json'}
+                                        )
+                if side == "buy":
+                    print(f"Bought {ticker} on Tradier account {TRADIER_ACCOUNT_ID[i]}")
+                else:
+                    print(f"Sold {ticker} on Tradier account {TRADIER_ACCOUNT_ID[i]}")
         else:
-            response = requests.post(f'https://api.tradier.com/v1/accounts/{TRADIER_ACCOUNT_ID}/orders',
-                                     data={'class': 'equity', 'symbol': f'{ticker}', 'side': f'{side}',
-                                           'quantity':  f'{qty}', 'type': 'market', 'duration': 'day'},
-                                     headers={'Authorization': f'Bearer {TRADIER_ACCESS_TOKEN}',
-                                              'Accept': 'application/json'}
-                                     )
-            if side == "buy":
-                print(f"Bought {ticker} on Tradier")
-            else:
-                print(f"Sold {ticker} on Tradier")
+            for i in range(len(TRADIER_ACCOUNT_ID)):
+                response = requests.post(f'https://api.tradier.com/v1/accounts/{TRADIER_ACCOUNT_ID[i]}/orders',
+                                        data={'class': 'equity', 'symbol': f'{ticker}', 'side': f'{side}',
+                                            'quantity':  f'{qty}', 'type': 'market', 'duration': 'day'},
+                                        headers={'Authorization': f'Bearer {TRADIER_ACCESS_TOKEN}',
+                                                'Accept': 'application/json'}
+                                        )
+                if side == "buy":
+                    print(f"Bought {ticker} on Tradier account {TRADIER_ACCOUNT_ID[i]}")
+                else:
+                    print(f"Sold {ticker} on Tradier account {TRADIER_ACCOUNT_ID[i]}")
     except:
         return False
     return True
