@@ -1,34 +1,44 @@
-import requests
 import os
-from dotenv import load_dotenv
-from pathlib import Path
 import ally
+import requests
+from alpaca.trading.client import TradingClient
+from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest
+from alpaca.trading.enums import OrderSide, TimeInForce
+from dotenv import load_dotenv
 
-dotenv_path = Path('.') / '.env'
-load_dotenv(dotenv_path=dotenv_path)
+load_dotenv("./.env")
 
 
 def alpacaTrade(side, qty, ticker, price, alpaca):
-    if not alpaca:
-        return False
+    ALPACA_ACCESS_KEY_ID = os.getenv("ALPACA_ACCESS_KEY_ID")
+    ALPACA_SECRET_ACCESS_KEY = os.getenv("ALPACA_SECRET_ACCESS_KEY")
+
+    if not (ALPACA_ACCESS_KEY_ID or ALPACA_SECRET_ACCESS_KEY):
+        print("Missing Alpaca credentials, skipping")
+        return None
+    
+    trading_client = TradingClient(ALPACA_ACCESS_KEY_ID, ALPACA_SECRET_ACCESS_KEY, paper=True)
+
     try:
         if price is not None:
-            alpaca.submit_order(symbol=ticker,
-                                qty=qty,
-                                side=side,
-                                type='limit',
-                                time_in_force='day',
-                                limit_price=price)
+            limit_order_data = LimitOrderRequest(
+                                    symbol=ticker,
+                                    limit_price=price,
+                                    qty=qty,
+                                    side=side,
+                                    time_in_force='day')
+            trading_client.submit_order(order_data=limit_order_data)
             if side == "buy":
                 print(f"Bought {ticker} on Alpaca")
             else:
                 print(f"Sold {ticker} on Alpaca")
         else:
-            alpaca.submit_order(symbol=ticker,
-                                qty=qty,
-                                side=side,
-                                type='market',
-                                time_in_force='day')
+            market_order_data = MarketOrderRequest(
+                                    symbol=ticker,
+                                    qty=qty,
+                                    side=side,
+                                    time_in_force='day')
+            trading_client.submit_order(order_data=market_order_data)
             if side == "buy":
                 print(f"Bought {ticker} on Alpaca")
             else:

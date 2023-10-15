@@ -1,10 +1,8 @@
 import os
 from dotenv import load_dotenv
-from pathlib import Path
 from dump_env import dumper
 
-dotenv_path = Path('.') / '.env'
-load_dotenv(dotenv_path=dotenv_path)
+load_dotenv("./.env")
 
 
 def setup():
@@ -32,7 +30,7 @@ def setup():
     # i don't like this if statment
     num = int(input("How many Tradier accounts?: "))
     if num == 1:
-        TRADIER_ACCOUNT_ID.append(input(f"Tradier Account ID: "))
+        TRADIER_ACCOUNT_ID.append(input("Tradier Account ID: "))
         os.environ["SSG_TRADIER_ACCOUNT_ID"] = TRADIER_ACCOUNT_ID[0] or os.getenv("TRADIER_ACCOUNT_ID") or ""
     else:
         for i in range(num):
