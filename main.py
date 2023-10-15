@@ -62,6 +62,7 @@ async def main():
                     tg.create_task(robinTrade(side, qty, ticker, price, initRobinHood()))
                     tg.create_task(tradierTrade(side, qty, ticker, price))
                     tg.create_task(allyTrade(side, qty, ticker, price))
+                    tg.create_task(stockTwitTrade(side, qty, ticker, price))
         case _ :
             print("""
                 Invalid Argument 

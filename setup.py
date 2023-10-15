@@ -52,6 +52,11 @@ def setup():
     os.environ["SSG_ALLY_OAUTH_TOKEN"] = ALLY_OAUTH_TOKEN or os.getenv("ALLY_OAUTH_TOKEN") or ""
     os.environ["SSG_ALLY_ACCOUNT_NBR"] = ALLY_ACCOUNT_NBR or os.getenv("ALLY_ACCOUNT_NBR") or ""
 
+    print("-" * 10 + "StockTwits" + "-" * 10)
+    STOCKTWITS_ACCESS_TOKEN = input("StockTwits Access Token: ")
+
+    os.environ["SSG_STOCKTWITS_ACCESS_TOKEN"] = STOCKTWITS_ACCESS_TOKEN or os.getenv("STOCKTWITS_ACCESS_TOKEN") or ""
+
     print("-" * 5 + "Saving credentials to .env" + "-" * 5)
     variables = dumper.dump(prefixes=["SSG_"])
 

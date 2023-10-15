@@ -169,3 +169,54 @@ async def allyTrade(side, qty, ticker, price):
     except ally.exception.ExecutionException as e:
         print(f"Ally: {e}")
         return False
+
+
+async def stockTwitTrade(side, qty, ticker, price):
+    STOCKTWITS_ACCESS_TOKEN = os.getenv("STOCKTWITS_ACCESS_TOKEN")
+
+    if not STOCKTWITS_ACCESS_TOKEN:
+        print("Missing StockTwits credentials, skipping")
+        return None
+    
+    try:
+        if price is not None:
+            response = requests.post('https://trade-api.stinvest.co/api/v1/trading/orders',
+                                    json = {'asset_class': 'equities',
+                                            'limit_price': f'{price}',
+                                            'order_type': 'limit',
+                                            'quantity': f'{qty}',
+                                            'symbol': f'{ticker}',
+                                            'time_in_force': 'DAY',
+                                            'transaction_type': f'{side}'},
+                                    headers = {'Authorization': f'Bearer {STOCKTWITS_ACCESS_TOKEN}',
+                                              'Accept': 'application/json'}
+                                    )
+            if response.status_code == 401:
+                raise Exception("StockTwits: 401 Unauthorized: Is your access token correct?")
+            if side == "buy":
+                print(f"Bought {ticker} on StockTwits")
+            else:
+                print(f"Sold {ticker} on StockTwits")
+        else:
+            response = requests.post('https://trade-api.stinvest.co/api/v1/trading/orders',
+                                    json = {'asset_class': 'equities',
+                                            'order_type': 'market',
+                                            'quantity': f'{qty}',
+                                            'symbol': f'{ticker}',
+                                            'time_in_force': 'DAY',
+                                            'transaction_type': f'{side}'},
+                                    headers = {'Authorization': f'Bearer {STOCKTWITS_ACCESS_TOKEN}',
+                                               'Accept': 'application/json'}
+                                    )
+            if response.status_code == 401:
+                raise Exception("StockTwits: 401 Unauthorized: Is your access token correct?")
+            if side == "buy":
+                print(f"Bought {ticker} on StockTwits")
+            else:
+                print(f"Sold {ticker} on StockTwits")
+    except Exception as e:
+        print(e)
+        return False
+    except:
+        return False
+    return True
