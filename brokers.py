@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 load_dotenv("./.env")
 
 
-def alpacaTrade(side, qty, ticker, price, alpaca):
+async def alpacaTrade(side, qty, ticker, price):
     ALPACA_ACCESS_KEY_ID = os.getenv("ALPACA_ACCESS_KEY_ID")
     ALPACA_SECRET_ACCESS_KEY = os.getenv("ALPACA_SECRET_ACCESS_KEY")
 
@@ -49,7 +49,7 @@ def alpacaTrade(side, qty, ticker, price, alpaca):
     return True
 
 
-def robinTrade(side, qty, ticker, price, rh):
+async def robinTrade(side, qty, ticker, price, rh):
     if not rh:
         return False
     try:
@@ -70,7 +70,7 @@ def robinTrade(side, qty, ticker, price, rh):
     return True
 
 
-def tradierTrade(side, qty, ticker, price):
+async def tradierTrade(side, qty, ticker, price):
     # get tradier accounts
     env = os.environ
     TRADIER_ACCOUNT_ID = []
@@ -81,19 +81,25 @@ def tradierTrade(side, qty, ticker, price):
     TRADIER_ACCESS_TOKEN = os.getenv("TRADIER_ACCESS_TOKEN")
 
     if not (TRADIER_ACCOUNT_ID or TRADIER_ACCESS_TOKEN):
-        print("No Tradier credentials supplied, skipping")
+        print("Missing Tradier credentials, skipping")
         return None
 
     try:
         if price is not None:
             for i in range(len(TRADIER_ACCOUNT_ID)):
                 response = requests.post(f'https://api.tradier.com/v1/accounts/{TRADIER_ACCOUNT_ID[i]}/orders',
-                                        data={'class': 'equity', 'symbol': f'{ticker}', 'side': f'{side}',
-                                            'quantity': f'{qty}', 'type': 'limit', 'duration': 'day',
-                                            'price': f'{price}'},
-                                        headers={'Authorization': f'Bearer {TRADIER_ACCESS_TOKEN}',
-                                                'Accept': 'application/json'}
+                                        data = {'class': 'equity',
+                                                'symbol': f'{ticker}',
+                                                'side': f'{side}',
+                                                'quantity': f'{qty}',
+                                                'type': 'limit',
+                                                'duration': 'day',
+                                                'price': f'{price}'},
+                                        headers = {'Authorization': f'Bearer {TRADIER_ACCESS_TOKEN}',
+                                                  'Accept': 'application/json'}
                                         )
+                if response.status_code == 401:
+                    raise Exception("Tradier: 401 Unauthorized: Is your access token and account id correct?")
                 if side == "buy":
                     print(f"Bought {ticker} on Tradier account {TRADIER_ACCOUNT_ID[i]}")
                 else:
@@ -101,21 +107,30 @@ def tradierTrade(side, qty, ticker, price):
         else:
             for i in range(len(TRADIER_ACCOUNT_ID)):
                 response = requests.post(f'https://api.tradier.com/v1/accounts/{TRADIER_ACCOUNT_ID[i]}/orders',
-                                        data={'class': 'equity', 'symbol': f'{ticker}', 'side': f'{side}',
-                                            'quantity':  f'{qty}', 'type': 'market', 'duration': 'day'},
-                                        headers={'Authorization': f'Bearer {TRADIER_ACCESS_TOKEN}',
-                                                'Accept': 'application/json'}
+                                        data = {'class': 'equity',
+                                                'symbol': f'{ticker}',
+                                                'side': f'{side}',
+                                                'quantity':  f'{qty}',
+                                                'type': 'market',
+                                                'duration': 'day'},
+                                        headers = {'Authorization': f'Bearer {TRADIER_ACCESS_TOKEN}',
+                                                   'Accept': 'application/json'}
                                         )
+                if response.status_code == 401:
+                    raise Exception("Tradier: 401 Unauthorized: Is your access token and account id correct?")
                 if side == "buy":
                     print(f"Bought {ticker} on Tradier account {TRADIER_ACCOUNT_ID[i]}")
                 else:
                     print(f"Sold {ticker} on Tradier account {TRADIER_ACCOUNT_ID[i]}")
+    except Exception as e:
+        print(e)
+        return False
     except:
         return False
     return True
 
 
-def allyTrade(side, qty, ticker, price):
+async def allyTrade(side, qty, ticker, price):
     try:
         a = ally.Ally()
     except ally.exception.ApiKeyException:
