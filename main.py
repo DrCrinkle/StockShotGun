@@ -1,7 +1,7 @@
 import requests
 import asyncio
 from sys import argv
-from brokers import allyTrade, alpacaTrade, robinTrade, tradierTrade, stockTwitTrade
+from brokers import alpacaTrade, robinTrade, tradierTrade, stockTwitTrade
 from init import initRobinHood
 from setup import setup
 
@@ -61,7 +61,6 @@ async def main():
                     tg.create_task(alpacaTrade(side, qty, ticker, price))
                     tg.create_task(robinTrade(side, qty, ticker, price, initRobinHood()))
                     tg.create_task(tradierTrade(side, qty, ticker, price))
-                    tg.create_task(allyTrade(side, qty, ticker, price))
                     tg.create_task(stockTwitTrade(side, qty, ticker, price))
         case _ :
             print("""
@@ -71,4 +70,5 @@ async def main():
                 """)
             exit()
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())

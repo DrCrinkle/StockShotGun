@@ -1,5 +1,4 @@
 import os
-import ally
 import requests
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest
@@ -130,47 +129,6 @@ async def tradierTrade(side, qty, ticker, price):
     return True
 
 
-async def allyTrade(side, qty, ticker, price):
-    try:
-        a = ally.Ally()
-    except ally.exception.ApiKeyException:
-        print("No Ally credentials supplied, skipping")
-        return None
-
-    try:
-        if price is not None:
-            o = ally.Order.Order(
-                buysell=side,
-                symbol=ticker,
-                price=ally.Order.Limit(limpx=price),
-                time='day',
-                qty=qty
-            )
-            a.submit(o, preview=False)
-            if side == "buy":
-                print(f"Bought {ticker} on Ally")
-            else:
-                print(f"Sold {ticker} on Ally")
-            return True
-        else:
-            o = ally.Order.Order(
-                buysell=side,
-                symbol=ticker,
-                price=ally.Order.Market(),
-                time='day',
-                qty=qty
-            )
-            a.submit(o, preview=False)
-            if side == "buy":
-                print(f"Bought {ticker} on Ally")
-            else:
-                print(f"Sold {ticker} on Ally")
-            return True
-    except ally.exception.ExecutionException as e:
-        print(f"Ally: {e}")
-        return False
-
-
 async def stockTwitTrade(side, qty, ticker, price):
     STOCKTWITS_ACCESS_TOKEN = os.getenv("STOCKTWITS_ACCESS_TOKEN")
 
@@ -220,3 +178,7 @@ async def stockTwitTrade(side, qty, ticker, price):
     except:
         return False
     return True
+
+#TODO: Implement Webull Trading
+#def webullTrade():
+    # if price is lower than $1, buy 100 shares and sell 99, to get around webull restrictions
