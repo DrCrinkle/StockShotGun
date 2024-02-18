@@ -29,39 +29,6 @@ def setup():
     #Tradier
     print("-" * 10 + "Tradier" + "-" * 10)
     TRADIER_ACCESS_TOKEN = input("Tradier Access Token: ") or os.getenv("TRADIER_ACCESS_TOKEN")
-    TRADIER_ACCOUNT_ID = []
-
-    try:
-        num = int(input("How many Tradier accounts?: "))
-    except ValueError:
-        num = None
-
-    if num is not None:
-        for i in range(num):
-            if num == 1:
-                account_id = input("Tradier Account ID: ") or os.getenv("TRADIER_ACCOUNT_ID")
-                TRADIER_ACCOUNT_ID.append(account_id)
-                os.environ["SSG_TRADIER_ACCOUNT_ID"] = account_id
-            else:
-                account_id = input(f"Tradier Account {i} ID: ") or os.getenv(f"TRADIER_ACCOUNT{i}_ID")
-                TRADIER_ACCOUNT_ID.append(account_id)
-                os.environ[f"SSG_TRADIER_ACCOUNT{i}_ID"] = account_id
-    else:
-        # Load and preserve existing account IDs from .env
-        existing_account_id = os.getenv("TRADIER_ACCOUNT_ID")
-        if existing_account_id:
-            TRADIER_ACCOUNT_ID.append(existing_account_id)
-            os.environ["SSG_TRADIER_ACCOUNT_ID"] = existing_account_id
-        else:
-            i = 0
-            while True:
-                existing_account_id = os.getenv(f"TRADIER_ACCOUNT{i}_ID")
-                if existing_account_id:
-                    TRADIER_ACCOUNT_ID.append(existing_account_id)
-                    os.environ[f"SSG_TRADIER_ACCOUNT{i}_ID"] = existing_account_id
-                    i += 1
-                else:
-                    break
 
     os.environ["SSG_TRADIER_ACCESS_TOKEN"] = TRADIER_ACCESS_TOKEN
 

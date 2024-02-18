@@ -70,18 +70,26 @@ async def robinTrade(side, qty, ticker, price, rh):
 
 
 async def tradierTrade(side, qty, ticker, price):
-    # get tradier accounts
-    env = os.environ
-    TRADIER_ACCOUNT_ID = []
-    for key, value in env.items():
-        if key.startswith("TRADIER_ACCOUNT"):
-            TRADIER_ACCOUNT_ID.append(value)
-
     TRADIER_ACCESS_TOKEN = os.getenv("TRADIER_ACCESS_TOKEN")
 
-    if not (TRADIER_ACCOUNT_ID or TRADIER_ACCESS_TOKEN):
+    if not (TRADIER_ACCESS_TOKEN):
         print("Missing Tradier credentials, skipping")
         return None
+
+    # get tradier accounts
+    response = requests.get('https://api.tradier.com/v1/user/profile',
+                            headers = {'Authorization': f'Bearer {TRADIER_ACCESS_TOKEN}',
+                                       'Accept': 'application/json'}
+                            ) 
+
+    if response.status_code == 200:
+        accounts = response.json().get('profile', {}).get('account', [])
+        TRADIER_ACCOUNT_ID = [account['account_number'] for account in accounts]
+    else:
+        # Handle errors (e.g., invalid token, no access to the account)
+        print(f"Error: {response.status_code} - {response.text}")
+        return False
+
 
     try:
         if price is not None:
@@ -97,8 +105,6 @@ async def tradierTrade(side, qty, ticker, price):
                                         headers = {'Authorization': f'Bearer {TRADIER_ACCESS_TOKEN}',
                                                   'Accept': 'application/json'}
                                         )
-                if response.status_code == 401:
-                    raise Exception("Tradier: 401 Unauthorized: Is your access token and account id correct?")
                 if side == "buy":
                     print(f"Bought {ticker} on Tradier account {TRADIER_ACCOUNT_ID[i]}")
                 else:
@@ -115,15 +121,10 @@ async def tradierTrade(side, qty, ticker, price):
                                         headers = {'Authorization': f'Bearer {TRADIER_ACCESS_TOKEN}',
                                                    'Accept': 'application/json'}
                                         )
-                if response.status_code == 401:
-                    raise Exception("Tradier: 401 Unauthorized: Is your access token and account id correct?")
                 if side == "buy":
                     print(f"Bought {ticker} on Tradier account {TRADIER_ACCOUNT_ID[i]}")
                 else:
                     print(f"Sold {ticker} on Tradier account {TRADIER_ACCOUNT_ID[i]}")
-    except Exception as e:
-        print(e)
-        return False
     except:
         return False
     return True
