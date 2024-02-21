@@ -7,8 +7,8 @@ cryptography==41.0.7
 dump-env==1.4.0
 idna==3.6
 msgpack==1.0.7
-numpy==1.26.2
-pandas==2.1.4
+numpy==1.26.4
+pandas==2.2.0
 pycparser==2.21
 pydantic==2.5.2
 pydantic_core==2.14.5
