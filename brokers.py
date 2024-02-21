@@ -48,9 +48,19 @@ async def alpacaTrade(side, qty, ticker, price):
     return True
 
 
-async def robinTrade(side, qty, ticker, price, rh):
-    if not rh:
-        return False
+async def robinTrade(side, qty, ticker, price):
+    ROBINHOOD_USER = os.getenv("ROBINHOOD_USER")
+    ROBINHOOD_PASS = os.getenv("ROBINHOOD_PASS")
+    ROBINHOOD_MFA  = os.getenv("ROBINHOOD_MFA")
+
+    if not (ROBINHOOD_USER or ROBINHOOD_PASS or ROBINHOOD_MFA):
+        print("No Robinhood credentials supplied, skipping")
+        return None
+
+    # set up robinhood
+    mfa = pyotp.TOTP(ROBINHOOD_MFA).now()
+    rh.login(ROBINHOOD_USER, ROBINHOOD_PASS, mfa_code=mfa)
+
     try:
         if side == 'buy':
             if price is not None:
