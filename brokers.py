@@ -1,7 +1,9 @@
 import os
 import requests
-from alpaca.trading.client import TradingClient
+import pyotp
 import robin_stocks.robinhood as rh
+from alpaca.trading.client import TradingClient
+from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 from dotenv import load_dotenv
 
@@ -170,5 +172,5 @@ async def stockTwitTrade(side, qty, ticker, price):
             print(f"Sold {ticker} on StockTwits")
 
 #TODO: Implement Webull Trading
-#def webullTrade():
+#async def webullTrade():
     # if price is lower than $1, buy 100 shares and sell 99, to get around webull restrictions
