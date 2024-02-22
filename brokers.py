@@ -2,47 +2,9 @@ import os
 import requests
 import pyotp
 import robin_stocks.robinhood as rh
-from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest
-from alpaca.trading.enums import OrderSide, TimeInForce
 from dotenv import load_dotenv
 
 load_dotenv("./.env")
-
-
-async def alpacaTrade(side, qty, ticker, price):
-    ALPACA_ACCESS_KEY_ID = os.getenv("ALPACA_ACCESS_KEY_ID")
-    ALPACA_SECRET_ACCESS_KEY = os.getenv("ALPACA_SECRET_ACCESS_KEY")
-
-    if not (ALPACA_ACCESS_KEY_ID or ALPACA_SECRET_ACCESS_KEY):
-        print("Missing Alpaca credentials, skipping")
-        return None
-    
-    trading_client = TradingClient(ALPACA_ACCESS_KEY_ID, ALPACA_SECRET_ACCESS_KEY, paper=True)
-
-    if price is not None:
-        limit_order_data = LimitOrderRequest(
-                                symbol=ticker,
-                                limit_price=price,
-                                qty=qty,
-                                side=side,
-                                time_in_force='day')
-        trading_client.submit_order(order_data=limit_order_data)
-        if side == "buy":
-            print(f"Bought {ticker} on Alpaca")
-        else:
-            print(f"Sold {ticker} on Alpaca")
-    else:
-        market_order_data = MarketOrderRequest(
-                                symbol=ticker,
-                                qty=qty,
-                                side=side,
-                                time_in_force='day')
-        trading_client.submit_order(order_data=market_order_data)
-        if side == "buy":
-            print(f"Bought {ticker} on Alpaca")
-        else:
-            print(f"Sold {ticker} on Alpaca")
 
 
 async def robinTrade(side, qty, ticker, price):

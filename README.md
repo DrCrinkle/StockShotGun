@@ -8,7 +8,6 @@
 I partake in [Reverse Split Arbitrage](https://www.reversesplitarbitrage.com/) and wanted to semi-automate the buying and selling of tickers that were going through a reverse split instead of scrambling around each brokerage to get orders in manually.
 
 ## Current Broker Support
-* **Alpaca**: requires secret and public access key
 * **Tradier**: requires access token
 * **Robinhood**: requires username, password and MFA setup token
 * **StockTwits**: requires access token

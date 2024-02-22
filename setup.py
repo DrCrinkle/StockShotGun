@@ -8,14 +8,6 @@ load_dotenv("./.env")
 def setup():
     print("Setting up broker credentials, press ENTER to skip entry")
 
-    #Alpaca
-    print("-" * 10 + "Alpaca" + "-" * 10)
-    ALPACA_ACCESS_KEY_ID = input("Alpaca Access Key: ")
-    ALPACA_SECRET_ACCESS_KEY = input("Alpaca Secret Key: ")
-
-    os.environ["SSG_ALPACA_ACCESS_KEY_ID"] = ALPACA_ACCESS_KEY_ID or os.getenv("ALPACA_ACCESS_KEY_ID") or ""
-    os.environ["SSG_ALPACA_SECRET_ACCESS_KEY"] = ALPACA_SECRET_ACCESS_KEY or os.getenv("ALPACA_SECRET_ACCESS_KEY") or ""
-
     #Robinhood
     print("-" * 10 + "Robinhood" + "-" * 10)
     ROBINHOOD_USER = input("Robinhood Username: ")
