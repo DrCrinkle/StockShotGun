@@ -8,34 +8,25 @@ load_dotenv("./.env")
 def setup():
     print("Setting up broker credentials, press ENTER to skip entry")
 
-    #Robinhood
-    print("-" * 10 + "Robinhood" + "-" * 10)
-    ROBINHOOD_USER = input("Robinhood Username: ")
-    ROBINHOOD_PASS = input("Robinhood Password: ")
-    ROBINHOOD_MFA  = input("Robinhood MFA: ")
+    brokers = {
+        "Robinhood": [("ROBINHOOD_USER", "Username"), ("ROBINHOOD_PASS", "Password"), ("ROBINHOOD_MFA", "MFA")],
+        "TastyTrade": [("TASTY_USER", "Username"), ("TASTY_PASS", "Password")],
+        "Tradier": [("TRADIER_ACCESS_TOKEN", "Access Token")],
+        "StockTwits": [("STOCKTWITS_ACCESS_TOKEN", "Access Token")],
+    }
 
-    os.environ["SSG_ROBINHOOD_USER"] = ROBINHOOD_USER or os.getenv("ROBINHOOD_USER") or ""
-    os.environ["SSG_ROBINHOOD_PASS"] = ROBINHOOD_PASS or os.getenv("ROBINHOOD_PASS") or ""
-    os.environ["SSG_ROBINHOOD_MFA"] = ROBINHOOD_MFA or os.getenv("ROBINHOOD_MFA") or ""
+    for service, credentials in brokers.items():
+        print(f"{'-' * 10}{service}{'-' * 10}")
+        for env_var, prompt in credentials:
+            value = input(f"{service} {prompt}: ") or os.getenv(env_var) or ""
+            os.environ[f"SSG_{env_var}"] = value
 
-    #Tradier
-    print("-" * 10 + "Tradier" + "-" * 10)
-    TRADIER_ACCESS_TOKEN = input("Tradier Access Token: ") or os.getenv("TRADIER_ACCESS_TOKEN")
-
-    os.environ["SSG_TRADIER_ACCESS_TOKEN"] = TRADIER_ACCESS_TOKEN
-
-    #Stocktwits
-    print("-" * 10 + "StockTwits" + "-" * 10)
-    STOCKTWITS_ACCESS_TOKEN = input("StockTwits Access Token: ")
-
-    os.environ["SSG_STOCKTWITS_ACCESS_TOKEN"] = STOCKTWITS_ACCESS_TOKEN or os.getenv("STOCKTWITS_ACCESS_TOKEN") or ""
-
-    #Save credentials
-    print("-" * 5 + "Saving credentials to .env" + "-" * 5)
+    # Save credentials
+    print(f"{'-' * 5} Saving credentials to .env {'-' * 5}")
     variables = dumper.dump(prefixes=["SSG_"])
 
     with open(".env", 'w') as f:
         for env_name, env_value in variables.items():
-            f.write('{0}={1}\n'.format(env_name, env_value))
+            f.write(f'{env_name}={env_value}\n')
 
     print("Credentials saved to .env")

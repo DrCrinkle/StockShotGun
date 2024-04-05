@@ -26,75 +26,66 @@ async def robinTrade(side, qty, ticker, price):
         account_number = account['account_number']
         brokerage_account_type = account['brokerage_account_type']
 
+        order_function = None
         if side == 'buy':
-            if price is not None:
-                rh.order_buy_limit(symbol=ticker, quantity=qty, limitPrice=price)
-            else:
-                rh.order_buy_market(symbol=ticker, quantity=qty)
-            print(f"Bought {ticker} on Robinhood {brokerage_account_type} account {account_number}")
-        else:
-            if price is not None:
-                rh.order_sell_limit(symbol=ticker, quantity=qty, limitPrice=price)
-            else:
-                rh.order_sell_market(symbol=ticker, quantity=qty)
-            print(f"Sold {ticker} on Robinhood {brokerage_account_type} account {account_number}")
+            order_function = rh.order_buy_limit if price else rh.order_buy_market
+        elif side == 'sell':
+            order_function = rh.order_sell_limit if price else rh.order_sell_market
 
+        if order_function:
+            order_args = {'symbol': ticker, 'quantity': qty}
+            if price:
+                order_args['limitPrice'] = price
+
+            order_function(**order_args)
+            action_str = "Bought" if side == "buy" else "Sold"
+            
+            print(f"{action_str} {ticker} on Robinhood {brokerage_account_type} account {account_number}")
 
 async def tradierTrade(side, qty, ticker, price):
     TRADIER_ACCESS_TOKEN = os.getenv("TRADIER_ACCESS_TOKEN")
 
-    if not (TRADIER_ACCESS_TOKEN):
+    if not TRADIER_ACCESS_TOKEN:
         print("Missing Tradier credentials, skipping")
         return None
 
-    # get tradier accounts
+    # Get Tradier accounts
     response = requests.get('https://api.tradier.com/v1/user/profile',
-                            headers = {'Authorization': f'Bearer {TRADIER_ACCESS_TOKEN}',
-                                       'Accept': 'application/json'}
-                            ) 
+                            headers={'Authorization': f'Bearer {TRADIER_ACCESS_TOKEN}',
+                                     'Accept': 'application/json'})
 
-    if response.status_code == 200:
-        accounts = response.json().get('profile', {}).get('account', [])
-        TRADIER_ACCOUNT_ID = [account['account_number'] for account in accounts]
-    else:
-        # Handle errors (e.g., invalid token, no access to the account)
+    if response.status_code != 200:
         print(f"Error: {response.status_code} - {response.text}")
         return False
 
+    accounts = response.json().get('profile', {}).get('account', [])
+    if not accounts:
+        print("No accounts found.")
+        return False
 
-    if price is not None:
-        for i in range(len(TRADIER_ACCOUNT_ID)):
-            response = requests.post(f'https://api.tradier.com/v1/accounts/{TRADIER_ACCOUNT_ID[i]}/orders',
-                                    data = {'class': 'equity',
-                                            'symbol': f'{ticker}',
-                                            'side': f'{side}',
-                                            'quantity': f'{qty}',
-                                            'type': 'limit',
-                                            'duration': 'day',
-                                            'price': f'{price}'},
-                                    headers = {'Authorization': f'Bearer {TRADIER_ACCESS_TOKEN}',
-                                                'Accept': 'application/json'}
-                                    )
-            if side == "buy":
-                print(f"Bought {ticker} on Tradier account {TRADIER_ACCOUNT_ID[i]}")
-            else:
-                print(f"Sold {ticker} on Tradier account {TRADIER_ACCOUNT_ID[i]}")
-    else:
-        for i in range(len(TRADIER_ACCOUNT_ID)):
-            response = requests.post(f'https://api.tradier.com/v1/accounts/{TRADIER_ACCOUNT_ID[i]}/orders',
-                                    data = {'class': 'equity',
-                                            'symbol': f'{ticker}',
-                                            'side': f'{side}',
-                                            'quantity':  f'{qty}',
-                                            'type': 'market',
-                                            'duration': 'day'},
-                                    headers = {'Authorization': f'Bearer {TRADIER_ACCESS_TOKEN}',
-                                                'Accept': 'application/json'}
-                                    )
-            if side == "buy":
-                print(f"Bought {ticker} on Tradier account {TRADIER_ACCOUNT_ID[i]}")
-            else:
-                print(f"Sold {ticker} on Tradier account {TRADIER_ACCOUNT_ID[i]}")
+    TRADIER_ACCOUNT_ID = [account['account_number'] for account in accounts]
+
+    # Order placement
+    order_type = 'limit' if price else 'market'
+    price_data = {'price': f'{price}'} if price else {}
+
+    for account_id in TRADIER_ACCOUNT_ID:
+        response = requests.post(f'https://api.tradier.com/v1/accounts/{account_id}/orders',
+                                 data={'class': 'equity',
+                                       'symbol': ticker,
+                                       'side': side,
+                                       'quantity': qty,
+                                       'type': order_type,
+                                       'duration': 'day',
+                                       **price_data},
+                                 headers={'Authorization': f'Bearer {TRADIER_ACCESS_TOKEN}',
+                                          'Accept': 'application/json'})
+        
+        if response.status_code != 200:
+            print(f"Error placing order on account {account_id}: {response.text}")
+        else:
+            action_str = "Bought" if side == "buy" else "Sold"
+            print(f"{action_str} {ticker} on Tradier account {account_id}")
 
 async def stockTwitTrade(side, qty, ticker, price):
     STOCKTWITS_ACCESS_TOKEN = os.getenv("STOCKTWITS_ACCESS_TOKEN")
@@ -103,41 +94,29 @@ async def stockTwitTrade(side, qty, ticker, price):
         print("Missing StockTwits credentials, skipping")
         return None
     
-    if price is not None:
-        response = requests.post('https://trade-api.stinvest.co/api/v1/trading/orders',
-                                json = {'asset_class': 'equities',
-                                        'limit_price': f'{price}',
-                                        'order_type': 'limit',
-                                        'quantity': f'{qty}',
-                                        'symbol': f'{ticker}',
-                                        'time_in_force': 'DAY',
-                                        'transaction_type': f'{side}'},
-                                headers = {'Authorization': f'Bearer {STOCKTWITS_ACCESS_TOKEN}',
-                                            'Accept': 'application/json'}
-                                )
-        if response.status_code == 401:
-            raise Exception("StockTwits: 401 Unauthorized: Is your access token correct?")
-        if side == "buy":
-            print(f"Bought {ticker} on StockTwits")
-        else:
-            print(f"Sold {ticker} on StockTwits")
+    order_type = 'limit' if price else 'market'
+    price_data = {'limit_price': f'{price}'} if price else {}
+    
+    response = requests.post('https://trade-api.stinvest.co/api/v1/trading/orders',
+                            json = {'asset_class': 'equities',
+                                    'symbol': ticker,
+                                    'quantity': str(qty),
+                                    'order_type': order_type,
+                                    'time_in_force': 'DAY',
+                                    'transaction_type': side,
+                                    **price_data},
+                            headers = {'Authorization': f'Bearer {STOCKTWITS_ACCESS_TOKEN}',
+                                        'Accept': 'application/json'}
+                            )
+    if response.status_code == 401:
+        raise Exception("StockTwits: 401 Unauthorized: Check your access token")
+    
+    if response.ok:
+        action_str = "Bought" if side == "buy" else "Sold"
+        print(f"{action_str} {ticker} on StockTwits")
     else:
-        response = requests.post('https://trade-api.stinvest.co/api/v1/trading/orders',
-                                json = {'asset_class': 'equities',
-                                        'order_type': 'market',
-                                        'quantity': f'{qty}',
-                                        'symbol': f'{ticker}',
-                                        'time_in_force': 'DAY',
-                                        'transaction_type': f'{side}'},
-                                headers = {'Authorization': f'Bearer {STOCKTWITS_ACCESS_TOKEN}',
-                                            'Accept': 'application/json'}
-                                )
-        if response.status_code == 401:
-            raise Exception("StockTwits: 401 Unauthorized: Is your access token correct?")
-        if side == "buy":
-            print(f"Bought {ticker} on StockTwits")
-        else:
-            print(f"Sold {ticker} on StockTwits")
+        print(f"Error {response.status_code}: {response.text}")
+
 
 #TODO: Implement Webull Trading
 #async def webullTrade():
