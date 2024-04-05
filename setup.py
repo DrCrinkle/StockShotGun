@@ -12,7 +12,7 @@ def setup():
     print("-" * 10 + "Robinhood" + "-" * 10)
     ROBINHOOD_USER = input("Robinhood Username: ")
     ROBINHOOD_PASS = input("Robinhood Password: ")
-    ROBINHOOD_MFA = input("Robinhood MFA: ")
+    ROBINHOOD_MFA  = input("Robinhood MFA: ")
 
     os.environ["SSG_ROBINHOOD_USER"] = ROBINHOOD_USER or os.getenv("ROBINHOOD_USER") or ""
     os.environ["SSG_ROBINHOOD_PASS"] = ROBINHOOD_PASS or os.getenv("ROBINHOOD_PASS") or ""

@@ -20,18 +20,24 @@ async def robinTrade(side, qty, ticker, price):
     mfa = pyotp.TOTP(ROBINHOOD_MFA).now()
     rh.login(ROBINHOOD_USER, ROBINHOOD_PASS, mfa_code=mfa)
 
-    if side == 'buy':
-        if price is not None:
-            rh.order_buy_limit(symbol=ticker, quantity=qty, limitPrice=price)
+    all_accounts = rh.account.load_account_profile(dataType="results")
+
+    for account in all_accounts:
+        account_number = account['account_number']
+        brokerage_account_type = account['brokerage_account_type']
+
+        if side == 'buy':
+            if price is not None:
+                rh.order_buy_limit(symbol=ticker, quantity=qty, limitPrice=price)
+            else:
+                rh.order_buy_market(symbol=ticker, quantity=qty)
+            print(f"Bought {ticker} on Robinhood {brokerage_account_type} account {account_number}")
         else:
-            rh.order_buy_market(symbol=ticker, quantity=qty)
-        print(f"Bought {ticker} on Robinhood")
-    else:
-        if price is not None:
-            rh.order_sell_limit(symbol=ticker, quantity=qty, limitPrice=price)
-        else:
-            rh.order_sell_market(symbol=ticker, quantity=qty)
-        print(f"Sold {ticker} on Robinhood")
+            if price is not None:
+                rh.order_sell_limit(symbol=ticker, quantity=qty, limitPrice=price)
+            else:
+                rh.order_sell_market(symbol=ticker, quantity=qty)
+            print(f"Sold {ticker} on Robinhood {brokerage_account_type} account {account_number}")
 
 
 async def tradierTrade(side, qty, ticker, price):
