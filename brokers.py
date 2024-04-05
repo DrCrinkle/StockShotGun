@@ -2,6 +2,10 @@ import os
 import requests
 import pyotp
 import robin_stocks.robinhood as rh
+from decimal import Decimal
+from tastytrade import ProductionSession, Account
+from tastytrade.instruments import Equity
+from tastytrade.order import NewOrder, OrderTimeInForce, OrderType, PriceEffect, OrderAction
 from dotenv import load_dotenv
 
 load_dotenv("./.env")
@@ -117,6 +121,40 @@ async def stockTwitTrade(side, qty, ticker, price):
     else:
         print(f"Error {response.status_code}: {response.text}")
 
+async def tastyTrade(side, qty, ticker, price):
+    TASTY_USER = os.getenv("TASTY_USER")
+    TASTY_PASS = os.getenv("TASTY_PASS")
+
+    if not (TASTY_USER or TASTY_PASS):
+        print("No TastyTrade credentials supplied, skipping")
+        return None
+
+    session = ProductionSession(TASTY_USER, TASTY_PASS)
+    accounts = Account.get_accounts(session)
+    symbol = Equity.get_equity(session, ticker)
+    action = OrderAction.BUY_TO_OPEN if side == "buy" else OrderAction.SELL_TO_CLOSE
+
+    # Build the order
+    leg = symbol.build_leg(Decimal(qty), action)
+    order_type = OrderType.LIMIT if price else OrderType.MARKET
+    order_args = {
+        "time_in_force": OrderTimeInForce.DAY,
+        "order_type": order_type,
+        "legs": [leg],
+        "price_effect": PriceEffect.DEBIT
+    }
+    if price:
+        order_args["price"] = price
+    
+    order = NewOrder(**order_args)
+
+    for acc in accounts:
+        placed_order = acc.place_order(session, order, dry_run = False)
+        order_status = placed_order.order.status.value
+
+        if order_status in ["Received", "Routed"]:
+            action_str = "Bought" if side == "buy" else "Sold"
+            print(f"{action_str} {ticker} on TastyTrade {acc.account_type_name} account {acc.account_number}")
 
 #TODO: Implement Webull Trading
 #async def webullTrade():
