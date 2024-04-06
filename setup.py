@@ -21,7 +21,6 @@ def setup():
             value = input(f"{service} {prompt}: ") or os.getenv(env_var) or ""
             os.environ[f"SSG_{env_var}"] = value
 
-    # Save credentials
     print(f"{'-' * 5} Saving credentials to .env {'-' * 5}")
     variables = dumper.dump(prefixes=["SSG_"])
 

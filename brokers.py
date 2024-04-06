@@ -37,7 +37,7 @@ async def robinTrade(side, qty, ticker, price):
             order_function = rh.order_sell_limit if price else rh.order_sell_market
 
         if order_function:
-            order_args = {'symbol': ticker, 'quantity': qty}
+            order_args = {'symbol': ticker, 'quantity': qty, 'account_number': account_number}
             if price:
                 order_args['limitPrice'] = price
 
