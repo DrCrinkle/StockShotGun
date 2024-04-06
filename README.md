@@ -12,6 +12,7 @@ I partake in [Reverse Split Arbitrage](https://www.reversesplitarbitrage.com/) a
 * **Robinhood**: requires username, password and MFA setup token
 * **StockTwits**: requires access token
 * **TastyTrade**: requires username and password
+* **Public**: requires username and password
 
 ## Getting Started
 First you will need to set up authentication
@@ -35,6 +36,9 @@ To make a limit order, add a price after the ticker
 ```
 py main.py buy 1 TSLA 650.45
 ```
+
+## Special Thanks
+[NelsonDane](https://github.com/NelsonDane/) - [public-invest-api](https://github.com/NelsonDane/public-invest-api)
 
 ## To Do
 * Add encryption to credentials

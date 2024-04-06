@@ -2,6 +2,7 @@ import os
 import requests
 import pyotp
 import robin_stocks.robinhood as rh
+from public_invest_api import Public
 from decimal import Decimal
 from tastytrade import ProductionSession, Account
 from tastytrade.instruments import Equity
@@ -155,6 +156,33 @@ async def tastyTrade(side, qty, ticker, price):
         if order_status in ["Received", "Routed"]:
             action_str = "Bought" if side == "buy" else "Sold"
             print(f"{action_str} {ticker} on TastyTrade {acc.account_type_name} account {acc.account_number}")
+
+async def publicTrade(side, qty, ticker, price):
+    PUBLIC_USER = os.getenv("PUBLIC_USER")
+    PUBLIC_PASS = os.getenv("PUBLIC_PASS")
+
+    if not (PUBLIC_USER or PUBLIC_PASS):
+        print("No Public credentials supplied, skipping")
+        return None
+
+    public = Public()
+    public.login(
+        username=PUBLIC_USER,
+        password=PUBLIC_PASS,
+        wait_for_2fa=True # When logging in for the first time, you need to wait for the SMS code
+    )
+
+    order = public.place_order(
+        symbol=ticker,
+        quantity=qty,
+        side=side,
+        order_type='MARKET',
+        time_in_force='DAY',
+        tip=0 # The amount to tip Public.com
+    )
+    if order["success"] is True:
+        action_str = "Bought" if side == "buy" else "Sold"
+        print(f"{action_str} {ticker} on Public")
 
 #TODO: Implement Webull Trading
 #async def webullTrade():
