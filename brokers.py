@@ -138,11 +138,12 @@ async def tastyTrade(side, qty, ticker, price):
     # Build the order
     leg = symbol.build_leg(Decimal(qty), action)
     order_type = OrderType.LIMIT if price else OrderType.MARKET
+    price_effect = PriceEffect.DEBIT if side == "buy" else PriceEffect.CREDIT
     order_args = {
         "time_in_force": OrderTimeInForce.DAY,
         "order_type": order_type,
         "legs": [leg],
-        "price_effect": PriceEffect.DEBIT
+        "price_effect": price_effect,
     }
     if price:
         order_args["price"] = price
