@@ -13,6 +13,7 @@ def setup():
         "TastyTrade": [("TASTY_USER", "Username"), ("TASTY_PASS", "Password")],
         "Tradier": [("TRADIER_ACCESS_TOKEN", "Access Token")],
         "Public": [("PUBLIC_USER", "Username"), ("PUBLIC_PASS", "Password")],
+        "Firstrade": [("FIRSTRADE_USER", "Username"), ("FIRSTRADE_PASS", "Password"), ("FIRSTRADE_PIN", "PIN")],
     }
 
     for service, credentials in brokers.items():

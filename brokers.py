@@ -2,6 +2,7 @@ import os
 import requests
 import pyotp
 import robin_stocks.robinhood as rh
+from firstrade import account as ft_account, order, symbols
 from public_invest_api import Public
 from decimal import Decimal
 from tastytrade import ProductionSession, Account
@@ -156,6 +157,51 @@ async def publicTrade(side, qty, ticker, price):
         action_str = "Bought" if side == "buy" else "Sold"
         print(f"{action_str} {ticker} on Public")
 
-#TODO: Implement Webull Trading
-#async def webullTrade():
-    # if price is lower than $1, buy 100 shares and sell 99, to get around webull restrictions
+
+def firstradeTrade(side, qty, ticker):
+    FIRSTRADE_USER = os.getenv("FIRSTRADE_USER")
+    FIRSTRADE_PASS = os.getenv("FIRSTRADE_PASS")
+    FIRSTRADE_PIN = os.getenv("FIRSTRADE_PIN")
+
+    ft_ss = ft_account.FTSession(
+        username=FIRSTRADE_USER, password=FIRSTRADE_PASS, pin=FIRSTRADE_PIN
+    )
+
+    ft_accounts = ft_account.FTAccountData(ft_ss)
+
+    symbol_data = symbols.SymbolQuote(ft_ss, ticker)
+    if symbol_data.last < 1.00:
+        price_type = order.PriceType.LIMIT
+        if side == "buy":
+            price = symbol_data.bid + 0.01
+        else:
+            price = symbol_data.ask - 0.01
+
+    ft_order = order.Order(ft_ss)
+
+    for account_number in ft_accounts.account_numbers:
+        ft_order.place_order(
+            account_number,
+            symbol=ticker,
+            price_type=price_type,
+            order_type=order.OrderType.BUY if side == "buy" else order.OrderType.SELL,
+            quantity=qty,
+            duration=order.Duration.DAY,
+            price=price,
+            dry_run=False,
+        )
+
+        # Check if order was successful
+        if ft_order.order_confirmation["success"] == "Yes":
+            print(f"Order for {ticker} placed on Firstrade successfully.")
+            # Print Order ID
+            print(f"Order ID: {ft_order.order_confirmation['orderid']}.")
+        else:
+            print(f"Failed to place order for {ticker} on Firstrade.")
+            # Print errormessage
+            print(ft_order.order_confirmation["actiondata"])
+
+
+# TODO: Implement Webull Trading
+# async def webullTrade():
+# if price is lower than $1, buy 100 shares and sell 99, to get around webull restrictions

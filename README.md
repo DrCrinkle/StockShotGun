@@ -10,9 +10,9 @@ I partake in [Reverse Split Arbitrage](https://www.reversesplitarbitrage.com/) a
 ## Current Broker Support
 * **Tradier**: requires access token
 * **Robinhood**: requires username, password and MFA setup token
-* **StockTwits**: requires access token
 * **TastyTrade**: requires username and password
 * **Public**: requires username and password
+* **Firstrade**: requires username, password and PIN
 
 ## Getting Started
 First you will need to set up authentication

@@ -1,7 +1,7 @@
 import requests
 import asyncio
 from sys import argv
-from brokers import robinTrade, tradierTrade, tastyTrade, publicTrade
+from brokers import robinTrade, tradierTrade, tastyTrade, publicTrade, firstradeTrade
 from setup import setup
 
 # script.py buy/sell qty ticker price(optional, if given, order is a limit order, otherwise it is a market order)
@@ -56,6 +56,7 @@ async def main():
             if json_response['quotes']['quote']['exch'] == "V":
                 print("Trading OTC")
             else:
+                firstradeTrade(side, qty, ticker)
                 async with asyncio.TaskGroup() as tg:
                     tg.create_task(robinTrade(side, qty, ticker, price))
                     tg.create_task(tradierTrade(side, qty, ticker, price))

@@ -25,3 +25,4 @@ urllib3==2.1.0
 websockets==11.0.3
 tastytrade==7.0
 public-invest-api==1.0.2
+firstrade==0.0.18
