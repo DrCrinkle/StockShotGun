@@ -92,35 +92,6 @@ async def tradierTrade(side, qty, ticker, price):
             action_str = "Bought" if side == "buy" else "Sold"
             print(f"{action_str} {ticker} on Tradier account {account_id}")
 
-async def stockTwitTrade(side, qty, ticker, price):
-    STOCKTWITS_ACCESS_TOKEN = os.getenv("STOCKTWITS_ACCESS_TOKEN")
-
-    if not STOCKTWITS_ACCESS_TOKEN:
-        print("Missing StockTwits credentials, skipping")
-        return None
-    
-    order_type = 'limit' if price else 'market'
-    price_data = {'limit_price': f'{price}'} if price else {}
-    
-    response = requests.post('https://trade-api.stinvest.co/api/v1/trading/orders',
-                            json = {'asset_class': 'equities',
-                                    'symbol': ticker,
-                                    'quantity': str(qty),
-                                    'order_type': order_type,
-                                    'time_in_force': 'DAY',
-                                    'transaction_type': side,
-                                    **price_data},
-                            headers = {'Authorization': f'Bearer {STOCKTWITS_ACCESS_TOKEN}',
-                                        'Accept': 'application/json'}
-                            )
-    if response.status_code == 401:
-        raise Exception("StockTwits: 401 Unauthorized: Check your access token")
-    
-    if response.ok:
-        action_str = "Bought" if side == "buy" else "Sold"
-        print(f"{action_str} {ticker} on StockTwits")
-    else:
-        print(f"Error {response.status_code}: {response.text}")
 
 async def tastyTrade(side, qty, ticker, price):
     TASTY_USER = os.getenv("TASTY_USER")

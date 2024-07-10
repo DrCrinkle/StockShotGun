@@ -12,7 +12,6 @@ def setup():
         "Robinhood": [("ROBINHOOD_USER", "Username"), ("ROBINHOOD_PASS", "Password"), ("ROBINHOOD_MFA", "MFA")],
         "TastyTrade": [("TASTY_USER", "Username"), ("TASTY_PASS", "Password")],
         "Tradier": [("TRADIER_ACCESS_TOKEN", "Access Token")],
-        "StockTwits": [("STOCKTWITS_ACCESS_TOKEN", "Access Token")],
         "Public": [("PUBLIC_USER", "Username"), ("PUBLIC_PASS", "Password")],
     }
 
