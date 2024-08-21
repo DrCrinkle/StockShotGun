@@ -9,11 +9,26 @@ def setup():
     print("Setting up broker credentials, press ENTER to skip entry")
 
     brokers = {
-        "Robinhood": [("ROBINHOOD_USER", "Username"), ("ROBINHOOD_PASS", "Password"), ("ROBINHOOD_MFA", "MFA")],
+        "Robinhood": [
+            ("ROBINHOOD_USER", "Username"),
+            ("ROBINHOOD_PASS", "Password"),
+            ("ROBINHOOD_MFA", "MFA"),
+        ],
+        "Firstrade": [
+            ("FIRSTRADE_USER", "Username"),
+            ("FIRSTRADE_PASS", "Password"),
+            ("FIRSTRADE_PIN", "PIN")
+        ],
+        "Schwab": [
+            ("SCHWAB_API_KEY", "API Key"),
+            ("SCHWAB_API_SECRET", "API Secret"),
+            ("SCHWAB_CALLBACK_URL", "Callback URL"),
+            ("SCHWAB_TOKEN_PATH", "Token Path"),
+        ],
         "TastyTrade": [("TASTY_USER", "Username"), ("TASTY_PASS", "Password")],
         "Tradier": [("TRADIER_ACCESS_TOKEN", "Access Token")],
         "Public": [("PUBLIC_USER", "Username"), ("PUBLIC_PASS", "Password")],
-        "Firstrade": [("FIRSTRADE_USER", "Username"), ("FIRSTRADE_PASS", "Password"), ("FIRSTRADE_PIN", "PIN")],
+        "Fennel": [("FENNEL_EMAIL", "Email")],
     }
 
     for service, credentials in brokers.items():

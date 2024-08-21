@@ -1,13 +1,27 @@
 import os
-import requests
+import httpx
 import pyotp
 import robin_stocks.robinhood as rh
 from firstrade import account as ft_account, order, symbols
 from public_invest_api import Public
+from fennel_invest_api import Fennel
 from decimal import Decimal
 from tastytrade import ProductionSession, Account
 from tastytrade.instruments import Equity
-from tastytrade.order import NewOrder, OrderTimeInForce, OrderType, PriceEffect, OrderAction
+from tastytrade.order import (
+    NewOrder,
+    OrderTimeInForce,
+    OrderType,
+    PriceEffect,
+    OrderAction,
+)
+from schwab import auth
+from schwab.orders.equities import (
+    equity_buy_limit,
+    equity_buy_market,
+    equity_sell_limit,
+    equity_sell_market,
+)
 from dotenv import load_dotenv
 
 load_dotenv("./.env")
@@ -39,7 +53,12 @@ async def robinTrade(side, qty, ticker, price):
             order_function = rh.order_sell_limit if price else rh.order_sell_market
 
         if order_function:
-            order_args = {'symbol': ticker, 'quantity': qty, 'account_number': account_number}
+            order_args = {
+                "symbol": ticker,
+                "quantity": qty,
+                "account_number": account_number,
+                "timeInForce": "gfd",
+            }
             if price:
                 order_args['limitPrice'] = price
 
@@ -55,43 +74,56 @@ async def tradierTrade(side, qty, ticker, price):
         print("Missing Tradier credentials, skipping")
         return None
 
-    # Get Tradier accounts
-    response = requests.get('https://api.tradier.com/v1/user/profile',
-                            headers={'Authorization': f'Bearer {TRADIER_ACCESS_TOKEN}',
-                                     'Accept': 'application/json'})
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            "https://api.tradier.com/v1/user/profile",
+            headers={
+                "Authorization": f"Bearer {TRADIER_ACCESS_TOKEN}",
+                "Accept": "application/json",
+            },
+        )
 
-    if response.status_code != 200:
-        print(f"Error: {response.status_code} - {response.text}")
-        return False
-
-    accounts = response.json().get('profile', {}).get('account', [])
-    if not accounts:
-        print("No accounts found.")
-        return False
-
-    TRADIER_ACCOUNT_ID = [account['account_number'] for account in accounts]
-
-    # Order placement
-    order_type = 'limit' if price else 'market'
-    price_data = {'price': f'{price}'} if price else {}
-
-    for account_id in TRADIER_ACCOUNT_ID:
-        response = requests.post(f'https://api.tradier.com/v1/accounts/{account_id}/orders',
-                                 data={'class': 'equity',
-                                       'symbol': ticker,
-                                       'side': side,
-                                       'quantity': qty,
-                                       'type': order_type,
-                                       'duration': 'day',
-                                       **price_data},
-                                 headers={'Authorization': f'Bearer {TRADIER_ACCESS_TOKEN}',
-                                          'Accept': 'application/json'})
-        
         if response.status_code != 200:
-            print(f"Error placing order on account {account_id}: {response.text}")
-        else:
-            action_str = "Bought" if side == "buy" else "Sold"
-            print(f"{action_str} {ticker} on Tradier account {account_id}")
+            print(f"Error: {response.status} - {await response.text()}")
+            return False
+
+        profile_data = response.json()
+        accounts = profile_data.get("profile", {}).get("account", [])
+        if not accounts:
+            print("No accounts found.")
+            return False
+
+        TRADIER_ACCOUNT_ID = [account["account_number"] for account in accounts]
+
+        # Order placement
+        order_type = "limit" if price else "market"
+        price_data = {"price": f"{price}"} if price else {}
+
+        for account_id in TRADIER_ACCOUNT_ID:
+            response = await client.post(
+                f"https://api.tradier.com/v1/accounts/{account_id}/orders",
+                data={
+                    "class": "equity",
+                    "symbol": ticker,
+                    "side": side,
+                    "quantity": qty,
+                    "type": order_type,
+                    "duration": "day",
+                    **price_data,
+                },
+                headers={
+                    "Authorization": f"Bearer {TRADIER_ACCESS_TOKEN}",
+                    "Accept": "application/json",
+                },
+            )
+
+            if response.status_code != 200:
+                print(
+                    f"Error placing order on account {account_id}: {await response.text()}"
+                )
+            else:
+                action_str = "Bought" if side == "buy" else "Sold"
+                print(f"{action_str} {ticker} on Tradier account {account_id}")
 
 
 async def tastyTrade(side, qty, ticker, price):
@@ -158,13 +190,15 @@ async def publicTrade(side, qty, ticker, price):
         print(f"{action_str} {ticker} on Public")
 
 
-def firstradeTrade(side, qty, ticker):
+async def firstradeTrade(side, qty, ticker):
     FIRSTRADE_USER = os.getenv("FIRSTRADE_USER")
     FIRSTRADE_PASS = os.getenv("FIRSTRADE_PASS")
     FIRSTRADE_PIN = os.getenv("FIRSTRADE_PIN")
 
     ft_ss = ft_account.FTSession(
-        username=FIRSTRADE_USER, password=FIRSTRADE_PASS, pin=FIRSTRADE_PIN
+        username=FIRSTRADE_USER, 
+        password=FIRSTRADE_PASS,
+        pin=FIRSTRADE_PIN
     )
 
     ft_accounts = ft_account.FTAccountData(ft_ss)
@@ -176,6 +210,9 @@ def firstradeTrade(side, qty, ticker):
             price = symbol_data.bid + 0.01
         else:
             price = symbol_data.ask - 0.01
+    else:
+        price_type = order.PriceType.MARKET
+        price = None
 
     ft_order = order.Order(ft_ss)
 
@@ -191,17 +228,91 @@ def firstradeTrade(side, qty, ticker):
             dry_run=False,
         )
 
-        # Check if order was successful
         if ft_order.order_confirmation["success"] == "Yes":
             print(f"Order for {ticker} placed on Firstrade successfully.")
-            # Print Order ID
             print(f"Order ID: {ft_order.order_confirmation['orderid']}.")
         else:
             print(f"Failed to place order for {ticker} on Firstrade.")
-            # Print errormessage
             print(ft_order.order_confirmation["actiondata"])
 
 
+async def fennelTrade(side, qty, ticker, price):
+    FENNEL_EMAIL = os.getenv("FENNEL_EMAIL")
+
+    if not FENNEL_EMAIL:
+        print("No Fennel credentials supplied, skipping")
+        return None
+
+    fennel = Fennel()
+    fennel.login(email=FENNEL_EMAIL, wait_for_code=True)
+
+    account_ids = fennel.get_account_ids()
+    for account_id in account_ids:
+        order = fennel.place_order(
+            account_id=account_id,
+            ticker=ticker,
+            quantity=qty,
+            side=side,
+            price="market",  # only market orders are supported for now
+        )
+
+        if order.get('data', {}).get('createOrder') == 'pending':
+            action_str = "Bought" if side == "buy" else "Sold"
+            print(f"{action_str} {ticker} on Fennel account {account_id}")
+        else:
+            print(f"Failed to place order for {ticker} on Fennel account {account_id}")
+
+
+async def schwabTrade(side, qty, ticker, price):
+    SCHWAB_API_KEY = os.getenv("SCHWAB_API_KEY")
+    SCHWAB_API_SECRET = os.getenv("SCHWAB_API_SECRET")
+    SCHWAB_CALLBACK_URL = os.getenv("SCHWAB_CALLBACK_URL")
+    SCHWAB_TOKEN_PATH = os.getenv("SCHWAB_TOKEN_PATH")
+
+    try:
+        c = auth.client_from_token_file(
+            SCHWAB_TOKEN_PATH,
+            SCHWAB_API_KEY,
+            SCHWAB_API_SECRET
+        )
+    except FileNotFoundError:
+        c = auth.client_from_manual_flow(
+            SCHWAB_API_KEY,
+            SCHWAB_API_SECRET,
+            SCHWAB_CALLBACK_URL,
+            SCHWAB_TOKEN_PATH
+        )
+
+    accounts = c.get_account_numbers()
+
+    order_types = {
+        ("buy", True): equity_buy_limit,
+        ("buy", False): equity_buy_market,
+        ("sell", True): equity_sell_limit,
+        ("sell", False): equity_sell_market,
+    }
+
+    order_function = order_types.get((side.lower(), bool(price)))
+    if not order_function:
+        raise ValueError(f"Invalid combination of side: {side} and price: {price}")
+
+    for account in accounts.json():
+        account_hash = account["hashValue"]
+        order = c.place_order(
+            account_hash,
+            (
+                order_function(ticker, qty, price)
+                if price
+                else order_function(ticker, qty)
+            ),
+        )
+
+        if order.status_code == 201:
+            print(f"Order placed for {qty} shares of {ticker} on Schwab account {account['accountNumber']}")
+        else:
+            print(f"Error placing order on Schwab account {account['accountNumber']}: {order.json()}")
+
+            
 # TODO: Implement Webull Trading
 # async def webullTrade():
 # if price is lower than $1, buy 100 shares and sell 99, to get around webull restrictions

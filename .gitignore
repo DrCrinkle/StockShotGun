@@ -2,6 +2,8 @@
 /.venv/
 /.vscode/
 /__pycache__
+/tokens/
 
 public_credentials.pkl
+fennel_credentials.pkl
 ft_cookies*.pkl

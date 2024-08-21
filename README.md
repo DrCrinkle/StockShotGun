@@ -13,6 +13,8 @@ I partake in [Reverse Split Arbitrage](https://www.reversesplitarbitrage.com/) a
 * **TastyTrade**: requires username and password
 * **Public**: requires username and password
 * **Firstrade**: requires username, password and PIN
+* **Fennel**: requires email
+* **Schwab**: requires api key and secret
 
 ## Getting Started
 First you will need to set up authentication
@@ -38,11 +40,13 @@ py main.py buy 1 TSLA 650.45
 ```
 
 ## Special Thanks
-[NelsonDane](https://github.com/NelsonDane/) - [public-invest-api](https://github.com/NelsonDane/public-invest-api)
+*[NelsonDane](https://github.com/NelsonDane/)
+  * [public-invest-api](https://github.com/NelsonDane/public-invest-api)
+  * [fennel-invest-api] (https://github.com/NelsonDane/fennel-invest-api)
 
 ## To Do
 * Add encryption to credentials
 * Fully automate by tracking FINRA and/or SEC filings
-* Add more brokers (Firstrade, Webull, Schwab(if the TDA API sticks around when the companies are consolidated))
+* Add more brokers (Webull)
 * Add per trade logging to a CSV
 * maybe add a menu with entries for buy sell setup, to avoid having to rerun script after setup.
