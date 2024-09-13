@@ -269,19 +269,13 @@ async def schwabTrade(side, qty, ticker, price):
     SCHWAB_CALLBACK_URL = os.getenv("SCHWAB_CALLBACK_URL")
     SCHWAB_TOKEN_PATH = os.getenv("SCHWAB_TOKEN_PATH")
 
-    try:
-        c = auth.client_from_token_file(
-            SCHWAB_TOKEN_PATH,
-            SCHWAB_API_KEY,
-            SCHWAB_API_SECRET
-        )
-    except FileNotFoundError:
-        c = auth.client_from_manual_flow(
-            SCHWAB_API_KEY,
-            SCHWAB_API_SECRET,
-            SCHWAB_CALLBACK_URL,
-            SCHWAB_TOKEN_PATH
-        )
+    c = auth.easy_client(
+        SCHWAB_API_KEY,
+        SCHWAB_API_SECRET,
+        SCHWAB_CALLBACK_URL,
+        SCHWAB_TOKEN_PATH,
+        interactive=False
+    )
 
     accounts = c.get_account_numbers()
 
