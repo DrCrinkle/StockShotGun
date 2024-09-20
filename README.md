@@ -40,9 +40,9 @@ py main.py buy 1 TSLA 650.45
 ```
 
 ## Special Thanks
-*[NelsonDane](https://github.com/NelsonDane/)
+* [NelsonDane](https://github.com/NelsonDane/)
   * [public-invest-api](https://github.com/NelsonDane/public-invest-api)
-  * [fennel-invest-api] (https://github.com/NelsonDane/fennel-invest-api)
+  * [fennel-invest-api](https://github.com/NelsonDane/fennel-invest-api)
 
 ## To Do
 * Add encryption to credentials
