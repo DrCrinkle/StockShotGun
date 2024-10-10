@@ -15,6 +15,8 @@ I partake in [Reverse Split Arbitrage](https://www.reversesplitarbitrage.com/) a
 * **Firstrade**: requires username, password and PIN
 * **Fennel**: requires email
 * **Schwab**: requires api key and secret
+* **dSPAC**: requires email and password
+* **BBAE Pro**: requires email and password
 
 ## Getting Started
 First you will need to set up authentication
