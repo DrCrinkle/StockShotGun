@@ -139,7 +139,7 @@ async def tastyTrade(side, qty, ticker, price):
         print("No TastyTrade credentials supplied, skipping")
         return None
 
-    session = ProductionSession(TASTY_USER, TASTY_PASS)
+    session = Session(TASTY_USER, TASTY_PASS)
     accounts = Account.get_accounts(session)
     symbol = Equity.get_equity(session, ticker)
     action = OrderAction.BUY_TO_OPEN if side == "buy" else OrderAction.SELL_TO_CLOSE
@@ -221,7 +221,7 @@ async def firstradeTrade(side, qty, ticker):
 
     for account_number in ft_accounts.account_numbers:
         try:
-            asyncio.to_thread(
+            await asyncio.to_thread(
                 ft_order.place_order,
                 account_number,
                 symbol=ticker,
@@ -362,7 +362,7 @@ async def bbaeTrade(side, qty, ticker, price=None):
         holdings_response = await asyncio.to_thread(bbae.check_stock_holdings, ticker, account_number)
         available_qty = holdings_response.get("Data").get('enableAmount', 0)
 
-        if available_qty < qty:
+        if int(available_qty) < qty:
             print(f"Not enough shares to sell. Available: {available_qty}, Requested: {qty}")
             return None
         
@@ -424,7 +424,7 @@ async def dspacTrade(side, qty, ticker, price=None):
         holdings_response = await asyncio.to_thread(dspac.check_stock_holdings, ticker, account_number)
         available_qty = holdings_response.get("Data").get('enableAmount', 0)
 
-        if available_qty < qty:
+        if int(available_qty) < qty:
             print(f"Not enough shares to sell. Available: {available_qty}, Requested: {qty}")
             return None
         
