@@ -182,7 +182,8 @@ async def publicTrade(side, qty, ticker, price):
         symbol=ticker,
         quantity=qty,
         side=side,
-        order_type='MARKET',
+        order_type='MARKET' if price is None else 'LIMIT',
+        limit_price=None if price is None else price,
         time_in_force='DAY',
         tip=0,
     )
