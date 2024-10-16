@@ -56,20 +56,19 @@ async def robinTrade(side, qty, ticker, price):
             print(f"Invalid side: {side}")
             return None
 
-        if order_function:
-            order_args = {
-                "symbol": ticker,
-                "quantity": qty,
-                "account_number": account_number,
-                "timeInForce": "gfd",
-            }
-            if price:
-                order_args['limitPrice'] = price
+        order_args = {
+            "symbol": ticker,
+            "quantity": qty,
+            "account_number": account_number,
+            "timeInForce": "gfd",
+        }
+        if price:
+            order_args['limitPrice'] = price
 
-            await asyncio.to_thread(order_function, **order_args)
-            action_str = "Bought" if side == "buy" else "Sold"
-            
-            print(f"{action_str} {ticker} on Robinhood {brokerage_account_type} account {account_number}")
+        await asyncio.to_thread(order_function, **order_args)
+        action_str = "Bought" if side == "buy" else "Sold"
+        
+        print(f"{action_str} {ticker} on Robinhood {brokerage_account_type} account {account_number}")
 
 
 async def tradierTrade(side, qty, ticker, price):
