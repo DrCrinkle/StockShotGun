@@ -9,7 +9,7 @@ from firstrade import account as ft_account, order, symbols
 from public_invest_api import Public
 from fennel_invest_api import Fennel
 from decimal import Decimal
-from tastytrade import ProductionSession, Account
+from tastytrade import Session, Account
 from tastytrade.instruments import Equity
 from tastytrade.order import (
     NewOrder,
