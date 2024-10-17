@@ -40,9 +40,9 @@ async def robinTrade(side, qty, ticker, price):
         return None
 
     mfa = pyotp.TOTP(ROBINHOOD_MFA).now()
-    await asyncio.to_thread(rh.login, ROBINHOOD_USER, ROBINHOOD_PASS, mfa_code=mfa)
+    rh.login(ROBINHOOD_USER, ROBINHOOD_PASS, mfa_code=mfa)
 
-    all_accounts = await asyncio.to_thread(rh.account.load_account_profile, dataType="results")
+    all_accounts = rh.account.load_account_profile(dataType="results")
 
     for account in all_accounts:
         account_number = account['account_number']
@@ -65,9 +65,9 @@ async def robinTrade(side, qty, ticker, price):
         if price:
             order_args['limitPrice'] = price
 
-        await asyncio.to_thread(order_function, **order_args)
+        order_function(**order_args)
+
         action_str = "Bought" if side == "buy" else "Sold"
-        
         print(f"{action_str} {ticker} on Robinhood {brokerage_account_type} account {account_number}")
 
 
@@ -158,13 +158,14 @@ async def tastyTrade(side, qty, ticker, price):
     
     order = NewOrder(**order_args)
 
-    for acc in accounts:
-        placed_order = acc.place_order(session, order, dry_run = False)
+    for account in accounts:
+        placed_order = account.place_order(session, order, dry_run = False)
         order_status = placed_order.order.status.value
 
         if order_status in ["Received", "Routed"]:
             action_str = "Bought" if side == "buy" else "Sold"
-            print(f"{action_str} {ticker} on TastyTrade {acc.account_type_name} account {acc.account_number}")
+            print(f"{action_str} {ticker} on TastyTrade {account.account_type_name} account {account.account_number}")
+
 
 async def publicTrade(side, qty, ticker, price):
     PUBLIC_USER = os.getenv("PUBLIC_USER")
@@ -175,10 +176,9 @@ async def publicTrade(side, qty, ticker, price):
         return None
 
     public = Public(path="./tokens/")
-    await asyncio.to_thread(public.login, username=PUBLIC_USER, password=PUBLIC_PASS, wait_for_2fa=True)
+    public.login(username=PUBLIC_USER, password=PUBLIC_PASS, wait_for_2fa=True)
 
-    order = await asyncio.to_thread(
-        public.place_order,
+    order = public.place_order(
         symbol=ticker,
         quantity=qty,
         side=side,
@@ -210,7 +210,7 @@ async def firstradeTrade(side, qty, ticker):
         ft_ss.login_two(code)
 
     ft_accounts = ft_account.FTAccountData(ft_ss)
-    
+
     # Firstrade does not allow market orders for stocks under $1.00
     symbol_data = symbols.SymbolQuote(ft_ss, ft_accounts.account_numbers[0], ticker)
     if symbol_data.last < 1.00:
@@ -227,8 +227,7 @@ async def firstradeTrade(side, qty, ticker):
 
     for account_number in ft_accounts.account_numbers:
         try:
-            order_conf = await asyncio.to_thread(
-                ft_order.place_order,
+            order_conf = ft_order.place_order(
                 account_number,
                 symbol=ticker,
                 price_type=price_type,
@@ -257,12 +256,11 @@ async def fennelTrade(side, qty, ticker, price):
         return None
 
     fennel = Fennel(path="./tokens/")
-    await asyncio.to_thread(fennel.login, email=FENNEL_EMAIL, wait_for_code=True)
+    fennel.login(email=FENNEL_EMAIL, wait_for_code=True)
 
-    account_ids = await asyncio.to_thread(fennel.get_account_ids)
+    account_ids = fennel.get_account_ids()
     for account_id in account_ids:
-        order = await asyncio.to_thread(
-            fennel.place_order,
+        order = fennel.place_order(
             account_id=account_id,
             ticker=ticker,
             quantity=qty,
@@ -331,8 +329,8 @@ async def bbaeTrade(side, qty, ticker, price=None):
 
     bbae = BBAEAPI(BBAE_USER, BBAE_PASS, creds_path="./tokens/")
 
-    await asyncio.to_thread(bbae.make_initial_request)
-    login_ticket = await asyncio.to_thread(bbae.generate_login_ticket_email)
+    bbae.make_initial_request()
+    login_ticket = bbae.generate_login_ticket_email()
     if login_ticket.get("Data") is None:
         raise Exception("Invalid response from generating login ticket")
     if login_ticket.get("Data").get("needSmsVerifyCode", False):
@@ -348,13 +346,13 @@ async def bbaeTrade(side, qty, ticker, price=None):
             bbae.request_email_code()
             otp_code = input("Enter BBAE security code: ")
         
-        login_ticket = await asyncio.to_thread(bbae.generate_login_ticket_email, otp_code)        
+        login_ticket = bbae.generate_login_ticket_email(otp_code)
     
-    login_response = await asyncio.to_thread(bbae.login_with_ticket, login_ticket.get("Data").get("ticket"))
+    login_response = bbae.login_with_ticket(login_ticket.get("Data").get("ticket"))
     if login_response.get("Outcome") != "Success":
         raise Exception(f"Login failed. Response: {login_response}")
 
-    account_info = await asyncio.to_thread(bbae.get_account_info)
+    account_info = bbae.get_account_info()
     account_number = account_info.get("Data").get('accountNumber')
 
     if not account_number:
@@ -362,16 +360,17 @@ async def bbaeTrade(side, qty, ticker, price=None):
         return None
     
     if side == 'buy':
-        response = await asyncio.to_thread(bbae.execute_buy, ticker, qty, account_number, dry_run=False)
+        response = bbae.execute_buy(ticker, qty, account_number, dry_run=False)
     elif side == 'sell':
         holdings_response = await asyncio.to_thread(bbae.check_stock_holdings, ticker, account_number)
+        holdings_response = bbae.check_stock_holdings(ticker, account_number)
         available_qty = holdings_response.get("Data").get('enableAmount', 0)
 
         if int(available_qty) < qty:
             print(f"Not enough shares to sell. Available: {available_qty}, Requested: {qty}")
             return None
         
-        response = await asyncio.to_thread(bbae.execute_sell, ticker, qty, account_number, price, dry_run=False)
+        response = bbae.execute_sell(ticker, qty, account_number, price, dry_run=False)
     else:
         print(f"Invalid trade side: {side}")
         return None
@@ -394,7 +393,8 @@ async def dspacTrade(side, qty, ticker, price=None):
     dspac = DSPACAPI(DSPAC_USER, DSPAC_PASS, creds_path="./tokens/")
 
     await asyncio.to_thread(dspac.make_initial_request)
-    login_ticket = await asyncio.to_thread(dspac.generate_login_ticket_email)
+    dspac.make_initial_request()
+    login_ticket = dspac.generate_login_ticket_email()
     if login_ticket.get("Data") is None:
         raise Exception("Invalid response from generating login ticket")
     if login_ticket.get("Data").get("needSmsVerifyCode", False):
@@ -410,13 +410,14 @@ async def dspacTrade(side, qty, ticker, price=None):
             dspac.request_email_code()
             otp_code = input("Enter DSPAC security code: ")
         
-        login_ticket = await asyncio.to_thread(dspac.generate_login_ticket_email, otp_code)        
+        login_ticket = dspac.generate_login_ticket_email, otp_code()
     
-    login_response = await asyncio.to_thread(dspac.login_with_ticket, login_ticket.get("Data").get("ticket"))
+    login_response = dspac.login_with_ticket(login_ticket.get("Data").get("ticket"))
     if login_response.get("Outcome") != "Success":
         raise Exception(f"Login failed. Response: {login_response}")
 
     account_info = await asyncio.to_thread(dspac.get_account_info)
+    account_info = dspac.get_account_info()
     account_number = account_info.get("Data").get('accountNumber')
 
     if not account_number:
@@ -424,16 +425,17 @@ async def dspacTrade(side, qty, ticker, price=None):
         return None
     
     if side == 'buy':
-        response = await asyncio.to_thread(dspac.execute_buy, ticker, qty, account_number, dry_run=False)
+        response = dspac.execute_buy(ticker, qty, account_number, dry_run=False)
     elif side == 'sell':
         holdings_response = await asyncio.to_thread(dspac.check_stock_holdings, ticker, account_number)
+        holdings_response = dspac.check_stock_holdings(ticker, account_number)
         available_qty = holdings_response.get("Data").get('enableAmount', 0)
 
         if int(available_qty) < qty:
             print(f"Not enough shares to sell. Available: {available_qty}, Requested: {qty}")
             return None
         
-        response = await asyncio.to_thread(dspac.execute_sell, ticker, qty, account_number, price, dry_run=False)
+        response = dspac.execute_sell(ticker, qty, account_number, price, dry_run=False)
     else:
         print(f"Invalid trade side: {side}")
         return None
