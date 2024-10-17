@@ -204,8 +204,15 @@ async def firstradeTrade(side, qty, ticker):
         pin=FIRSTRADE_PIN,
         profile_path="./tokens/"
     )
+    need_code = ft_ss.login()
+    if need_code:
+        code = input("Please enter the pin sent to your email/phone: ")
+        ft_ss.login_two(code)
 
-    symbol_data = symbols.SymbolQuote(ft_ss, ticker)
+    ft_accounts = ft_account.FTAccountData(ft_ss)
+    
+    # Firstrade does not allow market orders for stocks under $1.00
+    symbol_data = symbols.SymbolQuote(ft_ss, ft_accounts.account_numbers[0], ticker)
     if symbol_data.last < 1.00:
         price_type = order.PriceType.LIMIT
         if side == "buy":
@@ -217,11 +224,10 @@ async def firstradeTrade(side, qty, ticker):
         price = None
 
     ft_order = order.Order(ft_ss)
-    ft_accounts = ft_account.FTAccountData(ft_ss)
 
     for account_number in ft_accounts.account_numbers:
         try:
-            await asyncio.to_thread(
+            order_conf = await asyncio.to_thread(
                 ft_order.place_order,
                 account_number,
                 symbol=ticker,
@@ -231,15 +237,14 @@ async def firstradeTrade(side, qty, ticker):
                 duration=order.Duration.DAY,
                 price=price,
                 dry_run=False,
-                )
-            
+            )
 
-            if ft_order.order_confirmation.get("success") == "Yes":
+            if order_conf.get("message") == "Normal":
                 print(f"Order for {ticker} placed on Firstrade successfully.")
-                print(f"Order ID: {ft_order.order_confirmation['orderid']}.")
+                print(f"Order ID: {order_conf.get("result").get('order_id')}.")
             else:
                 print(f"Failed to place order for {ticker} on Firstrade.")
-                print(ft_order.order_confirmation["actiondata"])
+                print(order_conf)
         except Exception as e:
             print(f"An error occurred while placing order for {ticker} on Firstrade: {e}")
 
