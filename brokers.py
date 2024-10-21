@@ -216,9 +216,9 @@ async def firstradeTrade(side, qty, ticker):
     if symbol_data.last < 1.00:
         price_type = order.PriceType.LIMIT
         if side == "buy":
-            price = symbol_data.bid + 0.01
+            price = symbol_data.last + 0.01
         else:
-            price = symbol_data.ask - 0.01
+            price = symbol_data.last - 0.01
     else:
         price_type = order.PriceType.MARKET
         price = None
