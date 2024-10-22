@@ -362,7 +362,6 @@ async def bbaeTrade(side, qty, ticker, price=None):
     if side == 'buy':
         response = bbae.execute_buy(ticker, qty, account_number, dry_run=False)
     elif side == 'sell':
-        holdings_response = await asyncio.to_thread(bbae.check_stock_holdings, ticker, account_number)
         holdings_response = bbae.check_stock_holdings(ticker, account_number)
         available_qty = holdings_response.get("Data").get('enableAmount', 0)
 
@@ -410,13 +409,12 @@ async def dspacTrade(side, qty, ticker, price=None):
             dspac.request_email_code()
             otp_code = input("Enter DSPAC security code: ")
         
-        login_ticket = dspac.generate_login_ticket_email, otp_code()
+        login_ticket = dspac.generate_login_ticket_email(otp_code)
     
     login_response = dspac.login_with_ticket(login_ticket.get("Data").get("ticket"))
     if login_response.get("Outcome") != "Success":
         raise Exception(f"Login failed. Response: {login_response}")
 
-    account_info = await asyncio.to_thread(dspac.get_account_info)
     account_info = dspac.get_account_info()
     account_number = account_info.get("Data").get('accountNumber')
 
@@ -427,7 +425,6 @@ async def dspacTrade(side, qty, ticker, price=None):
     if side == 'buy':
         response = dspac.execute_buy(ticker, qty, account_number, dry_run=False)
     elif side == 'sell':
-        holdings_response = await asyncio.to_thread(dspac.check_stock_holdings, ticker, account_number)
         holdings_response = dspac.check_stock_holdings(ticker, account_number)
         available_qty = holdings_response.get("Data").get('enableAmount', 0)
 
