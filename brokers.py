@@ -78,56 +78,142 @@ async def tradierTrade(side, qty, ticker, price):
         print("Missing Tradier credentials, skipping")
         return None
 
-    async with httpx.AsyncClient() as client:
-        response = await client.get(
-            "https://api.tradier.com/v1/user/profile",
-            headers={
-                "Authorization": f"Bearer {TRADIER_ACCESS_TOKEN}",
-                "Accept": "application/json",
+    headers = {
+        "Authorization": f"Bearer {TRADIER_ACCESS_TOKEN}",
+        "Accept": "application/json",
+    }
+
+    client = httpx.Client()
+
+    response = client.get(
+        "https://api.tradier.com/v1/user/profile",
+        headers=headers
+    )
+
+    if response.status_code != 200:
+        print(f"Error: {response.status_code} - {response.text}")
+        return False
+
+    profile_data = response.json()
+    accounts = profile_data.get("profile", {}).get("account", [])
+    if not accounts:
+        print("No accounts found.")
+        return False
+
+    TRADIER_ACCOUNT_ID = [account["account_number"] for account in accounts]
+
+    # Order placement
+    order_type = "limit" if price else "market"
+    price_data = {"price": f"{price}"} if price else {}
+
+    for account_id in TRADIER_ACCOUNT_ID:
+        response = client.post(
+            f"https://api.tradier.com/v1/accounts/{account_id}/orders",
+            data={
+                "class": "equity",
+                "symbol": ticker,
+                "side": side,
+                "quantity": qty,
+                "type": order_type,
+                "duration": "day",
+                **price_data,
             },
+            headers=headers
         )
 
         if response.status_code != 200:
-            print(f"Error: {response.status} - {await response.text()}")
-            return False
-
-        profile_data = response.json()
-        accounts = profile_data.get("profile", {}).get("account", [])
-        if not accounts:
-            print("No accounts found.")
-            return False
-
-        TRADIER_ACCOUNT_ID = [account["account_number"] for account in accounts]
-
-        # Order placement
-        order_type = "limit" if price else "market"
-        price_data = {"price": f"{price}"} if price else {}
-
-        for account_id in TRADIER_ACCOUNT_ID:
-            response = await client.post(
-                f"https://api.tradier.com/v1/accounts/{account_id}/orders",
-                data={
-                    "class": "equity",
-                    "symbol": ticker,
-                    "side": side,
-                    "quantity": qty,
-                    "type": order_type,
-                    "duration": "day",
-                    **price_data,
-                },
-                headers={
-                    "Authorization": f"Bearer {TRADIER_ACCESS_TOKEN}",
-                    "Accept": "application/json",
-                },
+            print(
+                f"Error placing order on account {account_id}: {response.text}"
             )
+        else:
+            action_str = "Bought" if side == "buy" else "Sold"
+            print(f"{action_str} {ticker} on Tradier account {account_id}")
 
-            if response.status_code != 200:
-                print(
-                    f"Error placing order on account {account_id}: {await response.text()}"
-                )
-            else:
-                action_str = "Bought" if side == "buy" else "Sold"
-                print(f"{action_str} {ticker} on Tradier account {account_id}")
+    client.close()
+
+
+async def tradierGetHoldings(ticker=None):
+    TRADIER_ACCESS_TOKEN = os.getenv("TRADIER_ACCESS_TOKEN")
+
+    if not TRADIER_ACCESS_TOKEN:
+        print("Missing Tradier credentials, skipping")
+        return None
+
+    headers = {
+        "Authorization": f"Bearer {TRADIER_ACCESS_TOKEN}",
+        "Accept": "application/json",
+    }
+
+    client = httpx.Client()
+
+    response = client.get(
+        "https://api.tradier.com/v1/user/profile",
+        headers=headers
+    )
+
+    if response.status_code != 200:
+        print(f"Error: {response.status_code} - {response.text}")
+        return None
+
+    profile_data = response.json()
+    accounts = profile_data.get("profile", {}).get("account", [])
+    if not accounts:
+        print("No accounts found.")
+        return None
+
+    holdings_data = {}
+    
+    # Get holdings for each account
+    for account in accounts:
+        account_id = account["account_number"]
+        response = client.get(
+            f"https://api.tradier.com/v1/accounts/{account_id}/positions",
+            headers=headers
+        )
+
+        if response.status_code != 200:
+            print(f"Error getting positions for account {account_id}: {response.text}")
+            continue
+
+        positions = response.json().get("positions", {}).get("position", [])
+        
+        # Handle case where positions is None (no positions)
+        if not positions:
+            holdings_data[account_id] = []
+            continue
+        
+        # Handle case where only one position is returned (comes as dict instead of list)
+        if isinstance(positions, dict):
+            positions = [positions]
+
+        # If ticker is specified, filter for that ticker only
+        if ticker:
+            positions = [pos for pos in positions if pos.get("symbol") == ticker]
+
+        # Get current quotes for all symbols
+        symbols = [pos.get("symbol") for pos in positions]
+        if symbols:
+            quotes_response = client.get(
+                "https://api.tradier.com/v1/markets/quotes",
+                params={"symbols": ",".join(symbols)},
+                headers=headers
+            )
+            quotes = quotes_response.json().get("quotes", {}).get("quote", [])
+            if not isinstance(quotes, list):
+                quotes = [quotes]
+            quotes_dict = {quote.get("symbol"): quote.get("last") for quote in quotes}
+        else:
+            quotes_dict = {}
+
+        holdings_data[account_id] = [{
+            "symbol": pos.get("symbol"),
+            "quantity": pos.get("quantity"),
+            "cost_basis": pos.get("cost_basis"),
+            "current_value": float(pos.get("quantity", 0)) * quotes_dict.get(pos.get("symbol"), 0)
+        } for pos in positions]
+
+    client.close()
+    return holdings_data
 
 
 async def tastyTrade(side, qty, ticker, price):
@@ -193,7 +279,7 @@ async def publicTrade(side, qty, ticker, price):
         print(f"{action_str} {ticker} on Public")
 
 
-async def firstradeTrade(side, qty, ticker):
+async def firstradeTrade(side, qty, ticker, price=None):
     FIRSTRADE_USER = os.getenv("FIRSTRADE_USER")
     FIRSTRADE_PASS = os.getenv("FIRSTRADE_PASS")
     FIRSTRADE_PIN = os.getenv("FIRSTRADE_PIN")
@@ -211,17 +297,20 @@ async def firstradeTrade(side, qty, ticker):
 
     ft_accounts = ft_account.FTAccountData(ft_ss)
 
-    # Firstrade does not allow market orders for stocks under $1.00
-    symbol_data = symbols.SymbolQuote(ft_ss, ft_accounts.account_numbers[0], ticker)
-    if symbol_data.last < 1.00:
+    if price is not None:
         price_type = order.PriceType.LIMIT
-        if side == "buy":
-            price = symbol_data.last + 0.01
-        else:
-            price = symbol_data.last - 0.01
     else:
-        price_type = order.PriceType.MARKET
-        price = None
+        # Firstrade does not allow market orders for stocks under $1.00
+        symbol_data = symbols.SymbolQuote(ft_ss, ft_accounts.account_numbers[0], ticker)
+        if symbol_data.last < 1.00:
+            price_type = order.PriceType.LIMIT
+            if side == "buy":
+                price = symbol_data.last + 0.01
+            else:
+                price = symbol_data.last - 0.01
+        else:
+            price_type = order.PriceType.MARKET
+            price = None
 
     ft_order = order.Order(ft_ss)
 
@@ -362,7 +451,6 @@ async def bbaeTrade(side, qty, ticker, price=None):
     if side == 'buy':
         response = bbae.execute_buy(ticker, qty, account_number, dry_run=False)
     elif side == 'sell':
-        holdings_response = await asyncio.to_thread(bbae.check_stock_holdings, ticker, account_number)
         holdings_response = bbae.check_stock_holdings(ticker, account_number)
         available_qty = holdings_response.get("Data").get('enableAmount', 0)
 
@@ -392,7 +480,6 @@ async def dspacTrade(side, qty, ticker, price=None):
 
     dspac = DSPACAPI(DSPAC_USER, DSPAC_PASS, creds_path="./tokens/")
 
-    await asyncio.to_thread(dspac.make_initial_request)
     dspac.make_initial_request()
     login_ticket = dspac.generate_login_ticket_email()
     if login_ticket.get("Data") is None:
@@ -410,13 +497,12 @@ async def dspacTrade(side, qty, ticker, price=None):
             dspac.request_email_code()
             otp_code = input("Enter DSPAC security code: ")
         
-        login_ticket = dspac.generate_login_ticket_email, otp_code()
+        login_ticket = dspac.generate_login_ticket_email(otp_code)
     
     login_response = dspac.login_with_ticket(login_ticket.get("Data").get("ticket"))
     if login_response.get("Outcome") != "Success":
         raise Exception(f"Login failed. Response: {login_response}")
 
-    account_info = await asyncio.to_thread(dspac.get_account_info)
     account_info = dspac.get_account_info()
     account_number = account_info.get("Data").get('accountNumber')
 
@@ -427,7 +513,6 @@ async def dspacTrade(side, qty, ticker, price=None):
     if side == 'buy':
         response = dspac.execute_buy(ticker, qty, account_number, dry_run=False)
     elif side == 'sell':
-        holdings_response = await asyncio.to_thread(dspac.check_stock_holdings, ticker, account_number)
         holdings_response = dspac.check_stock_holdings(ticker, account_number)
         available_qty = holdings_response.get("Data").get('enableAmount', 0)
 
