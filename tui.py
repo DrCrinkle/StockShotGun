@@ -149,14 +149,14 @@ def run_tui():
         })
         
         # Reset UI elements
-        for widget in main.original_widget.body:
+        for widget in main.body:
             if isinstance(widget.base_widget, urwid.CheckBox):
                 widget.base_widget.set_state(False)
             elif isinstance(widget.base_widget, EditWithCallback):
                 widget.base_widget.set_edit_text('')
         
         # Reset the Buy/Sell button
-        for widget in main.original_widget.body:
+        for widget in main.body:
             if isinstance(widget.base_widget, urwid.Button) and widget.base_widget.label in ['Buy', 'Sell']:
                 widget.base_widget.set_label('Buy')
                 break
