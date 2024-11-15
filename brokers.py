@@ -285,7 +285,7 @@ async def firstradeTrade(side, qty, ticker, price=None):
     FIRSTRADE_PIN = os.getenv("FIRSTRADE_PIN")
 
     ft_ss = ft_account.FTSession(
-        username=FIRSTRADE_USER, 
+        username=FIRSTRADE_USER,
         password=FIRSTRADE_PASS,
         pin=FIRSTRADE_PIN,
         profile_path="./tokens/"
@@ -297,39 +297,61 @@ async def firstradeTrade(side, qty, ticker, price=None):
 
     ft_accounts = ft_account.FTAccountData(ft_ss)
 
-    if price is not None:
+    symbol_data = symbols.SymbolQuote(ft_ss, ft_accounts.account_numbers[0], ticker)
+    
+    adjusted_qty = qty
+    sell_qty = 0
+    
+    if symbol_data.last < 1.00:
+        if side == "buy":
+            adjusted_qty = max(qty, 100)
+            sell_qty = adjusted_qty - qty
         price_type = order.PriceType.LIMIT
-    else:
-        # Firstrade does not allow market orders for stocks under $1.00
-        symbol_data = symbols.SymbolQuote(ft_ss, ft_accounts.account_numbers[0], ticker)
-        if symbol_data.last < 1.00:
-            price_type = order.PriceType.LIMIT
+        if price is None:
             if side == "buy":
                 price = symbol_data.last + 0.01
             else:
                 price = symbol_data.last - 0.01
-        else:
-            price_type = order.PriceType.MARKET
-            price = None
+    else:
+        price_type = order.PriceType.MARKET if price is None else order.PriceType.LIMIT
 
     ft_order = order.Order(ft_ss)
 
     for account_number in ft_accounts.account_numbers:
         try:
-            order_conf = ft_order.place_order(
-                account_number,
-                symbol=ticker,
-                price_type=price_type,
-                order_type=order.OrderType.BUY if side == "buy" else order.OrderType.SELL,
-                quantity=qty,
-                duration=order.Duration.DAY,
-                price=price,
-                dry_run=False,
-            )
+            order_params = {
+                "account": account_number,
+                "symbol": ticker,
+                "price_type": price_type,
+                "order_type": order.OrderType.BUY if side == "buy" else order.OrderType.SELL,
+                "quantity": adjusted_qty,
+                "duration": order.Duration.DAY,
+                "price": price,
+                "dry_run": False,
+            }
+
+            order_conf = ft_order.place_order(**order_params)
 
             if order_conf.get("message") == "Normal":
-                print(f"Order for {ticker} placed on Firstrade successfully.")
-                print(f"Order ID: {order_conf.get("result").get('order_id')}.")
+                print(f"Order for {adjusted_qty} shares of {ticker} placed on Firstrade successfully.")
+                print(f"Order ID: {order_conf.get('result').get('order_id')}.")
+                
+                if sell_qty > 0:
+                    sell_params = {
+                        **order_params,
+                        "order_type": order.OrderType.SELL,
+                        "quantity": sell_qty,
+                        "price": symbol_data.last - 0.01,
+                    }
+                    
+                    sell_conf = ft_order.place_order(**sell_params)
+                    
+                    if sell_conf.get("message") == "Normal":
+                        print(f"Sell order for excess {sell_qty} shares placed successfully.")
+                        print(f"Sell Order ID: {sell_conf.get('result').get('order_id')}.")
+                    else:
+                        print("Failed to place sell order for excess shares on Firstrade.")
+                        print(sell_conf)
             else:
                 print(f"Failed to place order for {ticker} on Firstrade.")
                 print(order_conf)
