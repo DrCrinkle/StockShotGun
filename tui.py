@@ -11,11 +11,9 @@ from brokers import (
     schwabTrade,
     bbaeTrade,
     dspacTrade,
-    webullTrade,
     tradierGetHoldings,
     bbaeGetHoldings,
     dspacGetHoldings,
-    webullGetHoldings,
     publicGetHoldings,
     tastyGetHoldings,
     robinGetHoldings,
@@ -34,7 +32,6 @@ BROKERS = [
     "Schwab",
     "BBAE",
     "DSPAC",
-    "Webull",
 ]
 
 
@@ -261,7 +258,6 @@ def run_tui():
             "Schwab": schwabTrade,
             "BBAE": bbaeTrade,
             "DSPAC": dspacTrade,
-            "Webull": webullTrade,
         }
 
         for idx, order in enumerate(orders, 1):
@@ -297,7 +293,6 @@ def run_tui():
             "Tradier": tradierGetHoldings,
             "BBAE": bbaeGetHoldings,
             "DSPAC": dspacGetHoldings,
-            "Webull": webullGetHoldings,
             "Public": publicGetHoldings,
             "TastyTrade": tastyGetHoldings,
             "Schwab": schwabGetHoldings,
