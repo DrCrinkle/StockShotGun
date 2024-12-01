@@ -1,7 +1,7 @@
 import os
 import httpx
-import asyncio
 import pyotp
+import traceback
 import robin_stocks.robinhood as rh
 from bbae_invest_api import BBAEAPI
 from dspac_invest_api import DSPACAPI
@@ -18,7 +18,7 @@ from tastytrade.order import (
     PriceEffect,
     OrderAction,
 )
-from schwab import auth
+from schwab import auth 
 from schwab.orders.equities import (
     equity_buy_limit,
     equity_buy_market,
@@ -28,6 +28,77 @@ from schwab.orders.equities import (
 from dotenv import load_dotenv
 
 load_dotenv("./.env")
+
+
+async def _login_broker(broker_api, broker_name):
+    """Helper function to handle login flow for BBAE and DSPAC brokers"""
+    try:
+        broker_api.make_initial_request()
+        login_ticket = broker_api.generate_login_ticket_email()
+        
+        if login_ticket.get("Data") is None:
+            raise Exception("Invalid response from generating login ticket")
+            
+        if login_ticket.get("Data").get("needSmsVerifyCode", False):
+            if login_ticket.get("Data").get("needCaptchaCode", False):
+                captcha_image = broker_api.request_captcha()
+                captcha_image.save(f"./{broker_name}captcha.png", format="PNG")
+                captcha_input = input(
+                    f"CAPTCHA image saved to ./{broker_name}captcha.png. Please open it and type in the code: "
+                )
+                broker_api.request_email_code(captcha_input=captcha_input)
+            else:
+                broker_api.request_email_code()
+                
+            otp_code = input(f"Enter {broker_name} security code: ")
+            login_ticket = broker_api.generate_login_ticket_email(otp_code)
+
+        login_response = broker_api.login_with_ticket(login_ticket.get("Data").get("ticket"))
+        if login_response.get("Outcome") != "Success":
+            raise Exception(f"Login failed. Response: {login_response}")
+            
+        return True
+        
+    except Exception as e:
+        print(f"Error logging into {broker_name}: {str(e)}")
+        return False
+
+
+async def _get_broker_holdings(broker_api, broker_name, ticker=None):
+    """Helper function to get holdings for BBAE and DSPAC brokers"""
+    try:
+        holdings_data = {}
+        holdings_response = broker_api.get_account_holdings()
+        
+        if holdings_response.get("Outcome") != "Success":
+            raise Exception(f"Failed to get holdings: {holdings_response.get('Message')}")
+
+        positions = holdings_response.get("Data", [])
+        
+        if ticker:
+            positions = [pos for pos in positions if pos.get("Symbol") == ticker]
+
+        account_info = broker_api.get_account_info()
+        account_number = account_info.get("Data").get('accountNumber')
+
+        formatted_positions = [
+            {
+                "symbol": pos.get("Symbol", "Unknown"),
+                "quantity": float(pos.get("CurrentAmount", 0)),
+                "cost_basis": float(pos.get("CostPrice", 0)),
+                "current_value": float(pos.get("Last", 0)) * float(pos.get("CurrentAmount", 0))
+            }
+            for pos in positions
+            if float(pos.get("CurrentAmount", 0)) > 0
+        ]
+
+        holdings_data[account_number] = formatted_positions
+        return holdings_data
+
+    except Exception as e:
+        print(f"Error retrieving {broker_name} holdings: {str(e)}")
+        traceback.print_exc()
+        return None
 
 
 async def robinTrade(side, qty, ticker, price):
@@ -71,6 +142,52 @@ async def robinTrade(side, qty, ticker, price):
         print(f"{action_str} {ticker} on Robinhood {brokerage_account_type} account {account_number}")
 
 
+async def robinGetHoldings(ticker=None):
+    ROBINHOOD_USER = os.getenv("ROBINHOOD_USER")
+    ROBINHOOD_PASS = os.getenv("ROBINHOOD_PASS")
+    ROBINHOOD_MFA = os.getenv("ROBINHOOD_MFA")
+
+    if not (ROBINHOOD_USER and ROBINHOOD_PASS and ROBINHOOD_MFA):
+        print("No Robinhood credentials supplied, skipping")
+        return None
+
+    mfa = pyotp.TOTP(ROBINHOOD_MFA).now()
+    rh.login(ROBINHOOD_USER, ROBINHOOD_PASS, mfa_code=mfa)
+
+    holdings_data = {}
+    all_accounts = rh.account.load_account_profile(dataType="results")
+
+    for account in all_accounts:
+        account_number = account["account_number"]
+        positions = rh.get_open_stock_positions(account_number=account_number)
+
+        if not positions:
+            continue
+
+        formatted_positions = []
+        for position in positions:
+            symbol = rh.get_symbol_by_url(position['instrument'])
+            quantity = float(position['quantity'])
+            if ticker and symbol.upper() != ticker.upper():
+                continue
+
+            cost_basis = float(position['average_buy_price']) * quantity
+            quote_data = rh.get_latest_price(symbol)
+            current_price = float(quote_data[0]) if quote_data[0] else 0.0
+            current_value = current_price * quantity
+
+            formatted_positions.append({
+                'symbol': symbol,
+                'quantity': quantity,
+                'cost_basis': cost_basis,
+                'current_value': current_value
+            })
+
+        holdings_data[account_number] = formatted_positions
+
+    return holdings_data
+
+
 async def tradierTrade(side, qty, ticker, price):
     TRADIER_ACCESS_TOKEN = os.getenv("TRADIER_ACCESS_TOKEN")
 
@@ -85,10 +202,7 @@ async def tradierTrade(side, qty, ticker, price):
 
     client = httpx.Client()
 
-    response = client.get(
-        "https://api.tradier.com/v1/user/profile",
-        headers=headers
-    )
+    response = client.get("https://api.tradier.com/v1/user/profile", headers=headers)
 
     if response.status_code != 200:
         print(f"Error: {response.status_code} - {response.text}")
@@ -122,9 +236,7 @@ async def tradierTrade(side, qty, ticker, price):
         )
 
         if response.status_code != 200:
-            print(
-                f"Error placing order on account {account_id}: {response.text}"
-            )
+            print(f"Error placing order on account {account_id}: {response.text}")
         else:
             action_str = "Bought" if side == "buy" else "Sold"
             print(f"{action_str} {ticker} on Tradier account {account_id}")
@@ -146,10 +258,7 @@ async def tradierGetHoldings(ticker=None):
 
     client = httpx.Client()
 
-    response = client.get(
-        "https://api.tradier.com/v1/user/profile",
-        headers=headers
-    )
+    response = client.get("https://api.tradier.com/v1/user/profile", headers=headers)
 
     if response.status_code != 200:
         print(f"Error: {response.status_code} - {response.text}")
@@ -162,13 +271,13 @@ async def tradierGetHoldings(ticker=None):
         return None
 
     holdings_data = {}
-    
+
     # Get holdings for each account
     for account in accounts:
         account_id = account["account_number"]
         response = client.get(
             f"https://api.tradier.com/v1/accounts/{account_id}/positions",
-            headers=headers
+            headers=headers,
         )
 
         if response.status_code != 200:
@@ -176,12 +285,12 @@ async def tradierGetHoldings(ticker=None):
             continue
 
         positions = response.json().get("positions", {}).get("position", [])
-        
+
         # Handle case where positions is None (no positions)
         if not positions:
             holdings_data[account_id] = []
             continue
-        
+
         # Handle case where only one position is returned (comes as dict instead of list)
         if isinstance(positions, dict):
             positions = [positions]
@@ -241,16 +350,51 @@ async def tastyTrade(side, qty, ticker, price):
     }
     if price:
         order_args["price"] = price
-    
+
     order = NewOrder(**order_args)
 
     for account in accounts:
-        placed_order = account.place_order(session, order, dry_run = False)
+        placed_order = account.place_order(session, order, dry_run=False)
         order_status = placed_order.order.status.value
 
         if order_status in ["Received", "Routed"]:
             action_str = "Bought" if side == "buy" else "Sold"
             print(f"{action_str} {ticker} on TastyTrade {account.account_type_name} account {account.account_number}")
+
+
+async def tastyGetHoldings(ticker=None):
+    TASTY_USER = os.getenv("TASTY_USER")
+    TASTY_PASS = os.getenv("TASTY_PASS")
+
+    if not (TASTY_USER or TASTY_PASS):
+        print("No TastyTrade credentials supplied, skipping")
+        return None
+
+    session = Session(TASTY_USER, TASTY_PASS)
+    accounts = Account.get_accounts(session)
+
+    holdings_data = {}
+    for account in accounts:
+        positions = account.get_positions(session)
+        if not positions:
+            continue
+
+        formatted_positions = []
+        for position in positions:
+            # Skip if filtering by ticker and doesn't match
+            if ticker and position.symbol != ticker:
+                continue
+
+            formatted_positions.append({
+                "symbol": position.symbol,
+                "quantity": float(position.quantity),
+                "cost_basis": float(position.average_open_price),
+                "current_value": float(position.close_price) * float(position.quantity)
+            })
+
+        holdings_data[account.account_number] = formatted_positions
+
+    return holdings_data
 
 
 async def publicTrade(side, qty, ticker, price):
@@ -277,6 +421,53 @@ async def publicTrade(side, qty, ticker, price):
     if order["success"] is True:
         action_str = "Bought" if side == "buy" else "Sold"
         print(f"{action_str} {ticker} on Public")
+
+
+async def publicGetHoldings(ticker=None):
+    PUBLIC_USER = os.getenv("PUBLIC_USER")
+    PUBLIC_PASS = os.getenv("PUBLIC_PASS")
+
+    if not (PUBLIC_USER and PUBLIC_PASS):
+        print("No Public credentials supplied, skipping")
+        return None
+
+    try:
+        public = Public(path="./tokens/")
+        public.login(username=PUBLIC_USER, password=PUBLIC_PASS, wait_for_2fa=True)
+
+        positions = public.get_positions()
+        if not positions:
+            return None
+
+        holdings_data = {}
+        formatted_positions = []
+
+        for position in positions:
+            # Skip if filtering by ticker and doesn't match
+            if ticker and position['instrument']['symbol'] != ticker:
+                continue
+
+            # Extract relevant data with safe type conversion
+            symbol = position['instrument']['symbol']
+            quantity = float(position.get('quantity', 0) or 0)
+            current_value = float(position.get('currentValue', 0) or 0)
+            price_per_share = current_value / quantity if quantity else 0
+
+            formatted_positions.append({
+                "symbol": symbol,
+                "quantity": quantity,
+                "cost_basis": price_per_share,
+                "current_value": current_value
+            })
+
+        # Store positions under a default account since Public typically has one account
+        holdings_data["default"] = formatted_positions
+        return holdings_data
+
+    except Exception as e:
+        print(f"Error getting Public holdings: {str(e)}")
+        traceback.print_exc()
+        return None
 
 
 async def firstradeTrade(side, qty, ticker, price=None):
@@ -359,6 +550,64 @@ async def firstradeTrade(side, qty, ticker, price=None):
             print(f"An error occurred while placing order for {ticker} on Firstrade: {e}")
 
 
+async def firstradeGetHoldings(ticker=None):
+    FIRSTRADE_USER = os.getenv("FIRSTRADE_USER")
+    FIRSTRADE_PASS = os.getenv("FIRSTRADE_PASS")
+    FIRSTRADE_PIN = os.getenv("FIRSTRADE_PIN")
+
+    if not (FIRSTRADE_USER and FIRSTRADE_PASS and FIRSTRADE_PIN):
+        print("No Firstrade credentials supplied, skipping")
+        return None
+
+    try:
+        ft_ss = ft_account.FTSession(
+            username=FIRSTRADE_USER,
+            password=FIRSTRADE_PASS,
+            pin=FIRSTRADE_PIN,
+            profile_path="./tokens/"
+        )
+        
+        need_code = ft_ss.login()
+        if need_code:
+            code = input("Please enter the pin sent to your email/phone: ")
+            ft_ss.login_two(code)
+
+        ft_accounts = ft_account.FTAccountData(ft_ss)
+        holdings_data = {}
+
+        for account_number in ft_accounts.account_numbers:
+            positions = ft_accounts.get_positions(account_number)
+            if not positions:
+                continue
+
+            formatted_positions = []
+            for position in positions.get("items", []):
+                symbol = position.get("symbol")
+                quantity = float(position.get("quantity", 0))
+                cost_basis = float(position.get("cost", 0))
+                current_value = float(position.get("market_value", 0))
+
+                if ticker and symbol.upper() != ticker.upper():
+                    continue
+
+                formatted_positions.append({
+                    "symbol": symbol,
+                    "quantity": quantity,
+                    "cost_basis": cost_basis,
+                    "current_value": current_value
+                })
+
+            if formatted_positions:
+                holdings_data[account_number] = formatted_positions
+
+        return holdings_data if holdings_data else None
+
+    except Exception as e:
+        print(f"Error getting Firstrade holdings: {str(e)}")
+        traceback.print_exc()
+        return None
+
+
 async def fennelTrade(side, qty, ticker, price):
     FENNEL_EMAIL = os.getenv("FENNEL_EMAIL")
 
@@ -384,6 +633,50 @@ async def fennelTrade(side, qty, ticker, price):
             print(f"{action_str} {ticker} on Fennel account {account_id}")
         else:
             print(f"Failed to place order for {ticker} on Fennel account {account_id}")
+
+
+async def fennelGetHoldings(ticker=None):
+    FENNEL_EMAIL = os.getenv("FENNEL_EMAIL")
+
+    if not FENNEL_EMAIL:
+        print("No Fennel credentials supplied, skipping")
+        return None
+
+    try:
+        fennel = Fennel(path="./tokens/")
+        fennel.login(email=FENNEL_EMAIL, wait_for_code=True)
+
+        account_ids = fennel.get_account_ids()
+        holdings_data = {}
+
+        for account_id in account_ids:
+            portfolio = fennel.get_stock_holdings(account_id)
+            formatted_positions = []
+
+            for position in portfolio:
+                symbol = position['security']['ticker']
+                quantity = float(position['investment']['ownedShares'])
+                cost_basis = float(position['security']['currentStockPrice']) * quantity
+                current_value = float(position['investment']['marketValue'])
+
+                if ticker and symbol.upper() != ticker.upper():
+                    continue
+
+                formatted_positions.append({
+                    "symbol": symbol,
+                    "quantity": quantity,
+                    "cost_basis": cost_basis,
+                    "current_value": current_value
+                })
+
+            holdings_data[account_id] = formatted_positions
+
+        return holdings_data if holdings_data else None
+
+    except Exception as e:
+        print(f"Error getting Fennel holdings: {str(e)}")
+        traceback.print_exc()
+        return None
 
 
 async def schwabTrade(side, qty, ticker, price):
@@ -430,6 +723,79 @@ async def schwabTrade(side, qty, ticker, price):
             print(f"Error placing order on Schwab account {account['accountNumber']}: {order.json()}")
 
 
+async def schwabGetHoldings(ticker=None):
+    SCHWAB_API_KEY = os.getenv("SCHWAB_API_KEY")
+    SCHWAB_API_SECRET = os.getenv("SCHWAB_API_SECRET")
+    SCHWAB_CALLBACK_URL = os.getenv("SCHWAB_CALLBACK_URL")
+    SCHWAB_TOKEN_PATH = os.getenv("SCHWAB_TOKEN_PATH")
+
+    if not (SCHWAB_API_KEY and SCHWAB_API_SECRET and SCHWAB_CALLBACK_URL and SCHWAB_TOKEN_PATH):
+        print("No Schwab credentials supplied, skipping")
+        return None
+
+    c = auth.easy_client(
+        SCHWAB_API_KEY,
+        SCHWAB_API_SECRET,
+        SCHWAB_CALLBACK_URL,
+        SCHWAB_TOKEN_PATH,
+        interactive=False,
+    )
+
+    accounts_response = c.get_account_numbers()
+    if accounts_response.status_code != 200:
+        print(f"Error getting Schwab accounts: {accounts_response.text}")
+        return None
+
+    accounts = accounts_response.json()
+    holdings_data = {}
+
+    for account in accounts:
+        account_number = account['accountNumber']
+        account_hash = account['hashValue']
+        positions_response = c.get_account(
+            account_hash,
+            fields=c.Account.Fields.POSITIONS
+        )
+
+        if positions_response.status_code != 200:
+            print(f"Error getting positions for account {account_number}: {positions_response.text}")
+            continue
+
+        # Update parsing logic based on the data structure
+        positions_data = positions_response.json()
+        securities_account = positions_data.get('securitiesAccount', {})
+        positions = securities_account.get('positions', [])
+
+        # Handle case where positions is a dict (single position)
+        if isinstance(positions, dict):
+            positions = [positions]
+
+        formatted_positions = []
+        for position in positions:
+            instrument = position.get('instrument', {})
+            symbol = instrument.get('symbol')
+            quantity = float(position.get('longQuantity', 0))
+            average_price = float(position.get('averagePrice', 0))
+            market_value = float(position.get('marketValue', 0))
+
+            if not symbol:
+                continue
+
+            if ticker and symbol.upper() != ticker.upper():
+                continue
+
+            formatted_positions.append({
+                'symbol': symbol,
+                'quantity': quantity,
+                'cost_basis': average_price * quantity,
+                'current_value': market_value
+            })
+
+        holdings_data[account_number] = formatted_positions
+
+    return holdings_data if holdings_data else None
+
+
 async def bbaeTrade(side, qty, ticker, price=None):
     BBAE_USER = os.getenv("BBAE_USER")
     BBAE_PASS = os.getenv("BBAE_PASS")
@@ -439,29 +805,9 @@ async def bbaeTrade(side, qty, ticker, price=None):
         return None
 
     bbae = BBAEAPI(BBAE_USER, BBAE_PASS, creds_path="./tokens/")
-
-    bbae.make_initial_request()
-    login_ticket = bbae.generate_login_ticket_email()
-    if login_ticket.get("Data") is None:
-        raise Exception("Invalid response from generating login ticket")
-    if login_ticket.get("Data").get("needSmsVerifyCode", False):
-        if login_ticket.get("Data").get("needCaptchaCode", False):
-            captcha_image = bbae.request_captcha()
-            captcha_image.save("./BBAEcaptcha.png", format="PNG")
-            captcha_input = input(
-                "CAPTCHA image saved to ./BBAEcaptcha.png. Please open it and type in the code: "
-            )
-            bbae.request_email_code(captcha_input=captcha_input)
-            otp_code = input("Enter BBAE security code: ")
-        else:
-            bbae.request_email_code()
-            otp_code = input("Enter BBAE security code: ")
-        
-        login_ticket = bbae.generate_login_ticket_email(otp_code)
     
-    login_response = bbae.login_with_ticket(login_ticket.get("Data").get("ticket"))
-    if login_response.get("Outcome") != "Success":
-        raise Exception(f"Login failed. Response: {login_response}")
+    if not await _login_broker(bbae, "BBAE"):
+        return None
 
     account_info = bbae.get_account_info()
     account_number = account_info.get("Data").get('accountNumber')
@@ -479,7 +825,7 @@ async def bbaeTrade(side, qty, ticker, price=None):
         if int(available_qty) < qty:
             print(f"Not enough shares to sell. Available: {available_qty}, Requested: {qty}")
             return None
-        
+
         response = bbae.execute_sell(ticker, qty, account_number, price, dry_run=False)
     else:
         print(f"Invalid trade side: {side}")
@@ -501,29 +847,9 @@ async def dspacTrade(side, qty, ticker, price=None):
         return None
 
     dspac = DSPACAPI(DSPAC_USER, DSPAC_PASS, creds_path="./tokens/")
-
-    dspac.make_initial_request()
-    login_ticket = dspac.generate_login_ticket_email()
-    if login_ticket.get("Data") is None:
-        raise Exception("Invalid response from generating login ticket")
-    if login_ticket.get("Data").get("needSmsVerifyCode", False):
-        if login_ticket.get("Data").get("needCaptchaCode", False):
-            captcha_image = dspac.request_captcha()
-            captcha_image.save("./DSPACcaptcha.png", format="PNG")
-            captcha_input = input(
-                "CAPTCHA image saved to ./DSPACcaptcha.png. Please open it and type in the code: "
-            )
-            dspac.request_email_code(captcha_input=captcha_input)
-            otp_code = input("Enter DSPAC security code: ")
-        else:
-            dspac.request_email_code()
-            otp_code = input("Enter DSPAC security code: ")
-        
-        login_ticket = dspac.generate_login_ticket_email(otp_code)
     
-    login_response = dspac.login_with_ticket(login_ticket.get("Data").get("ticket"))
-    if login_response.get("Outcome") != "Success":
-        raise Exception(f"Login failed. Response: {login_response}")
+    if not await _login_broker(dspac, "DSPAC"):
+        return None
 
     account_info = dspac.get_account_info()
     account_number = account_info.get("Data").get('accountNumber')
@@ -541,7 +867,7 @@ async def dspacTrade(side, qty, ticker, price=None):
         if int(available_qty) < qty:
             print(f"Not enough shares to sell. Available: {available_qty}, Requested: {qty}")
             return None
-        
+
         response = dspac.execute_sell(ticker, qty, account_number, price, dry_run=False)
     else:
         print(f"Invalid trade side: {side}")
@@ -552,3 +878,35 @@ async def dspacTrade(side, qty, ticker, price=None):
         print(f"{action_str} {qty} shares of {ticker} on DSPAC.")
     else:
         print(f"Failed to {side} {ticker}: {response.get('Message')}")
+
+
+async def bbaeGetHoldings(ticker=None):
+    BBAE_USER = os.getenv("BBAE_USER")
+    BBAE_PASS = os.getenv("BBAE_PASS")
+
+    if not (BBAE_USER and BBAE_PASS):
+        print("No BBAE credentials supplied, skipping")
+        return None
+
+    bbae = BBAEAPI(BBAE_USER, BBAE_PASS, creds_path="./tokens/")
+    
+    if not await _login_broker(bbae, "BBAE"):
+        return None
+        
+    return await _get_broker_holdings(bbae, "BBAE", ticker)
+
+async def dspacGetHoldings(ticker=None):
+    DSPAC_USER = os.getenv("DSPAC_USER")
+    DSPAC_PASS = os.getenv("DSPAC_PASS")
+
+    if not (DSPAC_USER and DSPAC_PASS):
+        print("No DSPAC credentials supplied, skipping")
+        return None
+
+    dspac = DSPACAPI(DSPAC_USER, DSPAC_PASS, creds_path="./tokens/")
+    
+    if not await _login_broker(dspac, "DSPAC"):
+        return None
+        
+    return await _get_broker_holdings(dspac, "DSPAC", ticker)
+
