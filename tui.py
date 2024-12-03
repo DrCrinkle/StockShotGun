@@ -80,8 +80,8 @@ class HoldingsView:
             for position in positions:
                 text += (
                     f"{position['symbol']}: {position['quantity']} shares\n"
-                    f"  Cost Basis: ${position['cost_basis']}\n"
-                    f"  Current Value: ${position['current_value']}\n\n"
+                    f"  Cost Basis: ${position['cost_basis']:.2f}\n"
+                    f"  Current Value: ${position['current_value']:.2f}\n\n"
                 )
         return text
 

@@ -39,10 +39,12 @@ async def run_cli(args, parser):
                     if not positions:
                         print("No positions found")
                     for pos in positions:
-                        print(f"\nSymbol: {pos['symbol']}")
-                        print(f"Quantity: {pos['quantity']}")
-                        print(f"Cost Basis: ${pos['cost_basis']:.2f}")
-                        print(f"Current Value: ${pos['current_value']:.2f}")
+                        print(
+                            f"\nSymbol: {pos['symbol']}\n"
+                            f"Quantity: {pos['quantity']}\n"
+                            f"Cost Basis: ${pos['cost_basis']:.2f}\n"
+                            f"Current Value: ${pos['current_value']:.2f}"
+                        )
 
         holdings_functions = {
             "Robinhood": robinGetHoldings,
