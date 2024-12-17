@@ -6,7 +6,8 @@ httpx==0.27.2
 tastytrade==8.5
 firstrade==0.0.30
 schwab-py==1.4.0
-robin-stocks==3.2.1
+# robin-stocks==3.2.1
+-e git+https://github.com/jmfernandes/robin_stocks.git@729a0de947d136cb0b5d63db64e2038b236e1d84#egg=robin_stocks
 public-invest-api==1.0.4
 fennel-invest-api==1.1.0
 bbae-invest-api==0.1.3

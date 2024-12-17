@@ -111,7 +111,7 @@ async def robinTrade(side, qty, ticker, price):
         return None
 
     mfa = pyotp.TOTP(ROBINHOOD_MFA).now()
-    rh.login(ROBINHOOD_USER, ROBINHOOD_PASS, mfa_code=mfa)
+    rh.login(ROBINHOOD_USER, ROBINHOOD_PASS, mfa_code=mfa, pickle_path="./tokens/")
 
     all_accounts = rh.account.load_account_profile(dataType="results")
 
@@ -152,7 +152,7 @@ async def robinGetHoldings(ticker=None):
         return None
 
     mfa = pyotp.TOTP(ROBINHOOD_MFA).now()
-    rh.login(ROBINHOOD_USER, ROBINHOOD_PASS, mfa_code=mfa)
+    rh.login(ROBINHOOD_USER, ROBINHOOD_PASS, mfa_code=mfa, pickle_path="./tokens/")
 
     holdings_data = {}
     all_accounts = rh.account.load_account_profile(dataType="results")
