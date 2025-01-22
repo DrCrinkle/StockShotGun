@@ -1,14 +1,13 @@
 urwid==2.6.16
 dump-env==1.5.0
-python-dotenv==1.0.0
+python-dotenv==1.0.1
 pyotp==2.9.0
-httpx==0.27.2
+httpx==0.28.1
 tastytrade==8.5
 firstrade==0.0.30
 schwab-py==1.4.0
-# robin-stocks==3.2.1
--e git+https://github.com/jmfernandes/robin_stocks.git@729a0de947d136cb0b5d63db64e2038b236e1d84#egg=robin_stocks
-public-invest-api==1.0.4
-fennel-invest-api==1.1.0
+robin-stocks==3.3.1
+public-invest-api==1.1.0
+fennel-invest-api==1.1.2
 bbae-invest-api==0.1.3
 dspac-invest-api==0.1.3
