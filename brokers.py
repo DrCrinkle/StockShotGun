@@ -15,7 +15,6 @@ from tastytrade.order import (
     NewOrder,
     OrderTimeInForce,
     OrderType,
-    PriceEffect,
     OrderAction,
 )
 from schwab import auth 
@@ -329,7 +328,7 @@ async def tastyTrade(side, qty, ticker, price):
     TASTY_USER = os.getenv("TASTY_USER")
     TASTY_PASS = os.getenv("TASTY_PASS")
 
-    if not (TASTY_USER or TASTY_PASS):
+    if not (TASTY_USER and TASTY_PASS):
         print("No TastyTrade credentials supplied, skipping")
         return None
 
@@ -341,20 +340,16 @@ async def tastyTrade(side, qty, ticker, price):
     # Build the order
     leg = symbol.build_leg(Decimal(qty), action)
     order_type = OrderType.LIMIT if price else OrderType.MARKET
-    price_effect = PriceEffect.DEBIT if side == "buy" else PriceEffect.CREDIT
-    order_args = {
-        "time_in_force": OrderTimeInForce.DAY,
-        "order_type": order_type,
-        "legs": [leg],
-        "price_effect": price_effect,
-    }
-    if price:
-        order_args["price"] = price
-
-    order = NewOrder(**order_args)
+    price_value = Decimal(f'-{price}') if price and side == "buy" else Decimal(f'{price}') if price else None
+    order = NewOrder(
+        time_in_force=OrderTimeInForce.DAY,
+        order_type=order_type,
+        legs=[leg],
+        price=price_value
+    )
 
     for account in accounts:
-        placed_order = account.place_order(session, order, dry_run=False)
+        placed_order = await account.a_place_order(session, order, dry_run=False)
         order_status = placed_order.order.status.value
 
         if order_status in ["Received", "Routed"]:
@@ -366,7 +361,7 @@ async def tastyGetHoldings(ticker=None):
     TASTY_USER = os.getenv("TASTY_USER")
     TASTY_PASS = os.getenv("TASTY_PASS")
 
-    if not (TASTY_USER or TASTY_PASS):
+    if not (TASTY_USER and TASTY_PASS):
         print("No TastyTrade credentials supplied, skipping")
         return None
 
