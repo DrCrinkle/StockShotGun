@@ -7,7 +7,7 @@ tastytrade==9.7
 firstrade==0.0.30
 schwab-py==1.4.0
 robin-stocks==3.3.1
-public-invest-api==1.1.0
-fennel-invest-api==1.1.2
+public-invest-api==1.2.3
+fennel-invest-api==1.2.0
 bbae-invest-api==0.1.3
 dspac-invest-api==0.1.3
