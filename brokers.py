@@ -333,8 +333,8 @@ async def tastyTrade(side, qty, ticker, price):
         return None
 
     session = Session(TASTY_USER, TASTY_PASS)
-    accounts = Account.get_accounts(session)
-    symbol = Equity.get_equity(session, ticker)
+    accounts = Account.get(session)
+    symbol = Equity.get(session, ticker)
     action = OrderAction.BUY_TO_OPEN if side == "buy" else OrderAction.SELL_TO_CLOSE
 
     # Build the order
@@ -366,7 +366,7 @@ async def tastyGetHoldings(ticker=None):
         return None
 
     session = Session(TASTY_USER, TASTY_PASS)
-    accounts = Account.get_accounts(session)
+    accounts = Account.get(session)
 
     holdings_data = {}
     for account in accounts:
