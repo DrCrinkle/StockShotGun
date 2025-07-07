@@ -468,12 +468,12 @@ async def publicGetHoldings(ticker=None):
 async def firstradeTrade(side, qty, ticker, price=None):
     FIRSTRADE_USER = os.getenv("FIRSTRADE_USER")
     FIRSTRADE_PASS = os.getenv("FIRSTRADE_PASS")
-    FIRSTRADE_PIN = os.getenv("FIRSTRADE_PIN")
+    FIRSTRADE_MFA = os.getenv("FIRSTRADE_MFA")
 
     ft_ss = ft_account.FTSession(
         username=FIRSTRADE_USER,
         password=FIRSTRADE_PASS,
-        pin=FIRSTRADE_PIN,
+        mfa_secret=FIRSTRADE_MFA,
         profile_path="./tokens/"
     )
     need_code = ft_ss.login()
@@ -548,9 +548,9 @@ async def firstradeTrade(side, qty, ticker, price=None):
 async def firstradeGetHoldings(ticker=None):
     FIRSTRADE_USER = os.getenv("FIRSTRADE_USER")
     FIRSTRADE_PASS = os.getenv("FIRSTRADE_PASS")
-    FIRSTRADE_PIN = os.getenv("FIRSTRADE_PIN")
+    FIRSTRADE_MFA = os.getenv("FIRSTRADE_MFA")
 
-    if not (FIRSTRADE_USER and FIRSTRADE_PASS and FIRSTRADE_PIN):
+    if not (FIRSTRADE_USER and FIRSTRADE_PASS and FIRSTRADE_MFA):
         print("No Firstrade credentials supplied, skipping")
         return None
 
@@ -558,7 +558,7 @@ async def firstradeGetHoldings(ticker=None):
         ft_ss = ft_account.FTSession(
             username=FIRSTRADE_USER,
             password=FIRSTRADE_PASS,
-            pin=FIRSTRADE_PIN,
+            mfa_secret=FIRSTRADE_MFA,
             profile_path="./tokens/"
         )
         
