@@ -1,6 +1,5 @@
 import os
 from dotenv import load_dotenv
-from dump_env import dumper
 
 load_dotenv("./.env")
 

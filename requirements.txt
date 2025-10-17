@@ -1,5 +1,4 @@
 urwid==3.0.2
-dump-env==1.6.0
 python-dotenv==1.1.1
 pyotp==2.9.0
 httpx==0.28.1
