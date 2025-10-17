@@ -1,45 +1,6 @@
 """Order processing and execution for the TUI."""
 
 import asyncio
-from .config import broker_thread_pool, thread_pool_stats
-
-
-def run_broker_trade(trade_func, *args):
-    """
-    Execute a broker trade function efficiently.
-    Handles both sync and async broker functions.
-    """
-    global thread_pool_stats
-    thread_pool_stats["tasks_submitted"] += 1
-
-    try:
-        if asyncio.iscoroutinefunction(trade_func):
-            # For async functions, run in new event loop
-            result = asyncio.run(trade_func(*args))
-        else:
-            # For sync functions, call directly
-            result = trade_func(*args)
-
-        thread_pool_stats["tasks_completed"] += 1
-        return result
-    except Exception as e:
-        thread_pool_stats["tasks_failed"] += 1
-        # Ensure exceptions are properly propagated
-        raise e
-
-
-def cleanup_thread_pool():
-    """Properly shutdown the broker thread pool."""
-    global broker_thread_pool
-    if broker_thread_pool:
-        try:
-            # Wait for current tasks to complete (with timeout)
-            broker_thread_pool.shutdown(wait=True, timeout=5.0)
-        except Exception:
-            # Force shutdown if timeout exceeded
-            broker_thread_pool.shutdown(wait=False)
-        finally:
-            broker_thread_pool = None
 
 
 class OrderBatchProcessor:
@@ -82,22 +43,21 @@ class OrderBatchProcessor:
             broker_status = {"successful": [], "failed": []}
             broker_tasks = {}
 
-            # Create concurrent tasks for this order
+            # Create concurrent async tasks for this order
             for broker in order["selected_brokers"]:
                 trade_function = trade_functions.get(broker)
                 if not trade_function:
                     add_response_fn(f"⚠️ {broker}: No trade function found")
                     broker_status["failed"].append(f"{broker} (no function)")
                 else:
-                    # Use thread pool for efficient execution
-                    broker_tasks[broker] = asyncio.get_event_loop().run_in_executor(
-                        broker_thread_pool,
-                        run_broker_trade,
-                        trade_function,
-                        order["action"],
-                        order["quantity"],
-                        order["ticker"],
-                        order["price"],
+                    # Execute broker functions as native async tasks (all broker functions are async)
+                    broker_tasks[broker] = asyncio.create_task(
+                        trade_function(
+                            order["action"],
+                            order["quantity"],
+                            order["ticker"],
+                            order["price"],
+                        )
                     )
 
             # Execute broker tasks concurrently
