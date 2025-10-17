@@ -1,7 +1,7 @@
 """Tradier broker integration."""
 
 import os
-import httpx
+from .base import http_client
 
 
 async def tradierTrade(side, qty, ticker, price):
@@ -17,9 +17,7 @@ async def tradierTrade(side, qty, ticker, price):
         "Accept": "application/json",
     }
 
-    client = httpx.Client()
-
-    response = client.get("https://api.tradier.com/v1/user/profile", headers=headers)
+    response = await http_client.get("https://api.tradier.com/v1/user/profile", headers=headers)
 
     if response.status_code != 200:
         print(f"Error: {response.status_code} - {response.text}")
@@ -38,7 +36,7 @@ async def tradierTrade(side, qty, ticker, price):
     price_data = {"price": f"{price}"} if price else {}
 
     for account_id in TRADIER_ACCOUNT_ID:
-        response = client.post(
+        response = await http_client.post(
             f"https://api.tradier.com/v1/accounts/{account_id}/orders",
             data={
                 "class": "equity",
@@ -58,8 +56,6 @@ async def tradierTrade(side, qty, ticker, price):
             action_str = "Bought" if side == "buy" else "Sold"
             print(f"{action_str} {ticker} on Tradier account {account_id}")
 
-    client.close()
-
 
 async def tradierGetHoldings(ticker=None):
     """Get holdings from Tradier."""
@@ -74,9 +70,7 @@ async def tradierGetHoldings(ticker=None):
         "Accept": "application/json",
     }
 
-    client = httpx.Client()
-
-    response = client.get("https://api.tradier.com/v1/user/profile", headers=headers)
+    response = await http_client.get("https://api.tradier.com/v1/user/profile", headers=headers)
 
     if response.status_code != 200:
         print(f"Error: {response.status_code} - {response.text}")
@@ -93,7 +87,7 @@ async def tradierGetHoldings(ticker=None):
     # Get holdings for each account
     for account in accounts:
         account_id = account["account_number"]
-        response = client.get(
+        response = await http_client.get(
             f"https://api.tradier.com/v1/accounts/{account_id}/positions",
             headers=headers,
         )
@@ -120,7 +114,7 @@ async def tradierGetHoldings(ticker=None):
         # Get current quotes for all symbols
         symbols = [pos.get("symbol") for pos in positions]
         if symbols:
-            quotes_response = client.get(
+            quotes_response = await http_client.get(
                 "https://api.tradier.com/v1/markets/quotes",
                 params={"symbols": ",".join(symbols)},
                 headers=headers
@@ -139,7 +133,6 @@ async def tradierGetHoldings(ticker=None):
             "current_value": float(pos.get("quantity", 0)) * quotes_dict.get(pos.get("symbol"), 0)
         } for pos in positions]
 
-    client.close()
     return holdings_data
 
 

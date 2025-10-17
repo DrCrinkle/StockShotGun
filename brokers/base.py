@@ -132,7 +132,7 @@ class BrokerConfig:
         },
         "Fennel": {
             "session_key": "fennel",
-            "env_vars": ["FENNEL_EMAIL"],
+            "env_vars": ["FENNEL_ACCESS_TOKEN"],
             "requires_mfa": False,
             "enabled": True
         },

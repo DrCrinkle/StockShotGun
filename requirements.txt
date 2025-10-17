@@ -6,7 +6,6 @@ tastytrade==10.2.3
 firstrade==0.0.33
 schwab-py==1.4.0
 robin-stocks==3.4.0
-fennel-invest-api==1.2.0
 bbae-invest-api==0.1.3
 dspac-invest-api==0.1.3
 nodriver==0.37

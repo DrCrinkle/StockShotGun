@@ -62,7 +62,7 @@ def setup():
         "TastyTrade": [("TASTY_USER", "Username"), ("TASTY_PASS", "Password")],
         "Tradier": [("TRADIER_ACCESS_TOKEN", "Access Token")],
         "Public": [("PUBLIC_API_SECRET", "API Secret Key")],
-        "Fennel": [("FENNEL_EMAIL", "Email")],
+        "Fennel": [("FENNEL_ACCESS_TOKEN", "Personal Access Token (from Fennel Dashboard)")],
     }
 
     # Check existing credentials first
