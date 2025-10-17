@@ -1,89 +1,16 @@
+"""Main TUI application with run_tui() function."""
+
+import sys
 import urwid
 import asyncio
 import traceback
-from brokers import (
-    robinTrade,
-    tradierTrade,
-    tastyTrade,
-    publicTrade,
-    firstradeTrade,
-    fennelTrade,
-    schwabTrade,
-    bbaeTrade,
-    dspacTrade,
-    tradierGetHoldings,
-    bbaeGetHoldings,
-    dspacGetHoldings,
-    publicGetHoldings,
-    tastyGetHoldings,
-    robinGetHoldings,
-    schwabGetHoldings,
-    fennelGetHoldings,
-    firstradeGetHoldings,
-)
 
-BROKERS = [
-    "Robinhood",
-    "Tradier",
-    "TastyTrade",
-    "Public",
-    "Firstrade",
-    "Fennel",
-    "Schwab",
-    "BBAE",
-    "DSPAC",
-]
-
-
-class EditWithCallback(urwid.Edit):
-    def __init__(self, *args, on_change=None, **kwargs):
-        self._on_change = on_change
-        super().__init__(*args, **kwargs)
-
-    def keypress(self, size, key):
-        key_result = super().keypress(size, key)
-        if self._on_change:
-            self._on_change(self, self.edit_text)
-        return key_result
-
-
-class AsyncioEventLoop(urwid.AsyncioEventLoop):
-    def run(self):
-        self._loop.run_forever()
-
-
-class HoldingsView:
-    def __init__(self, holdings_data, broker_name):
-        self.holdings_data = holdings_data
-        self.broker_name = broker_name
-        self.account_ids = list(holdings_data.keys())
-        self.current_index = 0
-
-    def get_current_account(self):
-        return self.account_ids[self.current_index]
-
-    def next_account(self):
-        self.current_index = (self.current_index + 1) % len(self.account_ids)
-
-    def prev_account(self):
-        self.current_index = (self.current_index - 1) % len(self.account_ids)
-
-    def get_current_holdings_text(self):
-        account_id = self.get_current_account()
-        positions = self.holdings_data[account_id]
-
-        text = f"{self.broker_name} Holdings - Account {account_id} ({self.current_index + 1}/{len(self.account_ids)}):\n\n"
-
-        if not positions:
-            text += "No positions\n"
-        else:
-            for position in positions:
-                text += (
-                    f"{position['symbol']}: {position['quantity']} shares\n"
-                    f"  Cost Basis: ${position['cost_basis']:.2f}\n"
-                    f"  Current Value: ${position['current_value']:.2f}\n\n"
-                )
-        return text
+from .config import BROKERS
+from .widgets import EditWithCallback, ResponseBox
+from .holdings_view import HoldingsView
+from .broker_functions import BROKER_CONFIG
+from .response_handler import ResponseWriter
+from .input_handler import tui_input_handler, setup_tui_input_interception, restore_original_input
 
 
 def run_tui():
@@ -161,6 +88,7 @@ def run_tui():
                 ),
             )
         )
+        body.append(urwid.Button("View Queued Orders", on_press=show_queued_orders))
         body.append(urwid.Button("Exit", on_press=exit_program))
 
         return urwid.ListBox(urwid.SimpleFocusListWalker(body))
@@ -197,14 +125,14 @@ def run_tui():
 
     def add_order(button):
         if not current_order["selected_brokers"]:
-            response.set_text("No brokers selected!")
+            response_box.add_response("No brokers selected!")
             return
         if not all([current_order["ticker"], current_order["quantity"]]):
-            response.set_text("Please fill in all order details (Ticker, Quantity)!")
+            response_box.add_response("Please fill in all order details (Ticker, Quantity)!")
             return
 
         orders.append(current_order.copy())
-        response.set_text(f"Order added. Total orders: {len(orders)}")
+        response_box.add_response(f"Order added. Total orders: {len(orders)}")
         reset_current_order()
         update_order_summary()
 
@@ -243,28 +171,17 @@ def run_tui():
 
     async def submit_all_orders(button):
         if not orders:
-            response.set_text("No orders to submit!")
+            response_box.add_response("No orders to submit!")
             return
 
-        response.set_text(f"Submitting {len(orders)} orders...")
-        
-        trade_functions = {
-            "Robinhood": robinTrade,
-            "Tradier": tradierTrade,
-            "TastyTrade": tastyTrade,
-            "Public": publicTrade,
-            "Firstrade": firstradeTrade,
-            "Fennel": fennelTrade,
-            "Schwab": schwabTrade,
-            "BBAE": bbaeTrade,
-            "DSPAC": dspacTrade,
-        }
+        response_box.add_response(f"Submitting {len(orders)} orders...")
 
         for idx, order in enumerate(orders, 1):
-            print(f"Submitting order {idx}: {order}")
+            response_box.add_response(f"Submitting order {idx}: {order}")
             for broker in order["selected_brokers"]:
-                trade_function = trade_functions.get(broker)
-                print(f"Submitting to {broker}")
+                broker_config = BROKER_CONFIG.get(broker)
+                trade_function = broker_config.get("trade") if broker_config else None
+                response_box.add_response(f"Submitting to {broker}")
                 if trade_function:
                     try:
                         await trade_function(
@@ -273,46 +190,39 @@ def run_tui():
                             order["ticker"],
                             order["price"],
                         )
+                        response_box.add_response(f"✓ Successfully submitted to {broker}")
                     except Exception as e:
-                        print(f"Error submitting order to {broker}: {str(e)}")
+                        error_msg = f"✗ Error submitting order to {broker}: {str(e)}"
+                        response_box.add_response(error_msg)
                         traceback.print_exc()
 
-        response.set_text("All orders processed. Check console for details.")
+        response_box.add_response("All orders processed!")
         orders.clear()
         update_order_summary()
 
     async def show_holdings_screen(button):
         selected_brokers = current_order["selected_brokers"]
         if not selected_brokers:
-            response.set_text("Please select a broker first!")
+            response_box.add_response("Please select a broker first!")
             return
-        
-        broker = selected_brokers[0]  # Get the first selected broker
-        holdings_functions = {
-            "Robinhood": robinGetHoldings,
-            "Tradier": tradierGetHoldings,
-            "BBAE": bbaeGetHoldings,
-            "DSPAC": dspacGetHoldings,
-            "Public": publicGetHoldings,
-            "TastyTrade": tastyGetHoldings,
-            "Schwab": schwabGetHoldings,
-            "Fennel": fennelGetHoldings,
-            "Firstrade": firstradeGetHoldings,
-        }
 
-        if broker not in holdings_functions:
-            response.set_text(f"Holdings view not supported for {broker}!")
+        broker = selected_brokers[0]  # Get the first selected broker
+        broker_config = BROKER_CONFIG.get(broker)
+        
+        if not broker_config or "holdings" not in broker_config:
+            response_box.add_response(f"Holdings view not supported for {broker}!")
             return
 
         try:
-            response.set_text(f"Fetching {broker} holdings...")
+            response_box.add_response(f"Fetching {broker} holdings...")
             loop.draw_screen()
 
             ticker_filter = current_order.get("ticker")
-            holdings = await holdings_functions[broker](ticker_filter)
+            holdings_function = broker_config["holdings"]
+            holdings = await holdings_function(ticker_filter)
 
             if not holdings:
-                response.set_text(f"No holdings found or error accessing {broker} account")
+                response_box.add_response(f"No holdings found or error accessing {broker} account")
                 return
 
             holdings_view, key_handler = create_holdings_screen(holdings, broker)
@@ -328,13 +238,94 @@ def run_tui():
             loop.draw_screen()
 
         except Exception as e:
-            response.set_text(f"Error checking holdings: {str(e)}")
+            response_box.add_response(f"Error checking holdings: {str(e)}")
             loop.draw_screen()
+
+    def show_queued_orders(button):
+        """Display all queued orders."""
+        if not orders:
+            response_box.add_response("No orders queued!")
+            return
+
+        queued_orders_view, key_handler = create_queued_orders_screen()
+        frame.body = queued_orders_view
+
+        original_unhandled_input = loop.unhandled_input
+
+        def handle_input(key):
+            if not key_handler(key) and original_unhandled_input:
+                original_unhandled_input(key)
+
+        loop.unhandled_input = handle_input
+        loop.draw_screen()
+
+    def create_queued_orders_screen():
+        """Create the queued orders view screen."""
+        body = [
+            urwid.Text(("reversed", f"Queued Orders ({len(orders)} total)")),
+            urwid.Divider(),
+        ]
+
+        for idx, order in enumerate(orders, 1):
+            order_type = order["action"].upper()
+            ticker = order["ticker"]
+            quantity = order["quantity"]
+            price = f"${order['price']}" if order["price"] else "Market"
+            brokers = ", ".join(order["selected_brokers"])
+            
+            order_text = [
+                urwid.Text(("reversed", f"Order #{idx}")),
+                urwid.Text(f"  Action: {order_type}"),
+                urwid.Text(f"  Ticker: {ticker}"),
+                urwid.Text(f"  Quantity: {quantity}"),
+                urwid.Text(f"  Price: {price}"),
+                urwid.Text(f"  Brokers: {brokers}"),
+                urwid.Divider(),
+            ]
+            body.extend(order_text)
+
+        def handle_key(key):
+            match key:
+                case "esc" | "q" | "b":
+                    show_main_screen()
+                    return True
+                case "c":  # Clear all orders
+                    if orders:
+                        orders.clear()
+                        update_order_summary()
+                        show_main_screen()
+                        response_box.add_response("All orders cleared!")
+                    return True
+                case _:
+                    return False
+
+        body.extend([
+            urwid.AttrMap(
+                urwid.Button("Clear All Orders", on_press=lambda btn: handle_key("c")),
+                None,
+                focus_map="reversed",
+            ),
+            urwid.Divider(),
+            urwid.AttrMap(
+                urwid.Button("Back to Main Menu", on_press=show_main_screen),
+                None,
+                focus_map="reversed",
+            ),
+        ])
+
+        listbox = urwid.ListBox(urwid.SimpleFocusListWalker(body))
+        return (
+            urwid.Frame(
+                listbox,
+                footer=urwid.Text("ESC/Q/B: Back | C: Clear All Orders"),
+                focus_part="body",
+            ),
+            handle_key,
+        )
 
     def create_holdings_screen(holdings_data, broker_name):
         holdings_view = HoldingsView(holdings_data, broker_name)
         text_widget = urwid.Text("")
-        response.set_text("")
 
         def update_display():
             text_widget.set_text(holdings_view.get_current_holdings_text())
@@ -392,7 +383,8 @@ def run_tui():
         loop.draw_screen()
 
     # Initialize the UI
-    response = urwid.Text("Add orders and submit them all at once!")
+    response_box = ResponseBox(max_responses=50, height=8)
+    instruction_text = urwid.Text("Add orders and submit them all at once!")
     order_summary = urwid.Text("")
     main = create_main_menu()
 
@@ -400,12 +392,21 @@ def run_tui():
         body=urwid.Padding(main, left=2, right=2),
         footer=urwid.Pile(
             [
-                urwid.Padding(response, left=2, right=2),
+                response_box,
+                urwid.Divider(),
+                urwid.Padding(instruction_text, left=2, right=2),
                 urwid.Divider(),
                 urwid.Padding(order_summary, left=2, right=2),
             ]
         ),
     )
+
+    # Redirect stdout/stderr to response box
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    response_writer = ResponseWriter(response_box.add_response)
+    sys.stdout = response_writer
+    sys.stderr = response_writer
 
     # Create the main loop
     event_loop = asyncio.new_event_loop()
@@ -418,8 +419,17 @@ def run_tui():
         unhandled_input=default_input_handler,
     )
 
+    # Set up input handler for the TUI
+    tui_input_handler.set_loop(loop)
+    setup_tui_input_interception()
+
     try:
         loop.run()
     finally:
+        # Restore original input function
+        restore_original_input()
+        
+        # Restore original stdout/stderr
+        sys.stdout = original_stdout
+        sys.stderr = original_stderr
         event_loop.close()
-

@@ -1,0 +1,80 @@
+"""BBAE broker integration."""
+
+import os
+from bbae_invest_api import BBAEAPI
+from .base import _login_broker, _get_broker_holdings
+
+
+async def bbaeTrade(side, qty, ticker, price):
+    """Execute a trade on BBAE."""
+    from .session_manager import session_manager
+    bbae = await session_manager.get_session("BBAE")
+    if not bbae:
+        print("No BBAE credentials supplied, skipping")
+        return None
+
+    account_info = bbae.get_account_info()
+    account_number = account_info.get("Data").get('accountNumber')
+
+    if not account_number:
+        print("Failed to retrieve account number from BBAE.")
+        return None
+
+    if side == 'buy':
+        response = bbae.execute_buy(ticker, qty, account_number, dry_run=False)
+    elif side == 'sell':
+        holdings_response = bbae.check_stock_holdings(ticker, account_number)
+        available_qty = holdings_response.get("Data").get('enableAmount', 0)
+
+        if int(available_qty) < qty:
+            print(f"Not enough shares to sell. Available: {available_qty}, Requested: {qty}")
+            return None
+
+        response = bbae.execute_sell(ticker, qty, account_number, price, dry_run=False)
+    else:
+        print(f"Invalid trade side: {side}")
+        return None
+
+    if response.get("Outcome") == "Success":
+        action_str = "Bought" if side == "buy" else "Sold"
+        print(f"{action_str} {qty} shares of {ticker} on BBAE.")
+    else:
+        print(f"Failed to {side} {ticker}: {response.get('Message')}")
+
+
+async def bbaeGetHoldings(ticker=None):
+    """Get holdings from BBAE."""
+    from .session_manager import session_manager
+    bbae = await session_manager.get_session("BBAE")
+    if not bbae:
+        print("No BBAE credentials supplied, skipping")
+        return None
+
+    return await _get_broker_holdings(bbae, "BBAE", ticker)
+
+
+async def get_bbae_session(session_manager):
+    """Get or create BBAE session."""
+    if "bbae" not in session_manager._initialized:
+        BBAE_USER = os.getenv("BBAE_USER")
+        BBAE_PASS = os.getenv("BBAE_PASS")
+
+        if not (BBAE_USER and BBAE_PASS):
+            session_manager.sessions["bbae"] = None
+            session_manager._initialized.add("bbae")
+            return None
+
+        try:
+            bbae = BBAEAPI(BBAE_USER, BBAE_PASS, creds_path="./tokens/")
+            if await _login_broker(bbae, "BBAE"):
+                session_manager.sessions["bbae"] = bbae
+                print("✓ BBAE session initialized")
+            else:
+                session_manager.sessions["bbae"] = None
+        except Exception as e:
+            print(f"✗ Failed to initialize BBAE session: {e}")
+            session_manager.sessions["bbae"] = None
+
+        session_manager._initialized.add("bbae")
+
+    return session_manager.sessions.get("bbae")

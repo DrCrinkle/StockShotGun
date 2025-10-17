@@ -1,0 +1,104 @@
+"""
+TUI package for StockShotGun.
+
+This package contains modular components for the terminal user interface.
+"""
+
+# Export all components for easy importing
+from .config import (
+    MAX_RESPONSE_HISTORY,
+    RESPONSE_BOX_HEIGHT,
+    MODAL_WIDTH,
+    MODAL_HEIGHT,
+    REDRAW_DELAY,
+    BROKER_CONFIG,
+    BROKERS,
+    broker_thread_pool,
+    thread_pool_stats,
+    PALETTE,
+)
+
+from .widgets import (
+    EditWithCallback,
+    AsyncioEventLoop,
+)
+
+from .input_handler import (
+    TUIInputHandler,
+    TUICompatibleInput,
+    tui_input_handler,
+    tui_compatible_input,
+    setup_tui_input_interception,
+    restore_original_input,
+)
+
+from .response_handler import (
+    ResponseWriter,
+    MemoryEfficientResponseStorage,
+)
+
+from .session_cache import (
+    SessionStatusCache,
+    session_cache,
+)
+
+from .holdings_view import (
+    HoldingsView,
+)
+
+from .order_processor import (
+    OrderBatchProcessor,
+    order_processor,
+    run_broker_trade,
+    cleanup_thread_pool,
+)
+
+from .broker_functions import (
+    BROKER_CONFIG as BROKER_FUNC_CONFIG,
+    get_broker_function,
+)
+
+# Import run_tui from app module
+from .app import run_tui
+
+__all__ = [
+    # Config
+    "MAX_RESPONSE_HISTORY",
+    "RESPONSE_BOX_HEIGHT",
+    "MODAL_WIDTH",
+    "MODAL_HEIGHT",
+    "REDRAW_DELAY",
+    "BROKER_CONFIG",
+    "BROKERS",
+    "broker_thread_pool",
+    "thread_pool_stats",
+    "PALETTE",
+    # Widgets
+    "EditWithCallback",
+    "AsyncioEventLoop",
+    # Input handling
+    "TUIInputHandler",
+    "TUICompatibleInput",
+    "tui_input_handler",
+    "tui_compatible_input",
+    "setup_tui_input_interception",
+    "restore_original_input",
+    # Response handling
+    "ResponseWriter",
+    "MemoryEfficientResponseStorage",
+    # Session cache
+    "SessionStatusCache",
+    "session_cache",
+    # Holdings view
+    "HoldingsView",
+    # Order processor
+    "OrderBatchProcessor",
+    "order_processor",
+    "run_broker_trade",
+    "cleanup_thread_pool",
+    # Broker functions
+    "BROKER_FUNC_CONFIG",
+    "get_broker_function",
+    # Main app
+    "run_tui",
+]
