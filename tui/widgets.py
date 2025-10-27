@@ -25,41 +25,38 @@ class ResponseBox(urwid.WidgetWrap):
         self.max_responses = max_responses
         self.responses = []
         self.height = height
-        
+
         # Create the list walker and listbox
         self.walker = urwid.SimpleFocusListWalker([])
         self.listbox = urwid.ListBox(self.walker)
-        
+
         # Wrap in a LineBox for visual separation
         self.box = urwid.LineBox(self.listbox, title="Response Log")
-        
+
         # Set fixed height
         self.pile = urwid.BoxAdapter(self.box, height=self.height)
-        
+
         super().__init__(self.pile)
 
     def add_response(self, message, style=None, force_redraw=False):
         """Add a new response message with timestamp."""
         timestamp = datetime.now().strftime("%H:%M:%S")
-        
+
         # Create the message text with timestamp
         formatted_msg = f"[{timestamp}] {message}"
-        
+
         # Apply style if provided
-        if style:
-            text_widget = urwid.Text((style, formatted_msg))
-        else:
-            text_widget = urwid.Text(formatted_msg)
-        
+        text_widget = urwid.Text((style, formatted_msg)) if style else urwid.Text(formatted_msg)
+
         # Add to walker
         self.walker.append(text_widget)
         self.responses.append(formatted_msg)
-        
+
         # Keep only the last max_responses
         if len(self.walker) > self.max_responses:
             self.walker.pop(0)
             self.responses.pop(0)
-        
+
         # Auto-scroll to bottom
         if len(self.walker) > 0:
             self.listbox.set_focus(len(self.walker) - 1)

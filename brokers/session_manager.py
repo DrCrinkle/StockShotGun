@@ -55,26 +55,26 @@ class BrokerSessionManager:
     async def get_session(self, broker_name: str):
         """
         Universal session getter for any broker.
-        
+
         Args:
             broker_name: Display name of the broker (e.g., "Robinhood", "TastyTrade")
-            
+
         Returns:
             Session object for the broker, or None if broker not found
         """
         if broker_name not in self.BROKER_MODULES:
             print(f"⚠️  Unknown broker: {broker_name}")
             return None
-        
+
         # Get module and function name from mapping
         module, func_name = self.BROKER_MODULES[broker_name]
-        
+
         # Get the session getter function from the module
         session_getter = getattr(module, func_name, None)
         if not session_getter:
             print(f"⚠️  Session getter not found for {broker_name}")
             return None
-        
+
         # Call the session getter function with self as parameter
         return await session_getter(self)
 
@@ -116,7 +116,7 @@ class BrokerSessionManager:
         # Initialize all brokers dynamically using the mapping
         all_broker_names = list(self.BROKER_MODULES.keys())
         tasks = [self.get_session(broker_name) for broker_name in all_broker_names]
-        
+
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 

@@ -43,11 +43,6 @@ from .holdings_view import (
     HoldingsView,
 )
 
-from .order_processor import (
-    OrderBatchProcessor,
-    order_processor,
-)
-
 from .broker_functions import (
     BROKER_CONFIG as BROKER_FUNC_CONFIG,
     get_broker_function,
@@ -83,9 +78,6 @@ __all__ = [
     "session_cache",
     # Holdings view
     "HoldingsView",
-    # Order processor
-    "OrderBatchProcessor",
-    "order_processor",
     # Broker functions
     "BROKER_FUNC_CONFIG",
     "get_broker_function",

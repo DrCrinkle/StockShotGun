@@ -208,7 +208,7 @@ def run_tui():
 
         broker = selected_brokers[0]  # Get the first selected broker
         broker_config = BROKER_CONFIG.get(broker)
-        
+
         if not broker_config or "holdings" not in broker_config:
             response_box.add_response(f"Holdings view not supported for {broker}!")
             return
@@ -272,7 +272,7 @@ def run_tui():
             quantity = order["quantity"]
             price = f"${order['price']}" if order["price"] else "Market"
             brokers = ", ".join(order["selected_brokers"])
-            
+
             order_text = [
                 urwid.Text(("reversed", f"Order #{idx}")),
                 urwid.Text(f"  Action: {order_type}"),
@@ -428,7 +428,7 @@ def run_tui():
     finally:
         # Restore original input function
         restore_original_input()
-        
+
         # Restore original stdout/stderr
         sys.stdout = original_stdout
         sys.stderr = original_stderr

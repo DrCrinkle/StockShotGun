@@ -10,7 +10,7 @@ def validate_credentials(service, credentials):
         value = os.getenv(env_var) or os.getenv(f"SSG_{env_var}")
         if not value:
             missing.append(prompt)
-    
+
     if missing:
         print(f"⚠️  Warning: Missing {service} credentials: {', '.join(missing)}")
         return False
@@ -74,7 +74,7 @@ def setup():
             print(f"✓ {service}: Credentials found")
         else:
             print(f"✗ {service}: Credentials missing")
-    
+
     if existing_services:
         print(f"\nExisting credentials found for: {', '.join(existing_services)}")
         skip_existing = input("Skip setup for existing services? (y/N): ").lower().startswith('y')
@@ -86,7 +86,7 @@ def setup():
         if skip_existing and validate_credentials(service, credentials):
             print(f"Skipping {service} (credentials already exist)")
             continue
-            
+
         print(f"{'-' * 10}{service}{'-' * 10}")
         for env_var, prompt in credentials:
             # Check for existing value first
@@ -96,13 +96,13 @@ def setup():
                 value = input(f"New {service} {prompt} (or ENTER to keep existing): ") or existing_value
             else:
                 value = input(f"{service} {prompt}: ") or ""
-            
+
             # Store directly without SSG_ prefix to avoid duplication
             if value:
                 os.environ[env_var] = value
 
     print(f"{'-' * 5} Saving credentials to .env {'-' * 5}")
-    
+
     # Save credentials directly without SSG_ prefix
     with open(".env", 'w') as f:
         for service, credentials in brokers.items():
@@ -112,14 +112,14 @@ def setup():
                     f.write(f'{env_var}={value}\n')
 
     print("Credentials saved to .env")
-    
+
     # Validate final configuration
     print("\nValidating final configuration...")
     final_validation = []
     for service, credentials in brokers.items():
         if validate_credentials(service, credentials):
             final_validation.append(service)
-    
+
     if final_validation:
         print(f"✅ Configuration complete! Services ready: {', '.join(final_validation)}")
     else:

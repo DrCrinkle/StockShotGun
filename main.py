@@ -4,6 +4,7 @@ from setup import setup
 from tui import run_tui
 from brokers import session_manager, BrokerConfig
 from tui.broker_functions import BROKER_CONFIG as BROKER_FUNCTIONS
+from order_processor import order_processor
 
 async def print_holdings(holdings):
     """Print holdings in a formatted way."""
@@ -34,7 +35,7 @@ async def run_cli(args, parser):
         if broker not in BROKER_FUNCTIONS:
             parser.error("Invalid broker specified for holdings")
             return
-            
+
         # Initialize only the selected broker
         await session_manager.initialize_selected_sessions([broker])
         holdings_func = BROKER_FUNCTIONS[broker]["holdings"]
@@ -60,26 +61,46 @@ async def run_cli(args, parser):
         for broker_name in BrokerConfig.get_all_brokers():
             if broker_name in BROKER_FUNCTIONS:
                 brokers_to_use.append(broker_name)
-        
+
         if not brokers_to_use:
             parser.error("No broker credentials configured")
             return
-    
+
     # Initialize only the brokers we're going to use
     await session_manager.initialize_selected_sessions(brokers_to_use)
 
-    # Create trading tasks for the selected brokers
-    trading_tasks = []
-    for broker_name in brokers_to_use:
-        trade_func = BROKER_FUNCTIONS[broker_name]["trade"]
-        task = asyncio.create_task(
-            trade_func(args.action, args.quantity, args.ticker, args.price)
-        )
-        trading_tasks.append(task)
-    
-    # Execute all trading tasks concurrently
-    if trading_tasks:
-        await asyncio.gather(*trading_tasks, return_exceptions=True)
+    # Build trade functions dict for order processor
+    trade_functions = {
+        broker_name: BROKER_FUNCTIONS[broker_name]["trade"]
+        for broker_name in brokers_to_use
+        if broker_name in BROKER_FUNCTIONS and "trade" in BROKER_FUNCTIONS[broker_name]
+    }
+
+    # Create order for the processor
+    order = {
+        "action": args.action,
+        "quantity": args.quantity,
+        "ticker": args.ticker,
+        "price": args.price,
+        "selected_brokers": brokers_to_use
+    }
+
+    # Use order processor for concurrent execution with better error handling
+    print(f"\n{args.action.upper()} {args.quantity} {args.ticker} @ ${args.price if args.price else 'market'}")
+    print(f"Executing across {len(brokers_to_use)} broker(s): {', '.join(brokers_to_use)}\n")
+
+    results = await order_processor.process_orders(
+        [order],
+        trade_functions,
+        print  # Use print as the response handler for CLI
+    )
+
+    # Print summary
+    print(f"\n{'='*60}")
+    print("Order execution complete:")
+    print(f"  Successful brokers: {len([s for status in results['statuses'] for s in status['successful']])}")
+    print(f"  Failed brokers: {len([f for status in results['statuses'] for f in status['failed']])}")
+    print(f"{'='*60}")
 
 
 def main():

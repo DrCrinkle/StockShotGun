@@ -112,13 +112,13 @@ async def publicTrade(side, qty, ticker, price):
     # Prepare order payload according to Public.com API spec
     order_type = "MARKET" if price is None else "LIMIT"
     order_side = "BUY" if side.lower() == "buy" else "SELL"
-    
+
     # Place order on each account with unique orderId per account
     for account_id in account_ids:
         # Generate unique orderId for each account to avoid deduplication conflicts
         order_id = str(uuid.uuid4())
         print(f"Generated orderId for account {account_id}: {order_id}")
-        
+
         payload = {
             "orderId": order_id,
             "instrument": {
@@ -201,7 +201,7 @@ async def publicGetHoldings(ticker=None):
                 # Extract values from API response structure
                 quantity = float(position.get('quantity', 0) or 0)
                 current_value = float(position.get('currentValue', 0) or 0)
-                
+
                 # Cost basis is a nested dict with totalCost field
                 cost_basis_data = position.get('costBasis', {})
                 cost_basis = float(cost_basis_data.get('totalCost', 0) or 0) if isinstance(cost_basis_data, dict) else 0
