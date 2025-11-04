@@ -159,6 +159,12 @@ class BrokerConfig:
             "env_vars": ["SOFI_USER", "SOFI_PASS"],
             "requires_mfa": False,
             "enabled": True
+        },
+        "Webull": {
+            "session_key": "webull",
+            "env_vars": ["WEBULL_ACCESS_TOKEN", "WEBULL_REFRESH_TOKEN", "WEBULL_UUID", "WEBULL_ACCOUNT_ID","WEBULL_DID"],
+            "requires_mfa": False,
+            "enabled": True
         }
     }
 
