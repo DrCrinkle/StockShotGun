@@ -37,9 +37,11 @@ def setup():
             ("SCHWAB_TOKEN_PATH", "Token Path"),
         ],
         "Webull": [
-            ("WEBULL_USER", "Username"),
-            ("WEBULL_PASS", "Password"),
-            ("WEBULL_MFA", "MFA TOTP Secret (if applicable)")
+            ("WEBULL_ACCESS_TOKEN", "Access Token (from Chrome extension - RECOMMENDED)"),
+            ("WEBULL_REFRESH_TOKEN", "Refresh Token (from Chrome extension)"),
+            ("WEBULL_UUID", "UUID (from Chrome extension)"),
+            ("WEBULL_ACCOUNT_ID", "Account ID (from Chrome extension)"),
+            ("WEBULL_DID", "Device ID (optional)"),
         ],
         "BBAE": [
             ("BBAE_USER", "Username"),

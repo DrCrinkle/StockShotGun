@@ -12,6 +12,7 @@ from brokers import (
     bbaeTrade,
     dspacTrade,
     sofiTrade,
+    webullTrade,
     tradierGetHoldings,
     bbaeGetHoldings,
     dspacGetHoldings,
@@ -22,6 +23,7 @@ from brokers import (
     fennelGetHoldings,
     firstradeGetHoldings,
     sofiGetHoldings,
+    webullGetHoldings,
 )
 
 # Broker function mapping (references to actual trade/holdings functions)
@@ -66,6 +68,10 @@ BROKER_CONFIG = {
     "SoFi": {
         "trade": sofiTrade,
         "holdings": sofiGetHoldings,
+    },
+    "Webull": {
+        "trade": webullTrade,
+        "holdings": webullGetHoldings,
     },
 }
 

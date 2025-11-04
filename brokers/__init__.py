@@ -35,6 +35,7 @@ from .schwab import schwabTrade, schwabGetHoldings
 from .bbae import bbaeTrade, bbaeGetHoldings
 from .dspac import dspacTrade, dspacGetHoldings
 from .sofi import sofiTrade, sofiGetHoldings
+from .webull import webullTrade, webullGetHoldings
 
 __all__ = [
     # Base infrastructure
@@ -83,4 +84,7 @@ __all__ = [
     # SoFi
     "sofiTrade",
     "sofiGetHoldings",
+    # Webull
+    "webullTrade",
+    "webullGetHoldings",
 ]
