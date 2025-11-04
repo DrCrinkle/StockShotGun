@@ -4,7 +4,7 @@ import os
 import asyncio
 import pyotp
 import traceback
-import nodriver as uc
+from zendriver import Browser
 from curl_cffi import requests as curl_requests
 
 
@@ -41,10 +41,8 @@ async def _sofi_authenticate(session_info):
             "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
         ]
         headless = os.getenv("HEADLESS", "true").lower() == "true"
-        if headless:
-            browser_args.append("--headless=new")
 
-        browser = await uc.start(browser_args=browser_args)
+        browser = await Browser.create(browser_args=browser_args, headless=headless)
 
         # Try to load existing cookies
         try:
@@ -83,56 +81,55 @@ async def _sofi_authenticate(session_info):
 
         await asyncio.sleep(3)
 
-        # Handle 2FA if needed
+        # Handle 2FA only when the verification input is actually present
+        twofa_input = None
         current_url = await page.evaluate("window.location.href")
-        if current_url and "overview" not in current_url:
-            # Check for 2FA
+
+        if not (current_url and "overview" in current_url):
+            try:
+                twofa_input = await asyncio.wait_for(
+                    page.select("input[id=code]"), timeout=3
+                )
+            except asyncio.TimeoutError:
+                twofa_input = None
+
+            if not twofa_input:
+                # Allow a brief moment for redirect in case login succeeded without 2FA
+                await asyncio.sleep(2)
+                current_url = await page.evaluate("window.location.href")
+
+                if not (current_url and "overview" in current_url):
+                    try:
+                        twofa_input = await asyncio.wait_for(
+                            page.select("input[id=code]"), timeout=2
+                        )
+                    except asyncio.TimeoutError:
+                        twofa_input = None
+
+        if twofa_input:
+            try:
+                remember = await asyncio.wait_for(
+                    page.select("input[id=rememberBrowser]"), timeout=5
+                )
+                if remember:
+                    await remember.click()
+            except asyncio.TimeoutError:
+                pass
+
             if totp_secret:
-                try:
-                    # Try to find remember browser checkbox
-                    remember = await asyncio.wait_for(
-                        page.select("input[id=rememberBrowser]"), timeout=5
-                    )
-                    if remember:
-                        await remember.click()
-                except asyncio.TimeoutError:
-                    pass
-
-                # Enter TOTP code
-                twofa_input = await page.select("input[id=code]")
-                if twofa_input:
-                    totp = pyotp.TOTP(totp_secret)
-                    code = totp.now()
-                    await twofa_input.send_keys(code)
-
-                    verify_button = await page.find("Verify Code")
-                    if verify_button:
-                        await verify_button.click()
-
-                    await asyncio.sleep(3)
+                totp = pyotp.TOTP(totp_secret)
+                code = totp.now()
+                await twofa_input.send_keys(code)
             else:
-                # SMS 2FA - ask user for code
                 print("SoFi 2FA required. Please check your device for the code.")
                 sms_code = input("Enter SoFi 2FA code: ")
+                await twofa_input.send_keys(sms_code)
 
-                try:
-                    remember = await asyncio.wait_for(
-                        page.select("input[id=rememberBrowser]"), timeout=5
-                    )
-                    if remember:
-                        await remember.click()
-                except asyncio.TimeoutError:
-                    pass
+            verify_button = await page.find("Verify Code")
+            if verify_button:
+                await verify_button.click()
 
-                sms2fa_input = await page.select("input[id=code]")
-                if sms2fa_input:
-                    await sms2fa_input.send_keys(sms_code)
-
-                    verify_button = await page.find("Verify Code")
-                    if verify_button:
-                        await verify_button.click()
-
-                    await asyncio.sleep(3)
+            await asyncio.sleep(3)
 
         # Save cookies
         await browser.cookies.save(cookies_path)
@@ -145,7 +142,10 @@ async def _sofi_authenticate(session_info):
 
     finally:
         if browser:
-            browser.stop()
+            try:
+                await browser.stop()
+            except Exception:
+                traceback.print_exc()
 
 
 async def _sofi_get_cookies(session_info):
