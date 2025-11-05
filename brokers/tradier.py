@@ -89,7 +89,17 @@ async def tradierGetHoldings(ticker=None):
             print(f"Error getting positions for account {account_id}: {response.text}")
             continue
 
-        positions = response.json().get("positions", {}).get("position", [])
+        # Parse JSON response - Tradier sometimes returns strings or non-dict responses
+        try:
+            data = response.json()
+            if not isinstance(data, dict):
+                print(f"Unexpected response format from Tradier for account {account_id}: {data}")
+                continue
+            positions = data.get("positions", {}).get("position", [])
+        except (ValueError, AttributeError) as e:
+            # Handle JSON decode errors or unexpected response types
+            print(f"Error parsing Tradier response for account {account_id}: {e}. Response: {response.text[:200]}")
+            continue
 
         # Handle case where positions is None (no positions)
         if not positions:
@@ -112,9 +122,19 @@ async def tradierGetHoldings(ticker=None):
                 params={"symbols": ",".join(symbols)},
                 headers=headers
             )
-            quotes = quotes_response.json().get("quotes", {}).get("quote", [])
-            if not isinstance(quotes, list):
-                quotes = [quotes]
+            # Parse JSON response - guard against non-dict responses
+            try:
+                quotes_data = quotes_response.json()
+                if not isinstance(quotes_data, dict):
+                    print(f"Unexpected quotes response format from Tradier: {quotes_data}")
+                    quotes = []
+                else:
+                    quotes = quotes_data.get("quotes", {}).get("quote", [])
+                    if not isinstance(quotes, list):
+                        quotes = [quotes] if quotes else []
+            except (ValueError, AttributeError) as e:
+                print(f"Error parsing Tradier quotes response: {e}. Response: {quotes_response.text[:200]}")
+                quotes = []
             quotes_dict = {quote.get("symbol"): quote.get("last") for quote in quotes}
         else:
             quotes_dict = {}
@@ -158,20 +178,29 @@ async def get_tradier_session(session_manager):
                     response = await http_client.get("https://api.tradier.com/v1/user/profile", headers=headers)
 
                     if response.status_code == 200:
-                        profile_data = response.json()
-                        accounts = profile_data.get("profile", {}).get("account", [])
-                        account_ids = [account["account_number"] for account in accounts] if accounts else []
+                        # Parse JSON response - guard against non-dict responses
+                        try:
+                            profile_data = response.json()
+                            if not isinstance(profile_data, dict):
+                                print(f"Unexpected profile response format from Tradier: {profile_data}")
+                                session_manager.sessions["tradier"] = None
+                            else:
+                                accounts = profile_data.get("profile", {}).get("account", [])
+                                account_ids = [account["account_number"] for account in accounts] if accounts else []
 
-                        session_data = {
-                            "token": TRADIER_ACCESS_TOKEN,
-                            "account_ids": account_ids
-                        }
+                                session_data = {
+                                    "token": TRADIER_ACCESS_TOKEN,
+                                    "account_ids": account_ids
+                                }
 
-                        # Cache the profile data
-                        api_cache.set(cache_key, session_data)
+                                # Cache the profile data
+                                api_cache.set(cache_key, session_data)
 
-                        session_manager.sessions["tradier"] = session_data
-                        print(f"✓ Tradier credentials available ({len(account_ids)} account{'s' if len(account_ids) != 1 else ''})")
+                                session_manager.sessions["tradier"] = session_data
+                                print(f"✓ Tradier credentials available ({len(account_ids)} account{'s' if len(account_ids) != 1 else ''})")
+                        except (ValueError, AttributeError) as e:
+                            print(f"Error parsing Tradier profile response: {e}. Response: {response.text[:200]}")
+                            session_manager.sessions["tradier"] = None
                     else:
                         print(f"✗ Failed to fetch Tradier profile: {response.status_code}")
                         session_manager.sessions["tradier"] = None
