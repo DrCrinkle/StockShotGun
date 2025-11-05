@@ -29,6 +29,47 @@ import os
 import traceback
 
 
+def _discover_accounts(wb, start_index=0, max_accounts=11, existing_account_ids=None):
+    """
+    Discover accounts by probing indices. Returns list of account dicts.
+    
+    Args:
+        wb: Webull client instance
+        start_index: Starting index to probe (default 0)
+        max_accounts: Maximum number of accounts to probe (default 11)
+        existing_account_ids: Set of account IDs to skip (default None)
+        
+    Returns:
+        List of dicts with keys: account_id, index
+    """
+    accounts = []
+    existing_set = set(existing_account_ids) if existing_account_ids else set()
+    
+    for i in range(start_index, max_accounts):
+        account_id = None
+        try:
+            account_id = wb.get_account_id(i)
+        except (IndexError, AttributeError, KeyError):
+            # Expected: no more accounts at this index
+            break
+        except Exception as e:
+            # Unexpected error - log but continue
+            print(f"⚠ Unexpected error getting account at index {i}: {e}")
+            break
+        
+        if account_id and account_id not in existing_set:
+            accounts.append({
+                "account_id": account_id,
+                "index": i
+            })
+            existing_set.add(account_id)
+        elif not account_id:
+            # No account at this index - stop probing
+            break
+    
+    return accounts
+
+
 async def webullTrade(side, qty, ticker, price):
     """Execute a trade on Webull."""
     from .session_manager import session_manager
@@ -95,6 +136,79 @@ async def webullTrade(side, qty, ticker, price):
             traceback.print_exc()
 
 
+def _parse_webull_position(position, ticker=None):
+    """
+    Parse a Webull position from either v1 or v2 API format.
+    
+    Args:
+        position: Position dict from Webull API (v1 or v2 format)
+        ticker: Optional ticker symbol to filter by
+        
+    Returns:
+        Dict with keys: symbol, quantity, cost_basis, current_value, or None if invalid/filtered
+    """
+    # Detect API version by checking for v1 format marker
+    has_ticker = "ticker" in position and isinstance(position.get("ticker"), dict)
+    has_items = "items" in position and isinstance(position.get("items"), list)
+    
+    if has_ticker:
+        # v1 format: flat structure with ticker object
+        symbol = position.get("ticker", {}).get("symbol", "")
+        quantity = float(position.get("position", 0))
+        market_value = float(position.get("marketValue", 0))
+        cost_basis = float(position.get("costBasis", market_value))
+        
+    elif has_items:
+        # v2 format: nested items array with lot-level detail
+        items = position.get("items", [])
+        if not items:
+            return None
+        
+        # Extract symbol from first item (all items should have same symbol)
+        symbol = items[0].get("symbol", "")
+        if not symbol:
+            return None
+        
+        # Aggregate quantities, cost basis, and unrealized P&L across all items (lots)
+        total_quantity = 0.0
+        total_cost = 0.0
+        total_unrealized_pl = 0.0
+        
+        for item in items:
+            # v2 uses strings for numeric values
+            item_quantity = float(item.get("quantity", "0") or "0")
+            item_cost_price = float(item.get("cost_price", "0") or "0")
+            item_unrealized_pl = float(item.get("unrealized_profit_loss", "0") or "0")
+            
+            total_quantity += item_quantity
+            total_cost += item_cost_price * item_quantity  # Weighted cost basis
+            total_unrealized_pl += item_unrealized_pl
+        
+        quantity = total_quantity
+        cost_basis = total_cost if total_quantity > 0 else 0.0
+        # Calculate market value: cost_basis + unrealized_profit_loss
+        market_value = cost_basis + total_unrealized_pl
+        
+    else:
+        # Unknown format - skip this position
+        return None
+    
+    # Skip zero quantity positions
+    if quantity <= 0:
+        return None
+    
+    # Filter by ticker if specified
+    if ticker and symbol.upper() != ticker.upper():
+        return None
+    
+    return {
+        "symbol": symbol,
+        "quantity": quantity,
+        "cost_basis": cost_basis,
+        "current_value": market_value
+    }
+
+
 async def webullGetHoldings(ticker=None):
     """Get holdings from Webull."""
     from .session_manager import session_manager
@@ -116,11 +230,20 @@ async def webullGetHoldings(ticker=None):
                 # Set the active account
                 wb.set_account_id(account_id)
 
-                # Get positions - try v1 first, fall back to v2 if needed
+                # Get positions - try v1 first (default, stable response format), fall back to v2 if needed
+                positions = None
+                
                 try:
                     positions = wb.get_positions()
-                except:
-                    positions = wb.get_positions(v2=True)
+                except (KeyError, AttributeError, TypeError) as e:
+                    # v1 failed - likely due to account type or API changes, try v2
+                    try:
+                        positions = wb.get_positions(v2=True)
+                    except Exception as v2_error:
+                        print(f"⚠ Both v1 and v2 get_positions failed for account {account_id}")
+                        print(f"  v1 error: {type(e).__name__}: {e}")
+                        print(f"  v2 error: {type(v2_error).__name__}: {v2_error}")
+                        positions = None
 
                 if not positions:
                     holdings_data[account_id] = []
@@ -129,26 +252,9 @@ async def webullGetHoldings(ticker=None):
                 formatted_positions = []
 
                 for position in positions:
-                    symbol = position.get("ticker", {}).get("symbol", "")
-                    quantity = float(position.get("position", 0))
-
-                    # Skip zero quantity positions
-                    if quantity <= 0:
-                        continue
-
-                    # Filter by ticker if specified
-                    if ticker and symbol.upper() != ticker.upper():
-                        continue
-
-                    market_value = float(position.get("marketValue", 0))
-                    cost_basis = float(position.get("costBasis", market_value))
-
-                    formatted_positions.append({
-                        "symbol": symbol,
-                        "quantity": quantity,
-                        "cost_basis": cost_basis,
-                        "current_value": market_value
-                    })
+                    parsed = _parse_webull_position(position, ticker)
+                    if parsed:
+                        formatted_positions.append(parsed)
 
                 holdings_data[account_id] = formatted_positions
 
@@ -213,13 +319,17 @@ async def get_webull_session(session_manager):
                 wb._account_id = account_id
 
                 # Verify the session works
+                test_account = None
                 try:
                     test_account = wb.get_account_id(0)
-                    if not test_account:
-                        print("⚠ Warning: Could not verify account ID, using provided value")
-                except:
-                    # If verification fails, still use the provided account_id
+                except (AttributeError, TypeError) as e:
+                    print(f"⚠ Could not verify account ID (method error): {e}")
+                except Exception:
+                    # Other unexpected errors - continue with provided account_id
                     pass
+                
+                if test_account is None:
+                    print("⚠ Warning: Could not verify account ID, using provided value")
 
             # Fallback to traditional login (will likely fail with 403)
             elif has_login_creds:
@@ -254,33 +364,16 @@ async def get_webull_session(session_manager):
 
                 # Try to discover additional accounts that weren't explicitly provided
                 print("Attempting to discover additional accounts...")
-                MAX_ACCOUNTS = 11  # Webull supports up to 11 accounts
-                for i in range(MAX_ACCOUNTS):
-                    try:
-                        discovered_account_id = wb.get_account_id(i)
-                        if discovered_account_id:
-                            # Only add if not already in our list
-                            if not any(acc["account_id"] == discovered_account_id for acc in accounts):
-                                accounts.append({
-                                    "account_id": discovered_account_id,
-                                    "index": len(accounts)
-                                })
-                                print(f"  + Discovered additional account: {discovered_account_id}")
-                    except:
-                        break  # No more accounts
+                existing_ids = [acc["account_id"] for acc in accounts]
+                discovered = _discover_accounts(wb, start_index=0, existing_account_ids=existing_ids)
+                
+                for account in discovered:
+                    account["index"] = len(accounts)  # Update index based on final position
+                    accounts.append(account)
+                    print(f"  + Discovered additional account: {account['account_id']}")
             else:
                 # Traditional login - discover all accounts
-                MAX_ACCOUNTS = 11  # Webull supports up to 11 accounts
-                for i in range(MAX_ACCOUNTS):
-                    try:
-                        discovered_account_id = wb.get_account_id(i)
-                        if discovered_account_id:
-                            accounts.append({
-                                "account_id": discovered_account_id,
-                                "index": i
-                            })
-                    except:
-                        break  # No more accounts
+                accounts = _discover_accounts(wb)
 
             if not accounts:
                 raise Exception("No Webull accounts found")
