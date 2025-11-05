@@ -636,6 +636,9 @@ async def wellsfargoTrade(side, qty, ticker, price):
         print("No Wells Fargo credentials supplied, skipping")
         return None
 
+    # Save original price parameter (user-specified price, if any)
+    user_specified_price = price
+
     browser = None
     try:
         # Get authenticated browser
@@ -656,87 +659,328 @@ async def wellsfargoTrade(side, qty, ticker, price):
         # Trade on all accounts
         for account in accounts:
             account_name = account['name']
-            account_index = account['index']
+            # Use data_p_account if available, otherwise fall back to index
+            account_param = account.get('data_p_account', account['index'])
             x_param = account['x_param']
 
-            print(f"\nTrading on: {account_name}")
+            # Reset price for this account (use per-account copy to avoid stale pricing)
+            # Each account needs to fetch its own quote independently
+            price_for_account = user_specified_price
+
+            print(f"\nTrading on: {account_name} (account param: {account_param})")
 
             try:
-                # Navigate to trade page for this account
-                trade_url = f"https://wfawellstrade.wellsfargo.com/BW/equity.do?account={account_index}&symbol=&selectedAction="
+                # Navigate to trade page for this account WITH symbol pre-filled to get quote
+                action_value = "BUY" if side == "buy" else "SELL"
+                trade_url = f"https://wfawellstrade.wellsfargo.com/BW/equity.do?account={account_param}&symbol={ticker}&selectedAction={action_value}"
                 if x_param:
                     trade_url += f"&{x_param}"
 
+                print(f"Navigating to trade URL: {trade_url}")
                 await page.get(trade_url)
-                await asyncio.sleep(2)
 
-                # Select Buy or Sell action
-                action_select = await page.select("select[id=action]")
-                if action_select:
-                    action_value = "BUY" if side == "buy" else "SELL"
-                    await action_select.select_option(action_value)
+                # Wait for page to load completely
+                await asyncio.sleep(3)
 
-                # Enter symbol
-                symbol_input = await page.select("input[id=symbol]")
-                if symbol_input:
-                    await symbol_input.clear_input()
-                    await symbol_input.send_keys(ticker)
-                    await asyncio.sleep(1)
+                # Debug: Check if we're on the right page
+                try:
+                    current_url = await page.evaluate("window.location.href")
+                except Exception:
+                    current_url = page.url
+                print(f"Current URL after navigation: {current_url}")
 
-                    # Wait for quote to load
+                # Wait for the page body to be fully rendered
+                await page.wait_for("body", timeout=10)
+
+                # Set buy/sell action by directly manipulating form
+                print("Setting buy/sell action...")
+                try:
+                    action_text = "Buy" if side == "buy" else "Sell"
+                    # Set the hidden field and update button text
+                    result = await page.evaluate(f"""
+                        (function() {{
+                            const buySellInput = document.getElementById('BuySell');
+                            const buySellBtn = document.getElementById('BuySellBtn');
+                            if (buySellInput && buySellBtn) {{
+                                buySellInput.value = '{action_text}';
+                                buySellBtn.textContent = '{action_text}';
+                                buySellBtn.setAttribute('aria-label', '{action_text}');
+                                return true;
+                            }}
+                            return false;
+                        }})()
+                    """)
+                    if result:
+                        print(f"Set action to {action_text}")
+                        await asyncio.sleep(0.5)
+                    else:
+                        print("Warning: Could not find BuySell elements")
+                except Exception as e:
+                    print(f"Warning: Could not set BuySell: {e}")
+
+                # Verify quote loaded (symbol pre-filled via URL)
+                print("Checking if quote loaded...")
+                try:
+                    # Wait a moment for quote to fully load
                     await asyncio.sleep(2)
+
+                    # Verify quote loaded by checking if last price is populated
+                    quote_loaded = await page.evaluate("document.getElementById('last')?.value")
+                    if quote_loaded and quote_loaded != 'None' and quote_loaded.strip():
+                        print(f"Quote loaded: ${quote_loaded}")
+                    else:
+                        print(f"Warning: Quote may not have loaded (value: '{quote_loaded}'), will use default pricing")
+                except Exception as e:
+                    print(f"Error checking quote: {e}")
 
                 # Enter quantity
-                quantity_input = await page.select("input[id=quantity]")
-                if quantity_input:
-                    await quantity_input.clear_input()
-                    await quantity_input.send_keys(str(qty))
-
-                # Determine order type based on price
-                if price and price >= 2.00:
-                    # Use limit order
-                    order_type_select = await page.select("select[id=orderType]")
-                    if order_type_select:
-                        await order_type_select.select_option("LIMIT")
-
-                    # Enter limit price
-                    limit_price_input = await page.select("input[id=limitPrice]")
-                    if limit_price_input:
-                        await limit_price_input.clear_input()
-                        # Adjust price by $0.01
-                        if side == "buy":
-                            adjusted_price = round(price + 0.01, 2)
-                        else:
-                            adjusted_price = round(price - 0.01, 2)
-                        await limit_price_input.send_keys(str(adjusted_price))
-                else:
-                    # Use market order for stocks under $2
-                    order_type_select = await page.select("select[id=orderType]")
-                    if order_type_select:
-                        await order_type_select.select_option("MARKET")
-
-                # Set time in force to Day
-                time_select = await page.select("select[id=timeInForce]")
-                if time_select:
-                    await time_select.select_option("DAY")
-
-                # Click preview button
-                preview_button = await page.select("button[id=previewBtn]")
-                if preview_button:
-                    await preview_button.click()
-                    await asyncio.sleep(2)
-
-                # Check for errors on preview page
-                error_msg = await page.select(".error-message")
-                if error_msg:
-                    error_text = await error_msg.text
-                    print(f"Wells Fargo order error for {account_name}: {error_text}")
+                print("Setting quantity...")
+                try:
+                    result = await page.evaluate(f"""
+                        (function() {{
+                            const qtyInput = document.getElementById('OrderQuantity');
+                            if (qtyInput) {{
+                                qtyInput.value = '{qty}';
+                                // Trigger events
+                                qtyInput.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                                qtyInput.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                                return qtyInput.value;
+                            }}
+                            return null;
+                        }})()
+                    """)
+                    if result:
+                        print(f"Quantity set to {result}")
+                        await asyncio.sleep(0.5)
+                    else:
+                        print("Warning: Could not find OrderQuantity input field")
+                        continue
+                except Exception as e:
+                    print(f"Error setting quantity: {e}")
                     continue
 
-                # Check for confirmation button (indicates order is valid)
-                confirm_button = await page.select("button[id=confirmBtn]")
+                # Get last price from page for limit orders
+                if not price_for_account:
+                    try:
+                        # Try to get last price from the form
+                        last_price_str = await page.evaluate("document.getElementById('last')?.value")
+                        print(f"Retrieved last price: {last_price_str}")
+
+                        if last_price_str and last_price_str.strip():
+                            price_for_account = float(last_price_str.strip())
+                            print(f"Current stock price: ${price_for_account}")
+                        else:
+                            # Default to $1 if we can't get price (will trigger limit order)
+                            print("Could not get price from page, defaulting to $1 (will use limit order)")
+                            price_for_account = 1.00
+                    except Exception as e:
+                        print(f"Error getting price: {e}")
+                        price_for_account = 1.00
+
+                # Determine order type based on price
+                # Wells Fargo requires limit orders for low-priced stocks (under $2)
+                # Also use limit order if user explicitly specified a price
+                use_limit_order = False
+                limit_reason = ""
+
+                if user_specified_price:
+                    # User explicitly specified a price - use limit order
+                    use_limit_order = True
+                    limit_reason = "user specified price"
+                elif price_for_account and price_for_account < 2.00:
+                    # Low-priced stock - Wells Fargo requires limit order
+                    use_limit_order = True
+                    limit_reason = "low-priced stock (Wells Fargo requirement)"
+
+                if use_limit_order:
+                    # Use limit order
+                    print(f"Setting order type to LIMIT ({limit_reason})...")
+                    try:
+                        result = await page.evaluate("""
+                            (function() {
+                                const priceQualInput = document.getElementById('PriceQualifier');
+                                const orderTypeBtn = document.getElementById('OrderTypeBtn');
+                                if (priceQualInput && orderTypeBtn) {
+                                    priceQualInput.value = 'Limit';
+                                    orderTypeBtn.textContent = 'Limit';
+                                    return true;
+                                }
+                                return false;
+                            })()
+                        """)
+                        if result:
+                            print("Set order type to Limit")
+                    except Exception as e:
+                        print(f"Warning setting order type: {e}")
+
+                    # Enter limit price
+                    await asyncio.sleep(0.5)
+
+                    # If user specified a price explicitly, use that
+                    if user_specified_price:
+                        adjusted_price = round(user_specified_price, 2)
+                        print(f"Using user-specified price ${adjusted_price}")
+                    else:
+                        # Calculate limit price based on last price:
+                        # - For buys: last price + $0.01
+                        # - For sells: last price - $0.01
+                        if side == "buy":
+                            adjusted_price = round(price_for_account + 0.01, 2)
+                            print(f"Using last price ${price_for_account} + $0.01 for buy")
+                        else:  # sell
+                            adjusted_price = round(price_for_account - 0.01, 2)
+                            print(f"Using last price ${price_for_account} - $0.01 for sell")
+
+                    # Ensure price doesn't go negative
+                    if adjusted_price <= 0:
+                        adjusted_price = 0.01
+
+                    try:
+                        result = await page.evaluate(f"""
+                            (function() {{
+                                const priceInput = document.getElementById('Price');
+                                if (priceInput) {{
+                                    priceInput.value = '{adjusted_price}';
+                                    priceInput.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                                    priceInput.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                                    return true;
+                                }}
+                                return false;
+                            }})()
+                        """)
+                        if result:
+                            print(f"Limit price set to ${adjusted_price}")
+                    except Exception as e:
+                        print(f"Warning setting limit price: {e}")
+                else:
+                    # Use market order
+                    print("Setting order type to MARKET...")
+                    try:
+                        result = await page.evaluate("""
+                            (function() {
+                                const priceQualInput = document.getElementById('PriceQualifier');
+                                const orderTypeBtn = document.getElementById('OrderTypeBtn');
+                                if (priceQualInput && orderTypeBtn) {
+                                    priceQualInput.value = 'Market';
+                                    orderTypeBtn.textContent = 'Market';
+                                    return true;
+                                }
+                                return false;
+                            })()
+                        """)
+                        if result:
+                            print("Set order type to Market")
+                            await asyncio.sleep(0.5)
+                    except Exception as e:
+                        print(f"Warning setting order type: {e}")
+
+                # Set time in force to Day
+                print("Setting time in force to DAY...")
+                try:
+                    result = await page.evaluate("""
+                        (function() {
+                            const tifInput = document.getElementById('TIF');
+                            const tifBtn = document.getElementById('TIFBtn');
+                            if (tifInput && tifBtn) {
+                                tifInput.value = 'Day';
+                                tifBtn.textContent = 'Day';
+                                return true;
+                            }
+                            return false;
+                        })()
+                    """)
+                    if result:
+                        print("Set TIF to Day")
+                        await asyncio.sleep(0.5)
+                except Exception as e:
+                    print(f"Warning setting TIF: {e}")
+
+                # Wait a moment for form to be fully populated
+                await asyncio.sleep(1)
+
+                # Click continue/preview button
+                print("Clicking continue button...")
+                continue_button = await page.select("button[id=actionbtnContinue]", timeout=5)
+                if continue_button:
+                    await continue_button.click()
+                    await asyncio.sleep(3)
+                else:
+                    print("Warning: Could not find continue button")
+                    continue
+
+                # Check what page we're on now
+                print("Checking order preview page...")
+                try:
+                    page_title = await page.evaluate("document.title")
+                    current_url = await page.evaluate("window.location.href")
+                    print(f"Preview page title: {page_title}")
+                    print(f"Preview URL: {current_url}")
+                except Exception:
+                    pass
+
+                # Check for errors on preview page (ignore warnings)
+                try:
+                    # Get only actual ERROR messages in the text, not warnings
+                    error_texts = await page.evaluate("""
+                        Array.from(document.querySelectorAll('body')).map(el => el.textContent).join('\\n')
+                    """)
+
+                    # Check if there are actual "Error:" messages (not "Warning:")
+                    has_errors = False
+                    error_messages = []
+                    if error_texts:
+                        lines = error_texts.split('\\n')
+                        for line in lines:
+                            line = line.strip()
+                            if line.startswith('Error:') and 'Warning:' not in line:
+                                has_errors = True
+                                error_messages.append(line[:200])  # Limit length
+                                if len(error_messages) >= 3:
+                                    break
+
+                    if has_errors:
+                        print(f"Wells Fargo order errors for {account_name}:")
+                        for err in error_messages:
+                            print(f"  - {err}")
+                        continue
+                    else:
+                        # No errors, but there might be warnings - that's OK
+                        print("Order preview looks good (warnings are OK)")
+                except Exception as ex:
+                    print(f"Error checking for validation errors: {ex}")
+
+                # Look for a confirmation/submit button on preview page
+                # According to reference, the submit button has class .btn-wfa-primary.btn-wfa-submit
+                confirm_button = None
+                try:
+                    confirm_button = await page.select(".btn-wfa-primary.btn-wfa-submit", timeout=5)
+                    if confirm_button:
+                        print("Found submit button (.btn-wfa-primary.btn-wfa-submit)")
+                except Exception:
+                    # Fallback to button ID
+                    for button_id in ['actionbtnContinue', 'confirmBtn', 'submitBtn']:
+                        try:
+                            confirm_button = await page.select(f"button[id={button_id}]", timeout=2)
+                            if confirm_button:
+                                print(f"Found confirm button: {button_id}")
+                                break
+                        except Exception:
+                            continue
+
                 if not confirm_button:
                     print(f"Wells Fargo order cannot be placed on {account_name} - no confirmation button found")
+                    # Debug: show buttons on page
+                    try:
+                        buttons = await page.evaluate("""
+                            Array.from(document.querySelectorAll('button')).map(btn => ({
+                                id: btn.id,
+                                class: btn.className,
+                                text: btn.textContent.trim().substring(0, 30)
+                            })).filter(b => b.id || b.text)
+                        """)
+                        print(f"Available buttons: {buttons[:5]}")
+                    except Exception:
+                        pass
                     continue
 
                 # Check if we should actually submit (not dry-run)
@@ -747,17 +991,60 @@ async def wellsfargoTrade(side, qty, ticker, price):
                     continue
 
                 # Submit the order
+                print("Submitting order...")
                 await confirm_button.click()
-                await asyncio.sleep(2)
+                await asyncio.sleep(3)
 
                 # Check for success confirmation
-                success_msg = await page.select(".success-message")
-                if success_msg:
-                    action_str = "Bought" if side == "buy" else "Sold"
-                    print(f"{action_str} {qty} shares of {ticker} on {account_name}")
-                    success_count += 1
-                else:
-                    print(f"Wells Fargo order may have failed on {account_name} - no success message found")
+                try:
+                    final_title = await page.evaluate("document.title")
+                    print(f"After submission - Title: {final_title}")
+
+                    # Look for success indicators (multiple patterns)
+                    page_text = await page.evaluate("document.body.textContent")
+
+                    # Check for various success patterns
+                    success_patterns = [
+                        'order has been placed',
+                        'successfully',
+                        'Success',
+                        'confirmed',
+                        'Confirmed',
+                        'Order Number',
+                        'order number',
+                        'has been received',
+                        'Acknowledgment'
+                    ]
+
+                    is_success = any(pattern.lower() in page_text.lower() for pattern in success_patterns)
+
+                    # Also check URL - if it changed to confirmation page
+                    final_url = await page.evaluate("window.location.href")
+                    if 'confirmation' in final_url.lower() or 'orderack' in final_url.lower():
+                        is_success = True
+
+                    if is_success:
+                        action_str = "Bought" if side == "buy" else "Sold"
+                        print(f"✓ {action_str} {qty} shares of {ticker} on {account_name}")
+                        success_count += 1
+                    else:
+                        print(f"Wells Fargo order may have failed on {account_name} - no clear success confirmation")
+                        print(f"Final URL: {final_url}")
+
+                        # Check for errors on the page
+                        errors_on_page = await page.evaluate("""
+                            Array.from(document.querySelectorAll('.error, .error-message, [class*="error"], [class*="Error"]'))
+                            .map(el => el.textContent.trim())
+                            .filter(text => text.length > 0 && text.includes('Error'))
+                            .slice(0, 2)
+                        """)
+                        if errors_on_page:
+                            for error in errors_on_page:
+                                # Clean up error message
+                                clean_error = ' '.join(error.split())
+                                print(f"  ⚠ {clean_error}")
+                except Exception as e:
+                    print(f"Could not verify order success: {e}")
 
             except Exception as e:
                 print(f"Error trading on {account_name}: {e}")
