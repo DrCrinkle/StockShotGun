@@ -3,6 +3,7 @@
 import os
 import json
 import traceback
+import time
 from pathlib import Path
 import uuid
 from .base import rate_limiter, http_client
@@ -11,25 +12,49 @@ from .base import rate_limiter, http_client
 # Token cache file location
 TOKEN_CACHE_FILE = Path("./tokens/public_token.json")
 
+# Token validity in minutes (24 hours)
+TOKEN_VALIDITY_MINUTES = 1440
+# Refresh token if it expires within this many minutes
+TOKEN_REFRESH_BUFFER_MINUTES = 5
+
 
 def _load_cached_token():
-    """Load cached access token if available and valid."""
+    """Load cached access token if available and valid (not expired)."""
     if TOKEN_CACHE_FILE.exists():
         try:
             with open(TOKEN_CACHE_FILE, 'r') as f:
                 data = json.load(f)
-                return data.get('access_token')
+                access_token = data.get('access_token')
+                expires_at = data.get('expires_at')
+                
+                # Check if token exists and is not expired (with buffer)
+                if access_token and expires_at:
+                    current_time = time.time()
+                    # Refresh if expired or within buffer period
+                    if current_time < (expires_at - (TOKEN_REFRESH_BUFFER_MINUTES * 60)):
+                        return access_token
+                    # Token expired or about to expire
+                    return None
+                elif access_token:
+                    # Legacy token without expiration - treat as invalid
+                    return None
         except Exception:
             return None
     return None
 
 
 def _save_token(access_token):
-    """Save access token to cache file."""
+    """Save access token to cache file with expiration timestamp."""
     TOKEN_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
     try:
+        # Calculate expiration timestamp (current time + validity period)
+        expires_at = time.time() + (TOKEN_VALIDITY_MINUTES * 60)
+        
         with open(TOKEN_CACHE_FILE, 'w') as f:
-            json.dump({'access_token': access_token}, f)
+            json.dump({
+                'access_token': access_token,
+                'expires_at': expires_at
+            }, f)
     except Exception as e:
         print(f"Warning: Failed to cache Public access token: {e}")
 
@@ -38,7 +63,7 @@ async def _generate_access_token(api_secret):
     """Generate a new access token from API secret."""
     url = "https://api.public.com/userapiauthservice/personal/access-tokens"
     payload = {
-        "validityInMinutes": 1440,  # 24 hours
+        "validityInMinutes": TOKEN_VALIDITY_MINUTES,
         "secret": api_secret
     }
 
@@ -59,6 +84,28 @@ async def _generate_access_token(api_secret):
         return None
 
 
+async def _refresh_token_if_needed(session_manager):
+    """Refresh the Public access token if it's expired or about to expire."""
+    PUBLIC_API_SECRET = os.getenv("PUBLIC_API_SECRET")
+    if not PUBLIC_API_SECRET:
+        return None
+    
+    # Check if token is expired
+    cached_token = _load_cached_token()
+    if not cached_token:
+        # Generate new token
+        new_token = await _generate_access_token(PUBLIC_API_SECRET)
+        if new_token:
+            # Update session with new token
+            session = session_manager.sessions.get("public")
+            if session:
+                session['access_token'] = new_token
+            return new_token
+        return None
+    
+    return cached_token
+
+
 async def _get_accounts(access_token):
     """Fetch all account IDs for the authenticated user."""
     url = "https://api.public.com/userapigateway/trading/account"
@@ -69,6 +116,11 @@ async def _get_accounts(access_token):
 
     try:
         response = await http_client.get(url, headers=headers)
+        
+        # Handle token expiration (401 Unauthorized)
+        if response.status_code == 401:
+            raise Exception("Token expired or invalid")
+        
         response.raise_for_status()
         data = response.json()
 
@@ -93,7 +145,14 @@ async def publicTrade(side, qty, ticker, price):
         print("No Public credentials supplied, skipping")
         return None
 
-    access_token = session['access_token']
+    # Refresh token if needed before trading
+    access_token = await _refresh_token_if_needed(session_manager)
+    if not access_token:
+        print("Failed to refresh Public access token")
+        return None
+    
+    # Update session with potentially refreshed token
+    session['access_token'] = access_token
     account_ids = session['account_ids']
 
     if not account_ids:
@@ -142,6 +201,19 @@ async def publicTrade(side, qty, ticker, price):
         try:
             url = f"https://api.public.com/userapigateway/trading/{account_id}/order"
             response = await http_client.post(url, headers=headers, json=payload)
+            
+            # Handle token expiration - refresh and retry once
+            if response.status_code == 401:
+                print(f"Token expired, refreshing and retrying order for {ticker}...")
+                new_token = await _refresh_token_if_needed(session_manager)
+                if new_token:
+                    session['access_token'] = new_token
+                    headers["Authorization"] = f"Bearer {new_token}"
+                    response = await http_client.post(url, headers=headers, json=payload)
+                else:
+                    print(f"Failed to refresh token for {ticker} order")
+                    continue
+            
             response.raise_for_status()
 
             action_str = "Bought" if side.lower() == "buy" else "Sold"
@@ -160,7 +232,14 @@ async def publicGetHoldings(ticker=None):
         print("No Public credentials supplied, skipping")
         return None
 
-    access_token = session['access_token']
+    # Refresh token if needed before fetching holdings
+    access_token = await _refresh_token_if_needed(session_manager)
+    if not access_token:
+        print("Failed to refresh Public access token")
+        return None
+    
+    # Update session with potentially refreshed token
+    session['access_token'] = access_token
     account_ids = session['account_ids']
 
     if not account_ids:
@@ -178,6 +257,19 @@ async def publicGetHoldings(ticker=None):
         for account_id in account_ids:
             url = f"https://api.public.com/userapigateway/trading/{account_id}/portfolio/v2"
             response = await http_client.get(url, headers=headers)
+            
+            # Handle token expiration - refresh and retry once
+            if response.status_code == 401:
+                print("Token expired, refreshing and retrying holdings fetch...")
+                new_token = await _refresh_token_if_needed(session_manager)
+                if new_token:
+                    session['access_token'] = new_token
+                    headers["Authorization"] = f"Bearer {new_token}"
+                    response = await http_client.get(url, headers=headers)
+                else:
+                    print("Failed to refresh token for holdings fetch")
+                    continue
+            
             response.raise_for_status()
             data = response.json()
 
@@ -230,18 +322,25 @@ async def get_public_session(session_manager):
             return None
 
         try:
-            # Try to load cached token first
+            # Try to load cached token first (checks expiration)
             access_token = _load_cached_token()
 
-            # If no cached token, generate a new one
+            # If no cached token or expired, generate a new one
             if not access_token:
                 access_token = await _generate_access_token(PUBLIC_API_SECRET)
 
             if not access_token:
                 raise Exception("Failed to obtain access token")
 
-            # Fetch all account IDs
+            # Fetch all account IDs (with retry on token expiration)
             account_ids = await _get_accounts(access_token)
+            
+            # If accounts fetch failed due to expired token, refresh and retry
+            if not account_ids:
+                # Token might have expired between check and use
+                access_token = await _refresh_token_if_needed(session_manager)
+                if access_token:
+                    account_ids = await _get_accounts(access_token)
 
             if not account_ids:
                 print("⚠️  Public authenticated but no accounts found")
