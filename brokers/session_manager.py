@@ -16,6 +16,7 @@ from . import bbae
 from . import dspac
 from . import sofi
 from . import webull
+from . import wellsfargo
 
 
 class BrokerSessionManager:
@@ -34,6 +35,7 @@ class BrokerSessionManager:
         "DSPAC": (dspac, "get_dspac_session"),
         "SoFi": (sofi, "get_sofi_session"),
         "Webull": (webull, "get_webull_session"),
+        "WellsFargo": (wellsfargo, "get_wellsfargo_session"),
     }
 
     def __init__(self):

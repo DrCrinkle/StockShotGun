@@ -9,5 +9,6 @@ robin-stocks==3.4.0
 bbae-invest-api==0.1.3
 dspac-invest-api==0.1.3
 zendriver==0.14.2
+beautifulsoup4==4.12.3
 curl-cffi==0.7.3
 -e git+https://github.com/ImNotOssy/webull.git@0e96507299eca4c6d76ca24836e2569fed60c85c#egg=webull

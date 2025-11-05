@@ -8,7 +8,7 @@ used across all broker implementations.
 import httpx
 import asyncio
 import time
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, ClassVar
 from dotenv import load_dotenv
 
 load_dotenv("./.env")
@@ -99,7 +99,7 @@ api_cache = APICache()
 class BrokerConfig:
     """Centralized broker configuration to eliminate duplication."""
 
-    BROKERS = {
+    BROKERS: ClassVar[Dict[str, Dict[str, Any]]] = {
         "Robinhood": {
             "session_key": "robinhood",
             "env_vars": ["ROBINHOOD_USER", "ROBINHOOD_PASS", "ROBINHOOD_MFA"],
@@ -163,6 +163,12 @@ class BrokerConfig:
         "Webull": {
             "session_key": "webull",
             "env_vars": ["WEBULL_ACCESS_TOKEN", "WEBULL_REFRESH_TOKEN", "WEBULL_UUID", "WEBULL_ACCOUNT_ID","WEBULL_DID"],
+            "requires_mfa": False,
+            "enabled": True
+        },
+        "WellsFargo": {
+            "session_key": "wellsfargo",
+            "env_vars": ["WELLSFARGO_USER", "WELLSFARGO_PASS"],
             "requires_mfa": False,
             "enabled": True
         }
@@ -242,7 +248,7 @@ async def _login_broker(broker_api, broker_name):
         return True
 
     except Exception as e:
-        print(f"Error logging into {broker_name}: {str(e)}")
+        print(f"Error logging into {broker_name}: {e}")
         return False
 
 
@@ -263,7 +269,7 @@ async def _get_broker_holdings(broker_api, broker_name, ticker=None):
             positions = [pos for pos in positions if pos.get("Symbol") == ticker]
 
         account_info = broker_api.get_account_info()
-        account_number = account_info.get("Data").get('accountNumber')
+        account_number = account_info.get("Data").get("accountNumber")
 
         formatted_positions = [
             {
@@ -280,6 +286,6 @@ async def _get_broker_holdings(broker_api, broker_name, ticker=None):
         return holdings_data
 
     except Exception as e:
-        print(f"Error retrieving {broker_name} holdings: {str(e)}")
+        print(f"Error retrieving {broker_name} holdings: {e}")
         traceback.print_exc()
         return None

@@ -61,6 +61,11 @@ def setup():
             ("SOFI_PASS", "Password"),
             ("SOFI_TOTP", "TOTP Secret (optional, press ENTER to skip)")
         ],
+        "WellsFargo": [
+            ("WELLSFARGO_USER", "Username"),
+            ("WELLSFARGO_PASS", "Password"),
+            ("WELLSFARGO_PHONE_SUFFIX", "Phone Suffix for 2FA (optional, e.g., last 4 digits)"),
+        ],
         "TastyTrade": [("TASTY_USER", "Username"), ("TASTY_PASS", "Password")],
         "Tradier": [("TRADIER_ACCESS_TOKEN", "Access Token")],
         "Public": [("PUBLIC_API_SECRET", "API Secret Key")],
