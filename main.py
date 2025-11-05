@@ -14,11 +14,35 @@ async def print_holdings(holdings):
             if not positions:
                 print("No positions found")
             for pos in positions:
+                symbol = pos.get('symbol', 'N/A')
+                quantity = pos.get('quantity', 0)
+
+                cost_basis = pos.get('cost_basis')
+                if cost_basis is None:
+                    cost_basis_display = "N/A"
+                else:
+                    cost_basis_display = f"${float(cost_basis):.2f}"
+
+                current_value = pos.get('current_value')
+                if current_value is None:
+                    fallback_value = pos.get('value')
+                    if fallback_value is None and pos.get('price') is not None:
+                        try:
+                            fallback_value = float(pos['price']) * float(quantity)
+                        except (TypeError, ValueError):
+                            fallback_value = None
+                    current_value = fallback_value
+
+                if current_value is None:
+                    current_value_display = "N/A"
+                else:
+                    current_value_display = f"${float(current_value):.2f}"
+
                 print(
-                    f"\nSymbol: {pos['symbol']}\n"
-                    f"Quantity: {pos['quantity']}\n"
-                    f"Cost Basis: ${pos['cost_basis']:.2f}\n"
-                    f"Current Value: ${pos['current_value']:.2f}"
+                    f"\nSymbol: {symbol}\n"
+                    f"Quantity: {quantity}\n"
+                    f"Cost Basis: {cost_basis_display}\n"
+                    f"Current Value: {current_value_display}"
                 )
 
 async def run_cli(args, parser):
