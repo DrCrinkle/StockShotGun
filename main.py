@@ -113,10 +113,15 @@ async def run_cli(args, parser):
     print(f"\n{args.action.upper()} {args.quantity} {args.ticker} @ ${args.price if args.price else 'market'}")
     print(f"Executing across {len(brokers_to_use)} broker(s): {', '.join(brokers_to_use)}\n")
 
+    # Wrapper function for CLI mode that ignores force_redraw parameter
+    def cli_response_fn(message, force_redraw=False):
+        if message:  # Only print non-empty messages
+            print(message)
+
     results = await order_processor.process_orders(
         [order],
         trade_functions,
-        print  # Use print as the response handler for CLI
+        cli_response_fn  # Use wrapper that handles force_redraw parameter
     )
 
     # Print summary
