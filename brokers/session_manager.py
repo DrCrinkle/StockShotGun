@@ -128,10 +128,21 @@ class BrokerSessionManager:
         print(f"✅ Session initialization complete. Active sessions: {', '.join(active_sessions)}")
 
     def cleanup(self):
-        """Clean up broker sessions."""
-        # Most APIs don't require explicit cleanup, but we'll clear our references
+        """Clean up broker sessions (safe to call multiple times)."""
+        # Clear session references - http_client stays open for reuse
         self.sessions.clear()
         self._initialized.clear()
+
+    async def shutdown(self):
+        """Shutdown and close HTTP client (call only on application exit)."""
+        from .base import http_client
+        try:
+            await http_client.aclose()
+        except Exception as e:
+            print(f"Warning: Error closing HTTP client: {e}")
+
+        # Also clear sessions
+        self.cleanup()
 
 
 # Global session manager instance

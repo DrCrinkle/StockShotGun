@@ -147,6 +147,7 @@ def main():
         else:
             asyncio.run(run_cli(args, parser))
     finally:
+        # Cleanup sessions (synchronous) - http_client stays open for reuse
         session_manager.cleanup()
 
 

@@ -30,21 +30,39 @@ RATE_LIMIT_WINDOW = 1.0  # 1 second window for rate limiting
 
 
 class RateLimiter:
-    """Rate limiter for broker API calls."""
+    """Rate limiter for broker API calls with per-broker limits."""
 
-    def __init__(self, calls_per_second=10):
-        self.calls_per_second = calls_per_second
-        self.min_interval = 1.0 / calls_per_second
+    # Per-broker rate limits (requests per second)
+    BROKER_LIMITS = {
+        "Robinhood": 5,      # Conservative limit
+        "Tradier": 2,        # 120 per minute = 2 per second
+        "TastyTrade": 10,    # Reasonable default
+        "Public": 20,        # Higher limit
+        "Firstrade": 5,      # Conservative
+        "Fennel": 10,        # Reasonable default
+        "Schwab": 5,         # Conservative
+        "BBAE": 5,           # Conservative
+        "DSPAC": 5,          # Conservative
+        "SoFi": 5,           # Conservative
+        "Webull": 5,         # Conservative
+        "WellsFargo": 5,     # Conservative
+    }
+
+    def __init__(self):
         self.last_call_time = {}
 
     async def wait_if_needed(self, broker_name: str):
-        """Wait if necessary to respect rate limits."""
+        """Wait if necessary to respect per-broker rate limits."""
+        # Get broker-specific limit or use default of 10 req/sec
+        calls_per_second = self.BROKER_LIMITS.get(broker_name, 10)
+        min_interval = 1.0 / calls_per_second
+
         current_time = time.time()
         last_call = self.last_call_time.get(broker_name, 0)
 
         time_since_last = current_time - last_call
-        if time_since_last < self.min_interval:
-            wait_time = self.min_interval - time_since_last
+        if time_since_last < min_interval:
+            wait_time = min_interval - time_since_last
             await asyncio.sleep(wait_time)
 
         self.last_call_time[broker_name] = time.time()

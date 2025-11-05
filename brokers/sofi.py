@@ -6,6 +6,7 @@ import pyotp
 import traceback
 from zendriver import Browser
 from curl_cffi import requests as curl_requests
+from .base import rate_limiter
 
 
 def _build_sofi_headers(csrf_token=None):
@@ -161,7 +162,12 @@ async def _sofi_get_stock_price(symbol):
     """Fetch current stock price for a symbol."""
     try:
         url = f"https://www.sofi.com/wealth/backend/api/v1/tearsheet/quote?symbol={symbol}&productSubtype=BROKERAGE"
-        response = curl_requests.get(url, impersonate="chrome", headers=_build_sofi_headers())
+        response = await asyncio.to_thread(
+            curl_requests.get,
+            url,
+            impersonate="chrome",
+            headers=_build_sofi_headers(),
+        )
 
         if response.status_code == 200:
             data = response.json()
@@ -180,8 +186,12 @@ async def _sofi_get_funded_accounts(cookies):
     """Get list of funded SoFi accounts."""
     try:
         url = "https://www.sofi.com/wealth/backend/api/v1/user/funded-brokerage-accounts"
-        response = curl_requests.get(
-            url, impersonate="chrome", headers=_build_sofi_headers(), cookies=cookies
+        response = await asyncio.to_thread(
+            curl_requests.get,
+            url,
+            impersonate="chrome",
+            headers=_build_sofi_headers(),
+            cookies=cookies,
         )
 
         if response.status_code == 200:
@@ -211,7 +221,8 @@ async def _sofi_place_order(symbol, quantity, limit_price, account_id, order_typ
             payload["limitPrice"] = limit_price
 
         url = "https://www.sofi.com/wealth/backend/api/v1/trade/order"
-        response = curl_requests.post(
+        response = await asyncio.to_thread(
+            curl_requests.post,
             url,
             impersonate="chrome",
             json=payload,
@@ -232,6 +243,8 @@ async def _sofi_place_order(symbol, quantity, limit_price, account_id, order_typ
 
 async def sofiTrade(side, qty, ticker, price):
     """Execute a trade on SoFi."""
+    await rate_limiter.wait_if_needed("SoFi")
+
     from .session_manager import session_manager
     session = await session_manager.get_session("SoFi")
     if not session:
@@ -304,6 +317,8 @@ async def sofiTrade(side, qty, ticker, price):
 
 async def sofiGetHoldings(ticker=None):
     """Get holdings from SoFi accounts."""
+    await rate_limiter.wait_if_needed("SoFi")
+
     from .session_manager import session_manager
     session = await session_manager.get_session("SoFi")
     if not session:
@@ -318,7 +333,8 @@ async def sofiGetHoldings(ticker=None):
             return None
 
         # Get account information
-        accounts_response = curl_requests.get(
+        accounts_response = await asyncio.to_thread(
+            curl_requests.get,
             "https://www.sofi.com/wealth/backend/v1/json/accounts",
             impersonate="chrome",
             headers=_build_sofi_headers(),
@@ -338,7 +354,8 @@ async def sofiGetHoldings(ticker=None):
 
             # Get holdings for this account
             holdings_url = f"https://www.sofi.com/wealth/backend/api/v3/account/{account_id}/holdings?accountDataType=INTERNAL"
-            holdings_response = curl_requests.get(
+            holdings_response = await asyncio.to_thread(
+                curl_requests.get,
                 holdings_url,
                 impersonate="chrome",
                 headers=_build_sofi_headers(),

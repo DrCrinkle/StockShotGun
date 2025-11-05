@@ -1,19 +1,24 @@
 """Robinhood broker integration."""
 
+import asyncio
 import pyotp
 import robin_stocks.robinhood as rh
-from .base import retry_operation
+from .base import retry_operation, rate_limiter
 
 
 async def robinTrade(side, qty, ticker, price):
     """Execute a trade on Robinhood."""
+    await rate_limiter.wait_if_needed("Robinhood")
+
     from .session_manager import session_manager
     session = await session_manager.get_session("Robinhood")
     if not session:
         print("No Robinhood credentials supplied, skipping")
         return None
 
-    all_accounts = rh.account.load_account_profile(dataType="results")
+    all_accounts = await asyncio.to_thread(
+        rh.account.load_account_profile, dataType="results"
+    )
 
     for account in all_accounts:
         account_number = account['account_number']
@@ -36,7 +41,7 @@ async def robinTrade(side, qty, ticker, price):
         if price:
             order_args['limitPrice'] = price
 
-        order_function(**order_args)
+        await asyncio.to_thread(order_function, **order_args)
 
         action_str = "Bought" if side == "buy" else "Sold"
         print(f"{action_str} {ticker} on Robinhood {brokerage_account_type} account {account_number}")
@@ -44,6 +49,8 @@ async def robinTrade(side, qty, ticker, price):
 
 async def robinGetHoldings(ticker=None):
     """Get holdings from Robinhood."""
+    await rate_limiter.wait_if_needed("Robinhood")
+
     from .session_manager import session_manager
     session = await session_manager.get_session("Robinhood")
     if not session:
@@ -51,24 +58,30 @@ async def robinGetHoldings(ticker=None):
         return None
 
     holdings_data = {}
-    all_accounts = rh.account.load_account_profile(dataType="results")
+    all_accounts = await asyncio.to_thread(
+        rh.account.load_account_profile, dataType="results"
+    )
 
     for account in all_accounts:
         account_number = account["account_number"]
-        positions = rh.get_open_stock_positions(account_number=account_number)
+        positions = await asyncio.to_thread(
+            rh.get_open_stock_positions, account_number=account_number
+        )
 
         if not positions:
             continue
 
         formatted_positions = []
         for position in positions:
-            symbol = rh.get_symbol_by_url(position['instrument'])
+            symbol = await asyncio.to_thread(
+                rh.get_symbol_by_url, position['instrument']
+            )
             quantity = float(position['quantity'])
             if ticker and symbol.upper() != ticker.upper():
                 continue
 
             cost_basis = float(position['average_buy_price']) * quantity
-            quote_data = rh.get_latest_price(symbol)
+            quote_data = await asyncio.to_thread(rh.get_latest_price, symbol)
             current_price = float(quote_data[0]) if quote_data[0] else 0.0
             current_value = current_price * quantity
 
@@ -99,7 +112,10 @@ async def get_robinhood_session(session_manager):
 
             async def _robinhood_login():
                 mfa = pyotp.TOTP(ROBINHOOD_MFA).now()
-                rh.login(ROBINHOOD_USER, ROBINHOOD_PASS, mfa_code=mfa, pickle_path="./tokens/")
+                await asyncio.to_thread(
+                    rh.login, ROBINHOOD_USER, ROBINHOOD_PASS,
+                    mfa_code=mfa, pickle_path="./tokens/"
+                )
                 return True
 
             try:

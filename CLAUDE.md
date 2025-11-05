@@ -73,6 +73,68 @@ The application supports both CLI and TUI (Terminal User Interface) modes for fl
 
 5. **Error Handling**: Individual broker failures don't halt the entire operation. The `OrderBatchProcessor` catches exceptions per broker and reports them independently, allowing successful brokers to complete while failed ones are logged.
 
+### Concurrency & Async Patterns
+
+The application implements several patterns to ensure true concurrent execution and responsive UI:
+
+1. **Blocking SDK Calls**: Many broker SDKs are synchronous. All blocking calls are wrapped with `asyncio.to_thread()` to prevent blocking the event loop:
+   ```python
+   # Bad: Blocks the event loop
+   async def myBrokerTrade(side, qty, ticker, price):
+       result = broker_sdk.place_order(ticker, qty)  # BLOCKING
+
+   # Good: Runs in thread pool
+   async def myBrokerTrade(side, qty, ticker, price):
+       result = await asyncio.to_thread(broker_sdk.place_order, ticker, qty)
+   ```
+
+2. **Rate Limiting**: All broker modules use the shared rate limiter to prevent API throttling. Add rate limiting before API calls:
+   ```python
+   from .base import rate_limiter
+
+   async def myBrokerTrade(side, qty, ticker, price):
+       await rate_limiter.wait_if_needed("MyBroker")  # ALWAYS ADD THIS
+       # ... API calls
+   ```
+
+   Per-broker rate limits are configured in `brokers/base.py` in the `RateLimiter.BROKER_LIMITS` dict.
+
+3. **Shared HTTP Client**: Use the shared async client from `brokers/base.py` for connection pooling and HTTP/2 support:
+   ```python
+   from .base import http_client
+
+   async def myBrokerTrade(side, qty, ticker, price):
+       response = await http_client.post(url, json=data, headers=headers)
+       # Automatically uses connection pooling (20 keepalive, 100 max connections)
+   ```
+
+4. **Session Caching**: Cache static data (profiles, account lists) during session initialization to avoid redundant API calls:
+   ```python
+   async def get_mybroker_session(session_manager):
+       if "mybroker" not in session_manager._initialized:
+           # Fetch once and cache in session
+           accounts = await fetch_account_list()
+           session_manager.sessions["mybroker"] = {
+               "token": token,
+               "account_ids": accounts  # Cache for reuse
+           }
+       return session_manager.sessions.get("mybroker")
+   ```
+
+5. **API Response Caching**: Use `api_cache` from `brokers/base.py` for frequently-accessed static data:
+   ```python
+   from .base import api_cache
+
+   # Check cache first
+   cached_data = api_cache.get(f"mybroker_profile_{user_id}")
+   if cached_data:
+       return cached_data
+
+   # Fetch and cache
+   data = await fetch_profile()
+   api_cache.set(f"mybroker_profile_{user_id}", data)  # TTL: 5 minutes
+   ```
+
 ## Development Commands
 
 ### Setup and Installation
@@ -127,9 +189,14 @@ python3 -m py_compile main.py brokers/*.py tui/*.py setup.py
    - `{broker}Trade(side, qty, ticker, price)` - async function
    - `{broker}GetHoldings(ticker=None)` - async function
    - `get_{broker}_session(session_manager)` - session initialization
+   - **IMPORTANT**: Wrap all blocking SDK calls with `await asyncio.to_thread()` (see Concurrency Patterns above)
+   - **IMPORTANT**: Add `await rate_limiter.wait_if_needed("BrokerName")` at the start of trade/holdings functions
+   - Use shared `http_client` from `brokers/base.py` instead of creating new HTTP clients
+   - Cache static data (account IDs, profiles) in session initialization
 
 2. **Update `brokers/base.py`**:
    - Add broker entry to `BrokerConfig.BROKERS` with session_key, env_vars, requires_mfa, enabled
+   - Add rate limit to `RateLimiter.BROKER_LIMITS` dict (requests per second)
 
 3. **Update `brokers/session_manager.py`**:
    - Import the broker module
@@ -148,36 +215,87 @@ python3 -m py_compile main.py brokers/*.py tui/*.py setup.py
 
 ## Common Patterns
 
-### Accessing Session Manager
+### Complete Broker Function Template
 ```python
+import asyncio
+from .base import http_client, rate_limiter
 from .session_manager import session_manager
 
 async def myBrokerTrade(side, qty, ticker, price):
+    """Execute a trade on MyBroker."""
+    # Step 1: Rate limiting (ALWAYS FIRST)
+    await rate_limiter.wait_if_needed("MyBroker")
+
+    # Step 2: Get session
     session = await session_manager.get_session("MyBroker")
     if not session:
         print("No MyBroker credentials supplied, skipping")
         return None
-    # Use session data for trading
+
+    # Step 3: Extract cached data from session
+    token = session.get("token")
+    account_ids = session.get("account_ids", [])
+
+    # Step 4: Wrap blocking SDK calls
+    try:
+        # For synchronous SDK calls, use asyncio.to_thread
+        result = await asyncio.to_thread(
+            broker_sdk.place_order,
+            ticker=ticker,
+            quantity=qty,
+            side=side
+        )
+
+        # For async HTTP calls, use shared client
+        response = await http_client.post(
+            url,
+            json={"order": "data"},
+            headers={"Authorization": f"Bearer {token}"}
+        )
+
+        print(f"Order placed successfully on MyBroker")
+    except Exception as e:
+        print(f"Error trading {ticker} on MyBroker: {str(e)}")
+        import traceback
+        traceback.print_exc()
 ```
 
-### Using Shared HTTP Client
+### Wrapping Blocking SDK Calls
 ```python
-from .base import http_client, rate_limiter
+import asyncio
 
-await rate_limiter.wait_if_needed("MyBroker")
-response = await http_client.post(url, json=data, headers=headers)
+# Bad: Blocks event loop
+result = blocking_sdk_call(arg1, arg2)
+
+# Good: Runs in thread pool
+result = await asyncio.to_thread(blocking_sdk_call, arg1, arg2)
+
+# For methods
+result = await asyncio.to_thread(object.method, arg1, kwarg=value)
 ```
 
-### Error Handling in Broker Functions
+### Session Initialization with Caching
 ```python
-import traceback
+async def get_mybroker_session(session_manager):
+    """Get or create MyBroker session with cached account data."""
+    if "mybroker" not in session_manager._initialized:
+        TOKEN = os.getenv("MYBROKER_TOKEN")
 
-try:
-    # Broker API call
-    pass
-except Exception as e:
-    print(f"Error trading {ticker} on MyBroker: {str(e)}")
-    traceback.print_exc()
+        if not TOKEN:
+            session_manager.sessions["mybroker"] = None
+        else:
+            # Fetch and cache account IDs once
+            account_ids = await fetch_accounts(TOKEN)
+
+            session_manager.sessions["mybroker"] = {
+                "token": TOKEN,
+                "account_ids": account_ids  # Cached for reuse
+            }
+            print(f"✓ MyBroker initialized ({len(account_ids)} accounts)")
+
+        session_manager._initialized.add("mybroker")
+
+    return session_manager.sessions.get("mybroker")
 ```
 
 ## Important Files and Locations

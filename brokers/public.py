@@ -4,8 +4,8 @@ import os
 import json
 import traceback
 from pathlib import Path
-import httpx
 import uuid
+from .base import rate_limiter, http_client
 
 
 # Token cache file location
@@ -34,7 +34,7 @@ def _save_token(access_token):
         print(f"Warning: Failed to cache Public access token: {e}")
 
 
-def _generate_access_token(api_secret):
+async def _generate_access_token(api_secret):
     """Generate a new access token from API secret."""
     url = "https://api.public.com/userapiauthservice/personal/access-tokens"
     payload = {
@@ -43,7 +43,7 @@ def _generate_access_token(api_secret):
     }
 
     try:
-        response = httpx.post(url, json=payload, timeout=30.0)
+        response = await http_client.post(url, json=payload)
         response.raise_for_status()
         data = response.json()
         access_token = data.get('accessToken')
@@ -54,15 +54,12 @@ def _generate_access_token(api_secret):
         else:
             print("Error: No access token in response")
             return None
-    except httpx.HTTPStatusError as e:
-        print(f"Error generating Public access token: {e.response.status_code} - {e.response.text}")
-        return None
     except Exception as e:
         print(f"Error generating Public access token: {str(e)}")
         return None
 
 
-def _get_accounts(access_token):
+async def _get_accounts(access_token):
     """Fetch all account IDs for the authenticated user."""
     url = "https://api.public.com/userapigateway/trading/account"
     headers = {
@@ -71,7 +68,7 @@ def _get_accounts(access_token):
     }
 
     try:
-        response = httpx.get(url, headers=headers, timeout=30.0)
+        response = await http_client.get(url, headers=headers)
         response.raise_for_status()
         data = response.json()
 
@@ -81,9 +78,6 @@ def _get_accounts(access_token):
         account_ids = [acc.get('accountId') for acc in accounts if acc.get('accountId')]
 
         return account_ids
-    except httpx.HTTPStatusError as e:
-        print(f"Error fetching Public accounts: {e.response.status_code} - {e.response.text}")
-        return []
     except Exception as e:
         print(f"Error fetching Public accounts: {str(e)}")
         return []
@@ -91,6 +85,8 @@ def _get_accounts(access_token):
 
 async def publicTrade(side, qty, ticker, price):
     """Execute a trade on Public across all accounts."""
+    await rate_limiter.wait_if_needed("Public")
+
     from .session_manager import session_manager
     session = await session_manager.get_session("Public")
     if not session:
@@ -145,19 +141,19 @@ async def publicTrade(side, qty, ticker, price):
             payload["limitPrice"] = str(price)
         try:
             url = f"https://api.public.com/userapigateway/trading/{account_id}/order"
-            response = httpx.post(url, headers=headers, json=payload, timeout=30.0)
+            response = await http_client.post(url, headers=headers, json=payload)
             response.raise_for_status()
 
             action_str = "Bought" if side.lower() == "buy" else "Sold"
             print(f"{action_str} {ticker} on Public account {account_id}")
-        except httpx.HTTPStatusError as e:
-            print(f"Failed to place order for {ticker} on Public account {account_id}: {e.response.status_code} - {e.response.text}")
         except Exception as e:
             print(f"Failed to place order for {ticker} on Public account {account_id}: {str(e)}")
 
 
 async def publicGetHoldings(ticker=None):
     """Get holdings from Public across all accounts."""
+    await rate_limiter.wait_if_needed("Public")
+
     from .session_manager import session_manager
     session = await session_manager.get_session("Public")
     if not session:
@@ -181,7 +177,7 @@ async def publicGetHoldings(ticker=None):
     try:
         for account_id in account_ids:
             url = f"https://api.public.com/userapigateway/trading/{account_id}/portfolio/v2"
-            response = httpx.get(url, headers=headers, timeout=30.0)
+            response = await http_client.get(url, headers=headers)
             response.raise_for_status()
             data = response.json()
 
@@ -239,13 +235,13 @@ async def get_public_session(session_manager):
 
             # If no cached token, generate a new one
             if not access_token:
-                access_token = _generate_access_token(PUBLIC_API_SECRET)
+                access_token = await _generate_access_token(PUBLIC_API_SECRET)
 
             if not access_token:
                 raise Exception("Failed to obtain access token")
 
             # Fetch all account IDs
-            account_ids = _get_accounts(access_token)
+            account_ids = await _get_accounts(access_token)
 
             if not account_ids:
                 print("⚠️  Public authenticated but no accounts found")

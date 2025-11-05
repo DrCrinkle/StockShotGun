@@ -1,19 +1,22 @@
 """BBAE broker integration."""
 
+import asyncio
 import os
 from bbae_invest_api import BBAEAPI
-from .base import _login_broker, _get_broker_holdings
+from .base import _login_broker, _get_broker_holdings, rate_limiter
 
 
 async def bbaeTrade(side, qty, ticker, price):
     """Execute a trade on BBAE."""
+    await rate_limiter.wait_if_needed("BBAE")
+
     from .session_manager import session_manager
     bbae = await session_manager.get_session("BBAE")
     if not bbae:
         print("No BBAE credentials supplied, skipping")
         return None
 
-    account_info = bbae.get_account_info()
+    account_info = await asyncio.to_thread(bbae.get_account_info)
     account_number = account_info.get("Data").get('accountNumber')
 
     if not account_number:
@@ -21,16 +24,22 @@ async def bbaeTrade(side, qty, ticker, price):
         return None
 
     if side == 'buy':
-        response = bbae.execute_buy(ticker, qty, account_number, dry_run=False)
+        response = await asyncio.to_thread(
+            bbae.execute_buy, ticker, qty, account_number, dry_run=False
+        )
     elif side == 'sell':
-        holdings_response = bbae.check_stock_holdings(ticker, account_number)
+        holdings_response = await asyncio.to_thread(
+            bbae.check_stock_holdings, ticker, account_number
+        )
         available_qty = holdings_response.get("Data").get('enableAmount', 0)
 
         if int(available_qty) < qty:
             print(f"Not enough shares to sell. Available: {available_qty}, Requested: {qty}")
             return None
 
-        response = bbae.execute_sell(ticker, qty, account_number, price, dry_run=False)
+        response = await asyncio.to_thread(
+            bbae.execute_sell, ticker, qty, account_number, price, dry_run=False
+        )
     else:
         print(f"Invalid trade side: {side}")
         return None
@@ -44,6 +53,8 @@ async def bbaeTrade(side, qty, ticker, price):
 
 async def bbaeGetHoldings(ticker=None):
     """Get holdings from BBAE."""
+    await rate_limiter.wait_if_needed("BBAE")
+
     from .session_manager import session_manager
     bbae = await session_manager.get_session("BBAE")
     if not bbae:
@@ -65,7 +76,7 @@ async def get_bbae_session(session_manager):
             return None
 
         try:
-            bbae = BBAEAPI(BBAE_USER, BBAE_PASS, creds_path="./tokens/")
+            bbae = await asyncio.to_thread(BBAEAPI, BBAE_USER, BBAE_PASS, creds_path="./tokens/")
             if await _login_broker(bbae, "BBAE"):
                 session_manager.sessions["bbae"] = bbae
                 print("✓ BBAE session initialized")

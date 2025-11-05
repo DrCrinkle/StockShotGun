@@ -25,11 +25,13 @@ login is not currently possible due to Webull API changes.
 See: https://github.com/tedchou12/webull/issues/456
 """
 
+import asyncio
 import os
 import traceback
+from .base import rate_limiter
 
 
-def _discover_accounts(wb, start_index=0, max_accounts=11, existing_account_ids=None):
+async def _discover_accounts(wb, start_index=0, max_accounts=11, existing_account_ids=None):
     """
     Discover accounts by probing indices. Returns list of account dicts.
     
@@ -48,7 +50,7 @@ def _discover_accounts(wb, start_index=0, max_accounts=11, existing_account_ids=
     for i in range(start_index, max_accounts):
         account_id = None
         try:
-            account_id = wb.get_account_id(i)
+            account_id = await asyncio.to_thread(wb.get_account_id, i)
         except (IndexError, AttributeError, KeyError):
             # Expected: no more accounts at this index
             break
@@ -72,6 +74,8 @@ def _discover_accounts(wb, start_index=0, max_accounts=11, existing_account_ids=
 
 async def webullTrade(side, qty, ticker, price):
     """Execute a trade on Webull."""
+    await rate_limiter.wait_if_needed("Webull")
+
     from .session_manager import session_manager
     webull_session = await session_manager.get_session("Webull")
     if not webull_session:
@@ -91,19 +95,21 @@ async def webullTrade(side, qty, ticker, price):
         account_id = account["account_id"]
         try:
             # Set the active account
-            wb.set_account_id(account_id)
+            await asyncio.to_thread(wb.set_account_id, account_id)
 
             # Place order - wrap in try/except to catch library errors
             try:
                 if order_type == "MKT":
-                    response = wb.place_order(
+                    response = await asyncio.to_thread(
+                        wb.place_order,
                         stock=ticker.upper(),
                         action=action,
                         orderType=order_type,
                         quant=qty
                     )
                 else:
-                    response = wb.place_order(
+                    response = await asyncio.to_thread(
+                        wb.place_order,
                         stock=ticker.upper(),
                         action=action,
                         orderType=order_type,
@@ -211,6 +217,8 @@ def _parse_webull_position(position, ticker=None):
 
 async def webullGetHoldings(ticker=None):
     """Get holdings from Webull."""
+    await rate_limiter.wait_if_needed("Webull")
+
     from .session_manager import session_manager
     webull_session = await session_manager.get_session("Webull")
     if not webull_session:
@@ -228,17 +236,17 @@ async def webullGetHoldings(ticker=None):
 
             try:
                 # Set the active account
-                wb.set_account_id(account_id)
+                await asyncio.to_thread(wb.set_account_id, account_id)
 
                 # Get positions - try v1 first (default, stable response format), fall back to v2 if needed
                 positions = None
-                
+
                 try:
-                    positions = wb.get_positions()
+                    positions = await asyncio.to_thread(wb.get_positions)
                 except (KeyError, AttributeError, TypeError) as e:
                     # v1 failed - likely due to account type or API changes, try v2
                     try:
-                        positions = wb.get_positions(v2=True)
+                        positions = await asyncio.to_thread(wb.get_positions, v2=True)
                     except Exception as v2_error:
                         print(f"⚠ Both v1 and v2 get_positions failed for account {account_id}")
                         print(f"  v1 error: {type(e).__name__}: {e}")
@@ -304,12 +312,13 @@ async def get_webull_session(session_manager):
 
             # Set device ID if available
             if device_id:
-                wb.set_did(device_id)
+                await asyncio.to_thread(wb.set_did, device_id)
 
             # Prefer pre-obtained credentials (api_login)
             if has_token_creds:
                 print("Using pre-obtained Webull credentials (api_login)...")
-                wb.api_login(
+                await asyncio.to_thread(
+                    wb.api_login,
                     access_token=access_token,
                     refresh_token=refresh_token,
                     token_expire='2099-01-01T00:00:00.000+0000',  # Far future date
@@ -321,7 +330,7 @@ async def get_webull_session(session_manager):
                 # Verify the session works
                 test_account = None
                 try:
-                    test_account = wb.get_account_id(0)
+                    test_account = await asyncio.to_thread(wb.get_account_id, 0)
                 except (AttributeError, TypeError) as e:
                     print(f"⚠ Could not verify account ID (method error): {e}")
                 except Exception:
@@ -337,13 +346,13 @@ async def get_webull_session(session_manager):
                 print("  Consider using pre-obtained credentials instead")
                 print("  See: https://github.com/ImNotOssy/webull/releases/tag/1")
 
-                wb.login(username, password)
+                await asyncio.to_thread(wb.login, username, password)
 
                 if trading_pin:
-                    wb.get_trade_token(trading_pin)
+                    await asyncio.to_thread(wb.get_trade_token, trading_pin)
 
                 # Verify login
-                test_account = wb.get_account_id(0)
+                test_account = await asyncio.to_thread(wb.get_account_id, 0)
                 if not test_account:
                     raise Exception("Failed to get account ID after login")
 
@@ -365,7 +374,7 @@ async def get_webull_session(session_manager):
                 # Try to discover additional accounts that weren't explicitly provided
                 print("Attempting to discover additional accounts...")
                 existing_ids = [acc["account_id"] for acc in accounts]
-                discovered = _discover_accounts(wb, start_index=0, existing_account_ids=existing_ids)
+                discovered = await _discover_accounts(wb, start_index=0, existing_account_ids=existing_ids)
                 
                 for account in discovered:
                     account["index"] = len(accounts)  # Update index based on final position
@@ -373,7 +382,7 @@ async def get_webull_session(session_manager):
                     print(f"  + Discovered additional account: {account['account_id']}")
             else:
                 # Traditional login - discover all accounts
-                accounts = _discover_accounts(wb)
+                accounts = await _discover_accounts(wb)
 
             if not accounts:
                 raise Exception("No Webull accounts found")

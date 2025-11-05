@@ -6,6 +6,7 @@ import asyncio
 import traceback
 from bs4 import BeautifulSoup
 from zendriver import Browser
+from .base import rate_limiter
 
 
 async def _wellsfargo_authenticate(session_info):
@@ -535,6 +536,8 @@ async def _wellsfargo_parse_holdings_table(html):
 
 async def wellsfargoGetHoldings(ticker=None):
     """Get holdings from all Wells Fargo accounts."""
+    await rate_limiter.wait_if_needed("WellsFargo")
+
     from .session_manager import session_manager
     session = await session_manager.get_session("WellsFargo")
     if not session:
@@ -630,6 +633,8 @@ async def wellsfargoGetHoldings(ticker=None):
 
 async def wellsfargoTrade(side, qty, ticker, price):
     """Execute a trade on Wells Fargo Advisors."""
+    await rate_limiter.wait_if_needed("WellsFargo")
+
     from .session_manager import session_manager
     session = await session_manager.get_session("WellsFargo")
     if not session:

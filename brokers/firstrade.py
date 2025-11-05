@@ -1,5 +1,6 @@
 """Firstrade broker integration."""
 
+import asyncio
 import os
 import traceback
 from firstrade import account as ft_account, order, symbols
@@ -7,15 +8,20 @@ from firstrade import account as ft_account, order, symbols
 
 async def firstradeTrade(side, qty, ticker, price):
     """Execute a trade on Firstrade."""
+    from .base import rate_limiter
+    await rate_limiter.wait_if_needed("Firstrade")
+
     from .session_manager import session_manager
     ft_ss = await session_manager.get_session("Firstrade")
     if not ft_ss:
         print("No Firstrade credentials supplied, skipping")
         return None
 
-    ft_accounts = ft_account.FTAccountData(ft_ss)
+    ft_accounts = await asyncio.to_thread(ft_account.FTAccountData, ft_ss)
 
-    symbol_data = symbols.SymbolQuote(ft_ss, ft_accounts.account_numbers[0], ticker)
+    symbol_data = await asyncio.to_thread(
+        symbols.SymbolQuote, ft_ss, ft_accounts.account_numbers[0], ticker
+    )
 
     adjusted_qty = qty
     sell_qty = 0
@@ -33,7 +39,7 @@ async def firstradeTrade(side, qty, ticker, price):
     else:
         price_type = order.PriceType.MARKET if price is None else order.PriceType.LIMIT
 
-    ft_order = order.Order(ft_ss)
+    ft_order = await asyncio.to_thread(order.Order, ft_ss)
 
     for account_number in ft_accounts.account_numbers:
         try:
@@ -48,7 +54,7 @@ async def firstradeTrade(side, qty, ticker, price):
                 "dry_run": False,
             }
 
-            order_conf = ft_order.place_order(**order_params)
+            order_conf = await asyncio.to_thread(ft_order.place_order, **order_params)
 
             if order_conf.get("message") == "Normal":
                 print(f"Order for {adjusted_qty} shares of {ticker} placed on Firstrade successfully.")
@@ -62,7 +68,7 @@ async def firstradeTrade(side, qty, ticker, price):
                         "price": symbol_data.last - 0.01,
                     }
 
-                    sell_conf = ft_order.place_order(**sell_params)
+                    sell_conf = await asyncio.to_thread(ft_order.place_order, **sell_params)
 
                     if sell_conf.get("message") == "Normal":
                         print(f"Sell order for excess {sell_qty} shares placed successfully.")
@@ -79,6 +85,9 @@ async def firstradeTrade(side, qty, ticker, price):
 
 async def firstradeGetHoldings(ticker=None):
     """Get holdings from Firstrade."""
+    from .base import rate_limiter
+    await rate_limiter.wait_if_needed("Firstrade")
+
     from .session_manager import session_manager
     ft_ss = await session_manager.get_session("Firstrade")
     if not ft_ss:
@@ -86,11 +95,11 @@ async def firstradeGetHoldings(ticker=None):
         return None
 
     try:
-        ft_accounts = ft_account.FTAccountData(ft_ss)
+        ft_accounts = await asyncio.to_thread(ft_account.FTAccountData, ft_ss)
         holdings_data = {}
 
         for account_number in ft_accounts.account_numbers:
-            positions = ft_accounts.get_positions(account_number)
+            positions = await asyncio.to_thread(ft_accounts.get_positions, account_number)
             if not positions:
                 continue
 
@@ -135,16 +144,17 @@ async def get_firstrade_session(session_manager):
             return None
 
         try:
-            ft_ss = ft_account.FTSession(
+            ft_ss = await asyncio.to_thread(
+                ft_account.FTSession,
                 username=FIRSTRADE_USER,
                 password=FIRSTRADE_PASS,
                 mfa_secret=FIRSTRADE_MFA,
                 profile_path="./tokens/"
             )
-            need_code = ft_ss.login()
+            need_code = await asyncio.to_thread(ft_ss.login)
             if need_code:
                 code = input("Please enter the pin sent to your email/phone: ")
-                ft_ss.login_two(code)
+                await asyncio.to_thread(ft_ss.login_two, code)
 
             session_manager.sessions["firstrade"] = ft_ss
             print("✓ Firstrade session initialized")

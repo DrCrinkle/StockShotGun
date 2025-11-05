@@ -1,5 +1,6 @@
 """TastyTrade broker integration."""
 
+import asyncio
 import os
 from decimal import Decimal
 from tastytrade import Session, Account
@@ -10,18 +11,21 @@ from tastytrade.order import (
     OrderType,
     OrderAction,
 )
+from .base import rate_limiter
 
 
 async def tastyTrade(side, qty, ticker, price):
     """Execute a trade on TastyTrade."""
+    await rate_limiter.wait_if_needed("TastyTrade")
+
     from .session_manager import session_manager
     session = await session_manager.get_session("TastyTrade")
     if not session:
         print("No TastyTrade credentials supplied, skipping")
         return None
 
-    accounts = Account.get(session)
-    symbol = Equity.get(session, ticker)
+    accounts = await asyncio.to_thread(Account.get, session)
+    symbol = await asyncio.to_thread(Equity.get, session, ticker)
     action = OrderAction.BUY_TO_OPEN if side == "buy" else OrderAction.SELL_TO_CLOSE
 
     # Build the order
@@ -46,17 +50,19 @@ async def tastyTrade(side, qty, ticker, price):
 
 async def tastyGetHoldings(ticker=None):
     """Get holdings from TastyTrade."""
+    await rate_limiter.wait_if_needed("TastyTrade")
+
     from .session_manager import session_manager
     session = await session_manager.get_session("TastyTrade")
     if not session:
         print("No TastyTrade credentials supplied, skipping")
         return None
 
-    accounts = Account.get(session)
+    accounts = await asyncio.to_thread(Account.get, session)
 
     holdings_data = {}
     for account in accounts:
-        positions = account.get_positions(session)
+        positions = await asyncio.to_thread(account.get_positions, session)
         if not positions:
             continue
 
@@ -90,7 +96,7 @@ async def get_tastytrade_session(session_manager):
             return None
 
         try:
-            session = Session(TASTY_USER, TASTY_PASS)
+            session = await asyncio.to_thread(Session, TASTY_USER, TASTY_PASS)
             session_manager.sessions["tastytrade"] = session
             print("✓ TastyTrade session initialized")
         except Exception as e:

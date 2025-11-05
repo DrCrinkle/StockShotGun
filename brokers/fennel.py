@@ -2,7 +2,7 @@
 
 import os
 import traceback
-from .base import http_client
+from .base import http_client, rate_limiter
 
 
 API_BASE = "https://api.fennel.com"
@@ -10,6 +10,8 @@ API_BASE = "https://api.fennel.com"
 
 async def fennelTrade(side, qty, ticker, price):
     """Execute a trade on Fennel using official API."""
+    await rate_limiter.wait_if_needed("Fennel")
+
     from .session_manager import session_manager
     fennel_session = await session_manager.get_session("Fennel")
     if not fennel_session:
@@ -66,6 +68,8 @@ async def fennelTrade(side, qty, ticker, price):
 
 async def fennelGetHoldings(ticker=None):
     """Get holdings from Fennel using official API."""
+    await rate_limiter.wait_if_needed("Fennel")
+
     from .session_manager import session_manager
     fennel_session = await session_manager.get_session("Fennel")
     if not fennel_session:

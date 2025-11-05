@@ -11,6 +11,7 @@ from .holdings_view import HoldingsView
 from .broker_functions import BROKER_CONFIG
 from .response_handler import ResponseWriter
 from .input_handler import tui_input_handler, setup_tui_input_interception, restore_original_input
+from order_processor import order_processor
 
 
 def run_tui():
@@ -176,27 +177,24 @@ def run_tui():
 
         response_box.add_response(f"Submitting {len(orders)} orders...")
 
-        for idx, order in enumerate(orders, 1):
-            response_box.add_response(f"Submitting order {idx}: {order}")
-            for broker in order["selected_brokers"]:
-                broker_config = BROKER_CONFIG.get(broker)
-                trade_function = broker_config.get("trade") if broker_config else None
-                response_box.add_response(f"Submitting to {broker}")
-                if trade_function:
-                    try:
-                        await trade_function(
-                            order["action"],
-                            order["quantity"],
-                            order["ticker"],
-                            order["price"],
-                        )
-                        response_box.add_response(f"✓ Successfully submitted to {broker}")
-                    except Exception as e:
-                        error_msg = f"✗ Error submitting order to {broker}: {str(e)}"
-                        response_box.add_response(error_msg)
-                        traceback.print_exc()
+        # Convert BROKER_CONFIG to simple {broker: trade_function} mapping for order_processor
+        trade_functions = {broker: config["trade"] for broker, config in BROKER_CONFIG.items()}
 
-        response_box.add_response("All orders processed!")
+        try:
+            # Use concurrent order processor
+            results = await order_processor.process_orders(
+                orders,
+                trade_functions=trade_functions,
+                add_response_fn=response_box.add_response
+            )
+
+            response_box.add_response(
+                f"\n✅ Complete: {results['successful']} successful, {results['failed']} failed"
+            )
+        except Exception as e:
+            response_box.add_response(f"✗ Error processing orders: {str(e)}")
+            traceback.print_exc()
+
         orders.clear()
         update_order_summary()
 

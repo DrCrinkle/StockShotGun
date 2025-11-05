@@ -1,5 +1,6 @@
 """Schwab broker integration."""
 
+import asyncio
 import os
 from schwab import auth
 from schwab.orders.equities import (
@@ -12,13 +13,16 @@ from schwab.orders.equities import (
 
 async def schwabTrade(side, qty, ticker, price):
     """Execute a trade on Schwab."""
+    from .base import rate_limiter
+    await rate_limiter.wait_if_needed("Schwab")
+
     from .session_manager import session_manager
     c = await session_manager.get_session("Schwab")
     if not c:
         print("No Schwab credentials supplied, skipping")
         return None
 
-    accounts = c.get_account_numbers()
+    accounts = await asyncio.to_thread(c.get_account_numbers)
 
     order_types = {
         ("buy", True): equity_buy_limit,
@@ -33,7 +37,8 @@ async def schwabTrade(side, qty, ticker, price):
 
     for account in accounts.json():
         account_hash = account["hashValue"]
-        order = c.place_order(
+        order = await asyncio.to_thread(
+            c.place_order,
             account_hash,
             (
                 order_function(ticker, qty, price)
@@ -50,13 +55,16 @@ async def schwabTrade(side, qty, ticker, price):
 
 async def schwabGetHoldings(ticker=None):
     """Get holdings from Schwab."""
+    from .base import rate_limiter
+    await rate_limiter.wait_if_needed("Schwab")
+
     from .session_manager import session_manager
     c = await session_manager.get_session("Schwab")
     if not c:
         print("No Schwab credentials supplied, skipping")
         return None
 
-    accounts_response = c.get_account_numbers()
+    accounts_response = await asyncio.to_thread(c.get_account_numbers)
     if accounts_response.status_code != 200:
         print(f"Error getting Schwab accounts: {accounts_response.text}")
         return None
@@ -67,7 +75,8 @@ async def schwabGetHoldings(ticker=None):
     for account in accounts:
         account_number = account['accountNumber']
         account_hash = account['hashValue']
-        positions_response = c.get_account(
+        positions_response = await asyncio.to_thread(
+            c.get_account,
             account_hash,
             fields=c.Account.Fields.POSITIONS
         )
@@ -125,7 +134,8 @@ async def get_schwab_session(session_manager):
             return None
 
         try:
-            client = auth.easy_client(
+            client = await asyncio.to_thread(
+                auth.easy_client,
                 SCHWAB_API_KEY,
                 SCHWAB_API_SECRET,
                 SCHWAB_CALLBACK_URL,
