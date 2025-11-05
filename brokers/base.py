@@ -120,7 +120,7 @@ class BrokerConfig:
         },
         "Public": {
             "session_key": "public",
-            "env_vars": ["PUBLIC_USER", "PUBLIC_PASS"],
+            "env_vars": ["PUBLIC_API_SECRET"],
             "requires_mfa": False,
             "enabled": True
         },
