@@ -3,3 +3,6 @@
 /.vscode/
 /__pycache__
 /tokens/
+/brokers/__pycache__/
+/tui/__pycache__/
+/.serena/

@@ -1,9 +1,20 @@
 import os
 from dotenv import load_dotenv
-from dump_env import dumper
 
 load_dotenv("./.env")
 
+def validate_credentials(service, credentials):
+    """Validate that required credentials are provided."""
+    missing = []
+    for env_var, prompt in credentials:
+        value = os.getenv(env_var) or os.getenv(f"SSG_{env_var}")
+        if not value:
+            missing.append(prompt)
+
+    if missing:
+        print(f"⚠️  Warning: Missing {service} credentials: {', '.join(missing)}")
+        return False
+    return True
 
 def setup():
     print("Setting up broker credentials, press ENTER to skip entry")
@@ -17,13 +28,20 @@ def setup():
         "Firstrade": [
             ("FIRSTRADE_USER", "Username"),
             ("FIRSTRADE_PASS", "Password"),
-            ("FIRSTRADE_PIN", "PIN")
+            ("FIRSTRADE_MFA", "MFA Secret")
         ],
         "Schwab": [
             ("SCHWAB_API_KEY", "API Key"),
             ("SCHWAB_API_SECRET", "API Secret"),
             ("SCHWAB_CALLBACK_URL", "Callback URL"),
             ("SCHWAB_TOKEN_PATH", "Token Path"),
+        ],
+        "Webull": [
+            ("WEBULL_ACCESS_TOKEN", "Access Token (from Chrome extension - RECOMMENDED)"),
+            ("WEBULL_REFRESH_TOKEN", "Refresh Token (from Chrome extension)"),
+            ("WEBULL_UUID", "UUID (from Chrome extension)"),
+            ("WEBULL_ACCOUNT_ID", "Account ID (from Chrome extension)"),
+            ("WEBULL_DID", "Device ID (optional)"),
         ],
         "BBAE": [
             ("BBAE_USER", "Username"),
@@ -33,23 +51,83 @@ def setup():
             ("DSPAC_USER", "Username"),
             ("DSPAC_PASS", "Password"),
         ],
+        "Chase": [
+            ("CHASE_USER", "Username"),
+            ("CHASE_PASS", "Password"),
+            ("CELL_PHONE_LAST_FOUR", "Last four digits of cell phone number"),
+        ],
+        "SoFi": [
+            ("SOFI_USER", "Username"),
+            ("SOFI_PASS", "Password"),
+            ("SOFI_TOTP", "TOTP Secret (optional, press ENTER to skip)")
+        ],
+        "WellsFargo": [
+            ("WELLSFARGO_USER", "Username"),
+            ("WELLSFARGO_PASS", "Password"),
+            ("WELLSFARGO_PHONE_SUFFIX", "Phone Suffix for 2FA (optional, e.g., last 4 digits)"),
+        ],
         "TastyTrade": [("TASTY_USER", "Username"), ("TASTY_PASS", "Password")],
         "Tradier": [("TRADIER_ACCESS_TOKEN", "Access Token")],
-        "Public": [("PUBLIC_USER", "Username"), ("PUBLIC_PASS", "Password")],
-        "Fennel": [("FENNEL_EMAIL", "Email")],
+        "Public": [("PUBLIC_API_SECRET", "API Secret Key")],
+        "Fennel": [("FENNEL_ACCESS_TOKEN", "Personal Access Token (from Fennel Dashboard)")],
     }
 
+    # Check existing credentials first
+    print("Checking existing credentials...")
+    existing_services = []
     for service, credentials in brokers.items():
+        if validate_credentials(service, credentials):
+            existing_services.append(service)
+            print(f"✓ {service}: Credentials found")
+        else:
+            print(f"✗ {service}: Credentials missing")
+
+    if existing_services:
+        print(f"\nExisting credentials found for: {', '.join(existing_services)}")
+        skip_existing = input("Skip setup for existing services? (y/N): ").lower().startswith('y')
+    else:
+        skip_existing = False
+
+    for service, credentials in brokers.items():
+        # Skip if credentials exist and user chose to skip
+        if skip_existing and validate_credentials(service, credentials):
+            print(f"Skipping {service} (credentials already exist)")
+            continue
+
         print(f"{'-' * 10}{service}{'-' * 10}")
         for env_var, prompt in credentials:
-            value = input(f"{service} {prompt}: ") or os.getenv(env_var) or ""
-            os.environ[f"SSG_{env_var}"] = value
+            # Check for existing value first
+            existing_value = os.getenv(env_var) or os.getenv(f"SSG_{env_var}")
+            if existing_value:
+                print(f"{service} {prompt}: [existing value hidden] (press ENTER to keep)")
+                value = input(f"New {service} {prompt} (or ENTER to keep existing): ") or existing_value
+            else:
+                value = input(f"{service} {prompt}: ") or ""
+
+            # Store directly without SSG_ prefix to avoid duplication
+            if value:
+                os.environ[env_var] = value
 
     print(f"{'-' * 5} Saving credentials to .env {'-' * 5}")
-    variables = dumper.dump(prefixes=["SSG_"])
 
+    # Save credentials directly without SSG_ prefix
     with open(".env", 'w') as f:
-        for env_name, env_value in variables.items():
-            f.write(f'{env_name}={env_value}\n')
+        for service, credentials in brokers.items():
+            for env_var, _ in credentials:
+                value = os.getenv(env_var)
+                if value:
+                    f.write(f'{env_var}={value}\n')
 
     print("Credentials saved to .env")
+
+    # Validate final configuration
+    print("\nValidating final configuration...")
+    final_validation = []
+    for service, credentials in brokers.items():
+        if validate_credentials(service, credentials):
+            final_validation.append(service)
+
+    if final_validation:
+        print(f"✅ Configuration complete! Services ready: {', '.join(final_validation)}")
+    else:
+        print("⚠️  No services are fully configured. Please check your .env file.")
