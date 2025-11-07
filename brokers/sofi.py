@@ -381,10 +381,16 @@ async def sofiGetHoldings(ticker=None):
                 shares = float(holding.get("shares", 0))
                 price = float(holding.get("price", 0))
 
+                # Extract cost basis
+                cost_basis = float(holding.get("costBasis", 0))
+                if cost_basis == 0 and "avgCost" in holding:
+                    avg_cost = float(holding.get("avgCost", 0))
+                    cost_basis = avg_cost * shares
+
                 formatted_positions.append({
                     "symbol": symbol,
                     "quantity": shares,
-                    "cost_basis": price * shares,
+                    "cost_basis": cost_basis,
                     "current_value": price * shares
                 })
 
