@@ -21,10 +21,11 @@ class EditWithCallback(urwid.Edit):
 class ResponseBox(urwid.WidgetWrap):
     """A scrollable response box that displays timestamped messages."""
 
-    def __init__(self, max_responses=50, height=8):
+    def __init__(self, max_responses=100, height=10):
         self.max_responses = max_responses
         self.responses = []
         self.height = height
+        self._loop = None
 
         # Create the list walker and listbox
         self.walker = urwid.SimpleFocusListWalker([])
@@ -37,6 +38,10 @@ class ResponseBox(urwid.WidgetWrap):
         self.pile = urwid.BoxAdapter(self.box, height=self.height)
 
         super().__init__(self.pile)
+
+    def set_loop(self, loop):
+        """Set the urwid main loop for triggering redraws."""
+        self._loop = loop
 
     def add_response(self, message, style=None, force_redraw=False):
         """Add a new response message with timestamp."""
@@ -60,6 +65,10 @@ class ResponseBox(urwid.WidgetWrap):
         # Auto-scroll to bottom
         if len(self.walker) > 0:
             self.listbox.set_focus(len(self.walker) - 1)
+
+        # Force screen redraw for real-time response display
+        if force_redraw and self._loop:
+            self._loop.draw_screen()
 
     def clear(self):
         """Clear all responses."""

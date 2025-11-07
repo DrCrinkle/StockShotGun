@@ -417,6 +417,9 @@ def run_tui():
         unhandled_input=default_input_handler,
     )
 
+    # Set loop on response_box for real-time response display
+    response_box.set_loop(loop)
+
     # Set up input handler for the TUI
     tui_input_handler.set_loop(loop)
     setup_tui_input_interception()
