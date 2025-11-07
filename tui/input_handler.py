@@ -1,8 +1,7 @@
 """Input handling and modal dialogs for the TUI."""
 
 import urwid
-import time
-from .config import MODAL_WIDTH, MODAL_HEIGHT, REDRAW_DELAY
+from .config import MODAL_WIDTH, MODAL_HEIGHT
 
 # Store original input function before any modifications
 original_input = input
@@ -14,14 +13,21 @@ class TUIInputHandler:
     def __init__(self):
         self.loop = None
         self.input_result = None
-        self.input_event = None
         self.waiting_for_input = False
 
     def set_loop(self, loop):
         self.loop = loop
 
     def prompt_user(self, prompt_text):
-        """Show modal input dialog and wait for user input."""
+        """Show modal input dialog and wait for user input (sync, works from async code).
+
+        This is a CRITICAL function that solves the sync/async impedance mismatch:
+        - Brokers call input() synchronously (from async tasks)
+        - But urwid needs the event loop to keep running to process keypresses
+        - Solution: Manually pump the event loop while blocking the caller
+
+        DO NOT MODIFY THIS WITHOUT UNDERSTANDING THE IMPLICATIONS!
+        """
         if not self.loop:
             # Fallback to regular input if TUI not available
             return original_input(prompt_text)
@@ -32,11 +38,19 @@ class TUIInputHandler:
         # Show the input modal immediately
         self._show_input_modal(prompt_text)
 
-        # Wait for user input in a way that works with the event loop
+        # CRITICAL: Manually pump the event loop while waiting!
+        # - _run_once() processes pending events (keypresses, timers, etc.)
+        # - This keeps urwid responsive while blocking the input() call
+        # - DO NOT use time.sleep() or threading.Event.wait() - they freeze the loop!
+        event_loop = self.loop.event_loop._loop  # Get the asyncio event loop
+
         while self.waiting_for_input:
+            # Process ONE iteration of the event loop
+            # This allows keypresses to be processed!
+            event_loop._run_once()
+
+            # Also redraw screen
             self.loop.draw_screen()
-            # Small sleep to prevent busy waiting
-            time.sleep(REDRAW_DELAY)
 
         return self.input_result or ""
 

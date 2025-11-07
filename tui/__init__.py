@@ -10,7 +10,6 @@ from .config import (
     RESPONSE_BOX_HEIGHT,
     MODAL_WIDTH,
     MODAL_HEIGHT,
-    REDRAW_DELAY,
     BROKERS,
     PALETTE,
 )
@@ -57,7 +56,6 @@ __all__ = [
     "RESPONSE_BOX_HEIGHT",
     "MODAL_WIDTH",
     "MODAL_HEIGHT",
-    "REDRAW_DELAY",
     "BROKERS",
     "PALETTE",
     # Widgets
