@@ -33,9 +33,22 @@ class HoldingsView:
             text += "No positions\n"
         else:
             for position in positions:
+                # Handle None values for cost_basis and current_value
+                cost_basis = position.get('cost_basis')
+                if cost_basis is None:
+                    cost_basis_display = "N/A"
+                else:
+                    cost_basis_display = f"${float(cost_basis):.2f}"
+
+                current_value = position.get('current_value')
+                if current_value is None:
+                    current_value_display = "N/A"
+                else:
+                    current_value_display = f"${float(current_value):.2f}"
+
                 text += (
                     f"{position['symbol']}: {position['quantity']} shares\n"
-                    f"  Cost Basis: ${position['cost_basis']:.2f}\n"
-                    f"  Current Value: ${position['current_value']:.2f}\n\n"
+                    f"  Cost Basis: {cost_basis_display}\n"
+                    f"  Current Value: {current_value_display}\n\n"
                 )
         return text
