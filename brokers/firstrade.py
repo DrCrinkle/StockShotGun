@@ -7,7 +7,13 @@ from firstrade import account as ft_account, order, symbols
 
 
 async def firstradeTrade(side, qty, ticker, price):
-    """Execute a trade on Firstrade."""
+    """Execute a trade on Firstrade.
+
+    Returns:
+        True: Trade executed successfully on at least one account
+        False: Trade failed on all accounts
+        None: No credentials (broker skipped)
+    """
     from .base import rate_limiter
     await rate_limiter.wait_if_needed("Firstrade")
 
@@ -41,6 +47,9 @@ async def firstradeTrade(side, qty, ticker, price):
 
     ft_order = await asyncio.to_thread(order.Order, ft_ss)
 
+    success_count = 0
+    failure_count = 0
+
     for account_number in ft_accounts.account_numbers:
         try:
             order_params = {
@@ -59,6 +68,7 @@ async def firstradeTrade(side, qty, ticker, price):
             if order_conf.get("message") == "Normal":
                 print(f"Order for {adjusted_qty} shares of {ticker} placed on Firstrade successfully.")
                 print(f"Order ID: {order_conf.get('result').get('order_id')}.")
+                success_count += 1
 
                 if sell_qty > 0:
                     sell_params = {
@@ -79,8 +89,13 @@ async def firstradeTrade(side, qty, ticker, price):
             else:
                 print(f"Failed to place order for {ticker} on Firstrade.")
                 print(order_conf)
+                failure_count += 1
         except Exception as e:
             print(f"An error occurred while placing order for {ticker} on Firstrade: {e}")
+            failure_count += 1
+
+    # Return True if at least one account succeeded
+    return success_count > 0
 
 
 async def firstradeGetHoldings(ticker=None):

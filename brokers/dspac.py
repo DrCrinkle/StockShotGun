@@ -7,7 +7,13 @@ from .base import _login_broker, _get_broker_holdings, rate_limiter
 
 
 async def dspacTrade(side, qty, ticker, price):
-    """Execute a trade on DSPAC."""
+    """Execute a trade on DSPAC.
+
+    Returns:
+        True: Trade executed successfully on at least one account
+        False: Trade failed on all accounts
+        None: No credentials supplied
+    """
     await rate_limiter.wait_if_needed("DSPAC")
 
     from .session_manager import session_manager
@@ -16,50 +22,63 @@ async def dspacTrade(side, qty, ticker, price):
         print("No DSPAC credentials supplied, skipping")
         return None
 
-    account_info = await asyncio.to_thread(dspac.get_account_info)
-    account_number = account_info.get("Data").get('accountNumber')
+    success_count = 0
+    failure_count = 0
 
-    if not account_number:
-        print("Failed to retrieve account number from DSPAC.")
-        return None
+    try:
+        account_info = await asyncio.to_thread(dspac.get_account_info)
+        account_number = account_info.get("Data").get('accountNumber')
 
-    if side == 'buy':
-        response = await asyncio.to_thread(
-            dspac.execute_buy,
-            ticker,
-            qty,
-            account_number,
-            dry_run=False,
-        )
-    elif side == 'sell':
-        holdings_response = await asyncio.to_thread(
-            dspac.check_stock_holdings,
-            ticker,
-            account_number,
-        )
-        available_qty = holdings_response.get("Data").get('enableAmount', 0)
+        if not account_number:
+            print("Failed to retrieve account number from DSPAC.")
+            return False
 
-        if int(available_qty) < qty:
-            print(f"Not enough shares to sell. Available: {available_qty}, Requested: {qty}")
-            return None
+        if side == 'buy':
+            response = await asyncio.to_thread(
+                dspac.execute_buy,
+                ticker,
+                qty,
+                account_number,
+                dry_run=False,
+            )
+        elif side == 'sell':
+            holdings_response = await asyncio.to_thread(
+                dspac.check_stock_holdings,
+                ticker,
+                account_number,
+            )
+            available_qty = holdings_response.get("Data").get('enableAmount', 0)
 
-        response = await asyncio.to_thread(
-            dspac.execute_sell,
-            ticker,
-            qty,
-            account_number,
-            price,
-            dry_run=False,
-        )
-    else:
-        print(f"Invalid trade side: {side}")
-        return None
+            if int(available_qty) < qty:
+                print(f"Not enough shares to sell. Available: {available_qty}, Requested: {qty}")
+                return False
 
-    if response.get("Outcome") == "Success":
-        action_str = "Bought" if side == "buy" else "Sold"
-        print(f"{action_str} {qty} shares of {ticker} on DSPAC.")
-    else:
-        print(f"Failed to {side} {ticker}: {response.get('Message')}")
+            response = await asyncio.to_thread(
+                dspac.execute_sell,
+                ticker,
+                qty,
+                account_number,
+                price,
+                dry_run=False,
+            )
+        else:
+            print(f"Invalid trade side: {side}")
+            return False
+
+        if response.get("Outcome") == "Success":
+            action_str = "Bought" if side == "buy" else "Sold"
+            print(f"{action_str} {qty} shares of {ticker} on DSPAC.")
+            success_count += 1
+        else:
+            print(f"Failed to {side} {ticker}: {response.get('Message')}")
+            failure_count += 1
+    except Exception as e:
+        print(f"Error trading {ticker} on DSPAC: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        failure_count += 1
+
+    return success_count > 0
 
 
 async def dspacGetHoldings(ticker=None):

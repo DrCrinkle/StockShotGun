@@ -126,9 +126,11 @@ async def run_cli(args, parser):
 
     # Print summary
     print(f"\n{'='*60}")
-    print("Order execution complete:")
-    print(f"  Successful brokers: {len([s for status in results['statuses'] for s in status['successful']])}")
-    print(f"  Failed brokers: {len([f for status in results['statuses'] for f in status['failed']])}")
+    print("🎯 Total Results:")
+    print(f"  ✅ Successful brokers: {results['successful']}")
+    print(f"  ❌ Failed brokers: {results['failed']}")
+    if results['skipped'] > 0:
+        print(f"  ⚠️  Skipped brokers: {results['skipped']}")
     print(f"{'='*60}")
 
 

@@ -12,7 +12,13 @@ from schwab.orders.equities import (
 
 
 async def schwabTrade(side, qty, ticker, price):
-    """Execute a trade on Schwab."""
+    """Execute a trade on Schwab.
+
+    Returns:
+        True: Trade executed successfully on at least one account
+        False: Trade failed on all accounts
+        None: No credentials supplied
+    """
     from .base import rate_limiter
     await rate_limiter.wait_if_needed("Schwab")
 
@@ -22,35 +28,53 @@ async def schwabTrade(side, qty, ticker, price):
         print("No Schwab credentials supplied, skipping")
         return None
 
-    accounts = await asyncio.to_thread(c.get_account_numbers)
+    success_count = 0
+    failure_count = 0
 
-    order_types = {
-        ("buy", True): equity_buy_limit,
-        ("buy", False): equity_buy_market,
-        ("sell", True): equity_sell_limit,
-        ("sell", False): equity_sell_market,
-    }
+    try:
+        accounts = await asyncio.to_thread(c.get_account_numbers)
 
-    order_function = order_types.get((side.lower(), bool(price)))
-    if not order_function:
-        raise ValueError(f"Invalid combination of side: {side} and price: {price}")
+        order_types = {
+            ("buy", True): equity_buy_limit,
+            ("buy", False): equity_buy_market,
+            ("sell", True): equity_sell_limit,
+            ("sell", False): equity_sell_market,
+        }
 
-    for account in accounts.json():
-        account_hash = account["hashValue"]
-        order = await asyncio.to_thread(
-            c.place_order,
-            account_hash,
-            (
-                order_function(ticker, qty, price)
-                if price
-                else order_function(ticker, qty)
-            ),
-        )
+        order_function = order_types.get((side.lower(), bool(price)))
+        if not order_function:
+            print(f"Invalid combination of side: {side} and price: {price}")
+            return False
 
-        if order.status_code == 201:
-            print(f"Order placed for {qty} shares of {ticker} on Schwab account {account['accountNumber']}")
-        else:
-            print(f"Error placing order on Schwab account {account['accountNumber']}: {order.json()}")
+        for account in accounts.json():
+            account_hash = account["hashValue"]
+            try:
+                order = await asyncio.to_thread(
+                    c.place_order,
+                    account_hash,
+                    (
+                        order_function(ticker, qty, price)
+                        if price
+                        else order_function(ticker, qty)
+                    ),
+                )
+
+                if order.status_code == 201:
+                    print(f"Order placed for {qty} shares of {ticker} on Schwab account {account['accountNumber']}")
+                    success_count += 1
+                else:
+                    print(f"Error placing order on Schwab account {account['accountNumber']}: {order.json()}")
+                    failure_count += 1
+            except Exception as e:
+                print(f"Error placing order for {ticker} on Schwab account {account['accountNumber']}: {str(e)}")
+                failure_count += 1
+    except Exception as e:
+        print(f"Error trading {ticker} on Schwab: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+    return success_count > 0
 
 
 async def schwabGetHoldings(ticker=None):

@@ -5,7 +5,13 @@ from .base import http_client, rate_limiter, api_cache
 
 
 async def tradierTrade(side, qty, ticker, price):
-    """Execute a trade on Tradier."""
+    """Execute a trade on Tradier.
+
+    Returns:
+        True: Trade executed successfully on at least one account
+        False: Trade failed on all accounts
+        None: No credentials supplied
+    """
     await rate_limiter.wait_if_needed("Tradier")
 
     from .session_manager import session_manager
@@ -22,6 +28,9 @@ async def tradierTrade(side, qty, ticker, price):
         print("No Tradier accounts found.")
         return False
 
+    success_count = 0
+    failure_count = 0
+
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/json",
@@ -32,25 +41,33 @@ async def tradierTrade(side, qty, ticker, price):
     price_data = {"price": f"{price}"} if price else {}
 
     for account_id in account_ids:
-        response = await http_client.post(
-            f"https://api.tradier.com/v1/accounts/{account_id}/orders",
-            data={
-                "class": "equity",
-                "symbol": ticker,
-                "side": side,
-                "quantity": qty,
-                "type": order_type,
-                "duration": "day",
-                **price_data,
-            },
-            headers=headers
-        )
+        try:
+            response = await http_client.post(
+                f"https://api.tradier.com/v1/accounts/{account_id}/orders",
+                data={
+                    "class": "equity",
+                    "symbol": ticker,
+                    "side": side,
+                    "quantity": qty,
+                    "type": order_type,
+                    "duration": "day",
+                    **price_data,
+                },
+                headers=headers
+            )
 
-        if response.status_code != 200:
-            print(f"Error placing order on account {account_id}: {response.text}")
-        else:
-            action_str = "Bought" if side == "buy" else "Sold"
-            print(f"{action_str} {ticker} on Tradier account {account_id}")
+            if response.status_code != 200:
+                print(f"Error placing order on account {account_id}: {response.text}")
+                failure_count += 1
+            else:
+                action_str = "Bought" if side == "buy" else "Sold"
+                print(f"{action_str} {ticker} on Tradier account {account_id}")
+                success_count += 1
+        except Exception as e:
+            print(f"Error placing order for {ticker} on Tradier account {account_id}: {str(e)}")
+            failure_count += 1
+
+    return success_count > 0
 
 
 async def tradierGetHoldings(ticker=None):

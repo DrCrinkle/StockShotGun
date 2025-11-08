@@ -9,7 +9,13 @@ API_BASE = "https://api.fennel.com"
 
 
 async def fennelTrade(side, qty, ticker, price):
-    """Execute a trade on Fennel using official API."""
+    """Execute a trade on Fennel using official API.
+
+    Returns:
+        True: Trade executed successfully on all accounts
+        False: Trade failed on all accounts
+        None: No credentials (broker skipped)
+    """
     await rate_limiter.wait_if_needed("Fennel")
 
     from .session_manager import session_manager
@@ -32,6 +38,9 @@ async def fennelTrade(side, qty, ticker, price):
     # type: 1=MARKET, 2=LIMIT
     side_enum = 1 if side.lower() == "buy" else 2
     order_type = 1 if not price else 2  # Market if no price, Limit if price given
+
+    success_count = 0
+    failure_count = 0
 
     for account_id in account_ids:
         order_data = {
@@ -57,13 +66,19 @@ async def fennelTrade(side, qty, ticker, price):
                 action_str = "Bought" if side.lower() == "buy" else "Sold"
                 order_type_str = "market" if not price else f"limit @ ${price}"
                 print(f"{action_str} {qty} shares of {ticker} on Fennel account {account_id} ({order_type_str})")
+                success_count += 1
             else:
                 error_msg = response.text or "Unknown error"
                 print(f"Failed to place order for {ticker} on Fennel account {account_id}: {error_msg}")
+                failure_count += 1
 
         except Exception as e:
             print(f"Error placing order for {ticker} on Fennel account {account_id}: {str(e)}")
             traceback.print_exc()
+            failure_count += 1
+
+    # Return True if at least one account succeeded
+    return success_count > 0
 
 
 async def fennelGetHoldings(ticker=None):

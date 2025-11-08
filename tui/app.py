@@ -188,9 +188,14 @@ def run_tui():
                 add_response_fn=response_box.add_response
             )
 
-            response_box.add_response(
-                f"\n✅ Complete: {results['successful']} successful, {results['failed']} failed"
-            )
+            # Build summary with total broker counts across all orders
+            summary_parts = [f"✅ {results['successful']} succeeded"]
+            if results['failed'] > 0:
+                summary_parts.append(f"❌ {results['failed']} failed")
+            if results['skipped'] > 0:
+                summary_parts.append(f"⚠️ {results['skipped']} skipped")
+
+            response_box.add_response(f"\n🎯 Total Results: {', '.join(summary_parts)}")
         except Exception as e:
             response_box.add_response(f"✗ Error processing orders: {str(e)}")
             traceback.print_exc()
@@ -381,7 +386,7 @@ def run_tui():
         loop.draw_screen()
 
     # Initialize the UI
-    response_box = ResponseBox(max_responses=50, height=8)
+    response_box = ResponseBox(max_responses=100, height=15)
     instruction_text = urwid.Text("Add orders and submit them all at once!")
     order_summary = urwid.Text("")
     main = create_main_menu()

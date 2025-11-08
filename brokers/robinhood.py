@@ -7,7 +7,13 @@ from .base import retry_operation, rate_limiter
 
 
 async def robinTrade(side, qty, ticker, price):
-    """Execute a trade on Robinhood."""
+    """Execute a trade on Robinhood.
+
+    Returns:
+        True: Trade executed successfully on at least one account
+        False: Trade failed on all accounts
+        None: No credentials (broker skipped)
+    """
     await rate_limiter.wait_if_needed("Robinhood")
 
     from .session_manager import session_manager
@@ -20,6 +26,13 @@ async def robinTrade(side, qty, ticker, price):
         rh.account.load_account_profile, dataType="results"
     )
 
+    if side not in ['buy', 'sell']:
+        print(f"Invalid side: {side}")
+        return False
+
+    success_count = 0
+    failure_count = 0
+
     for account in all_accounts:
         account_number = account['account_number']
         brokerage_account_type = account['brokerage_account_type']
@@ -28,9 +41,6 @@ async def robinTrade(side, qty, ticker, price):
             order_function = rh.order_buy_limit if price else rh.order_buy_market
         elif side == 'sell':
             order_function = rh.order_sell_limit if price else rh.order_sell_market
-        else:
-            print(f"Invalid side: {side}")
-            return None
 
         order_args = {
             "symbol": ticker,
@@ -41,10 +51,17 @@ async def robinTrade(side, qty, ticker, price):
         if price:
             order_args['limitPrice'] = price
 
-        await asyncio.to_thread(order_function, **order_args)
+        try:
+            await asyncio.to_thread(order_function, **order_args)
+            action_str = "Bought" if side == "buy" else "Sold"
+            print(f"{action_str} {ticker} on Robinhood {brokerage_account_type} account {account_number}")
+            success_count += 1
+        except Exception as e:
+            print(f"Failed to {side} {ticker} on Robinhood account {account_number}: {e}")
+            failure_count += 1
 
-        action_str = "Bought" if side == "buy" else "Sold"
-        print(f"{action_str} {ticker} on Robinhood {brokerage_account_type} account {account_number}")
+    # Return True if at least one account succeeded
+    return success_count > 0
 
 
 async def robinGetHoldings(ticker=None):

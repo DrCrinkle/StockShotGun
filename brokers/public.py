@@ -136,7 +136,13 @@ async def _get_accounts(access_token):
 
 
 async def publicTrade(side, qty, ticker, price):
-    """Execute a trade on Public across all accounts."""
+    """Execute a trade on Public across all accounts.
+
+    Returns:
+        True: Trade executed successfully on at least one account
+        False: Trade failed on all accounts
+        None: No credentials (broker skipped)
+    """
     await rate_limiter.wait_if_needed("Public")
 
     from .session_manager import session_manager
@@ -150,7 +156,7 @@ async def publicTrade(side, qty, ticker, price):
     if not access_token:
         print("Failed to refresh Public access token")
         return None
-    
+
     # Update session with potentially refreshed token
     session['access_token'] = access_token
     account_ids = session['account_ids']
@@ -167,6 +173,9 @@ async def publicTrade(side, qty, ticker, price):
     # Prepare order payload according to Public.com API spec
     order_type = "MARKET" if price is None else "LIMIT"
     order_side = "BUY" if side.lower() == "buy" else "SELL"
+
+    success_count = 0
+    failure_count = 0
 
     # Place order on each account with unique orderId per account
     for account_id in account_ids:
@@ -201,7 +210,7 @@ async def publicTrade(side, qty, ticker, price):
         try:
             url = f"https://api.public.com/userapigateway/trading/{account_id}/order"
             response = await http_client.post(url, headers=headers, json=payload)
-            
+
             # Handle token expiration - refresh and retry once
             if response.status_code == 401:
                 print(f"Token expired, refreshing and retrying order for {ticker}...")
@@ -212,14 +221,20 @@ async def publicTrade(side, qty, ticker, price):
                     response = await http_client.post(url, headers=headers, json=payload)
                 else:
                     print(f"Failed to refresh token for {ticker} order")
+                    failure_count += 1
                     continue
-            
+
             response.raise_for_status()
 
             action_str = "Bought" if side.lower() == "buy" else "Sold"
             print(f"{action_str} {ticker} on Public account {account_id}")
+            success_count += 1
         except Exception as e:
             print(f"Failed to place order for {ticker} on Public account {account_id}: {str(e)}")
+            failure_count += 1
+
+    # Return True if at least one account succeeded
+    return success_count > 0
 
 
 async def publicGetHoldings(ticker=None):

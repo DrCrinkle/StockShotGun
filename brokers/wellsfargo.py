@@ -92,7 +92,6 @@ class WellsFargoClient:
             print("Waiting for login to process...")
 
             # Wait and check multiple times for navigation
-            has_puzzle = False
             login_verified = False
             needs_additional_verification = False
             current_url = page.url
@@ -149,14 +148,9 @@ class WellsFargoClient:
                     print("Page title:", page_title)
                     print("\nPlease check the browser window:")
                     print("  1. Solve any CAPTCHA/puzzle if shown")
-                    print("  2. The page may ask you to log in again after solving the puzzle")
-                    print("  3. Enter your credentials if prompted")
-                    print("  4. Wait for the page to navigate to your accounts")
-                    print("\nPress ENTER ONLY after you see your account overview page...")
+                    print("  2. Log in manually after solving the puzzle")
+                    print("\nWaiting for login to complete...")
                     print(f"{'='*60}\n")
-                    input()
-                    print("Checking page status...")
-                    has_puzzle = True
                 else:
                     # Still haven't navigated - likely a puzzle or extra verification
                     print(f"Current URL: {current_url}")
@@ -164,152 +158,26 @@ class WellsFargoClient:
 
                     print(f"\n{'='*60}")
                     print("⚠️  Login not completing - likely a CAPTCHA/Puzzle!")
-                    print("Please check the browser window:")
-                    print("  - If you see a puzzle, solve it")
-                    print("  - Wait for the page to completely reload (may take a few seconds)")
-                    print("Press ENTER ONLY after the page has fully loaded...")
+                    print("Please check the browser window and log in manually")
+                    print("\nWaiting for login to complete...")
                     print(f"{'='*60}\n")
-                    input()
-                    print("Checking page status...")
-    
-                # Wait longer for page navigation and give more checks
-                print("Waiting for page to navigate...")
-                for wait_attempt in range(10):  # Wait up to 10 seconds
-                    await asyncio.sleep(1)
-                    # Use evaluate to get real URL since page.url may be stuck
+
+                # Poll for successful login (up to 2 minutes)
+                print("Polling for successful login...")
+                for poll_attempt in range(60):
+                    await asyncio.sleep(2)
                     try:
-                        real_url = await page.evaluate("window.location.href")
-                        page_title = await page.evaluate("document.title")
+                        poll_url = await page.evaluate("window.location.href")
+                        poll_title = await page.evaluate("document.title")
 
-                        # print(f"[DEBUG] Wait attempt {wait_attempt + 1}/10 - URL: {real_url[:80]}... | Title: {page_title[:50]}...")
-
-                        # Check if we're successfully logged in (URL and title both match)
-                        if ("wellstrade" in real_url.lower() or "brokoverview" in real_url.lower()) and \
-                           any(keyword in page_title.lower() for keyword in ["brokerage overview", "wellstrade"]):
-                            # print(f"[DEBUG] Successfully logged in! Page title: {page_title}")
-                            # print(f"[DEBUG] Real URL: {real_url[:80]}...")
-                            current_url = real_url
+                        # Check if we successfully logged in
+                        if ("wellstrade" in poll_url.lower() or "brokoverview" in poll_url.lower()) and \
+                           any(keyword in poll_title.lower() for keyword in ["brokerage overview", "wellstrade"]):
+                            print("✓ Login successful!")
                             login_verified = True
                             break
-                        elif real_url != "about:blank":
-                            # print(f"[DEBUG] Page navigated to: {real_url[:80]}...")
-                            current_url = real_url
                     except Exception:
-                        current_url = page.url
-
-                    if current_url != "about:blank":
-                        # Still check a few more times
-                        if wait_attempt >= 5:
-                            break
-                    else:
-                        print(f"  Still at about:blank, waiting... ({wait_attempt + 1}/10)")
-
-                await asyncio.sleep(2)  # Extra time for page to fully load
-
-                # If we haven't verified login by now, puzzle needs manual intervention
-                if not login_verified:
-                    has_puzzle = True
-    
-            # After puzzle handling, check if we need to re-enter credentials
-            if has_puzzle:
-                # Get real URL using JavaScript since page.url may be stuck
-                try:
-                    current_url = await page.evaluate("window.location.href")
-                    page_title = await page.evaluate("document.title")
-                except:
-                    current_url = page.url
-                    page_title = ""
-    
-                # print(f"[DEBUG] Post-puzzle URL: {current_url}")
-                # print(f"[DEBUG] Post-puzzle title: {page_title}")
-
-                # Check if we're already logged in based on page title
-                already_logged_in = any(keyword in page_title.lower() for keyword in ["brokerage overview", "wellstrade"])
-
-                if already_logged_in:
-                    # print(f"[DEBUG] ✓ Already successfully logged in after puzzle!")
-                    login_verified = True
-                else:
-                    # Check if we're back on a login page (could be different URLs)
-                    is_login_page = (
-                        "login" in current_url.lower() or
-                        "signon" in current_url.lower() or
-                        "connect.secure.wellsfargo.com" in current_url.lower()
-                    )
-
-                    # print(f"[DEBUG] is_login_page: {is_login_page}")
-
-                    if is_login_page:
-                        # print(f"[DEBUG] Detected login page - automatically re-entering credentials...")
-                        await asyncio.sleep(2)
-    
-                        try:
-                            # Try multiple username selectors (different Wells Fargo pages)
-                            username_input = None
-                            for selector in ["input[id=j_username]", "input[name=userid]", "input[type=text]"]:
-                                try:
-                                    username_input = await page.select(selector, timeout=2)
-                                    if username_input:
-                                        print(f"Found username input with: {selector}")
-                                        break
-                                except:
-                                    continue
-    
-                            if username_input:
-                                await username_input.click()
-                                await username_input.clear_input()
-                                await username_input.send_keys(self._username)
-                                print("✓ Username entered")
-                            else:
-                                print("⚠ Could not find username field")
-    
-                            # Try multiple password selectors
-                            password_input = None
-                            for selector in ["input[id=j_password]", "input[name=password]", "input[type=password]"]:
-                                try:
-                                    password_input = await page.select(selector, timeout=2)
-                                    if password_input:
-                                        print(f"Found password input with: {selector}")
-                                        break
-                                except:
-                                    continue
-    
-                            if password_input:
-                                await password_input.clear_input()
-                                await password_input.send_keys(self._password)
-                                print("✓ Password entered")
-                            else:
-                                print("⚠ Could not find password field")
-    
-                            # Try multiple sign-on button selectors
-                            sign_on_button = None
-                            for selector in [".button.button--login.button--signOn", "button[type=submit]", "button[name=btnSignon]"]:
-                                try:
-                                    sign_on_button = await page.select(selector, timeout=2)
-                                    if sign_on_button:
-                                        print(f"Found sign-on button with: {selector}")
-                                        break
-                                except:
-                                    continue
-    
-                            if sign_on_button:
-                                await sign_on_button.click()
-                                print("✓ Sign-on button clicked")
-                                print("Waiting for authentication to complete...")
-                                await asyncio.sleep(5)
-                            else:
-                                print("⚠ Could not find sign-on button")
-                                print("Please manually click the sign-on button in the browser")
-                                input("Press ENTER when login is complete...")
-    
-                        except Exception as e:
-                            print(f"Error re-entering credentials: {e}")
-                            traceback.print_exc()
-                            print("\nPlease manually complete the login in the browser")
-                            input("Press ENTER when login is complete...")
-                    else:
-                        print("Not on login page - checking if authentication succeeded...")
-                        await asyncio.sleep(2)
+                        pass
     
             # Handle 2FA if needed (check for INTERDICTION in URL as per reference)
             try:
@@ -318,42 +186,28 @@ class WellsFargoClient:
                 current_url = page.url
     
             if "dest=INTERDICTION" in current_url:
-                print("Wells Fargo 2FA required.")
-    
-                # Select mobile option (as per reference)
-                try:
-                    # Find all list items with role="listitem"
-                    list_items = await page.select_all('[role="listitem"]')
-                    for item in list_items:
-                        text = await item.text
-                        if "Mobile" in text or "mobile" in text:
-                            # Find button within this list item and click it
-                            button = await item.select("button")
-                            if button:
-                                await button.click()
-                                print("Selected mobile 2FA option")
-                                break
-    
-                    await asyncio.sleep(5)  # Wait for OTP page to load
-                except Exception as e:
-                    print(f"Error selecting mobile option: {e}")
-    
-                # Enter OTP code
-                try:
-                    otp_code = input("Enter Wells Fargo OTP code: ")
-    
-                    # Use exact selector from reference
-                    otp_input = await page.select("#otp")
-                    await otp_input.send_keys(otp_code)
-    
-                    # Click submit button (exact selector from reference)
-                    submit_button = await page.select('button[type="submit"]')
-                    await submit_button.click()
-    
-                    await asyncio.sleep(5)  # Wait for 2FA to complete
-                    print("2FA code submitted")
-                except Exception as e:
-                    print(f"Error during 2FA: {e}")
+                print(f"\n{'='*60}")
+                print("⚠️  Wells Fargo 2FA required!")
+                print("Please complete 2FA in the browser window:")
+                print("  - Select your 2FA method (SMS, email, etc.)")
+                print("  - Enter the code when prompted")
+                print("  - Click submit")
+                print("\nWaiting for 2FA to complete...")
+                print(f"{'='*60}\n")
+
+                # Poll for 2FA completion (up to 120 seconds)
+                for attempt in range(60):
+                    await asyncio.sleep(2)
+                    try:
+                        current_url = await page.evaluate("window.location.href")
+                        page_title = await page.evaluate("document.title")
+
+                        # Check if we've moved past 2FA
+                        if "interdiction" not in current_url.lower():
+                            print("✓ 2FA completed successfully")
+                            break
+                    except Exception:
+                        pass
     
             # Verify login was successful
             # print(f"[DEBUG] Verifying login, login_verified={login_verified}")
@@ -596,6 +450,9 @@ class WellsFargoClient:
                 price_text = price_div.get_text(strip=True) if price_div else "0"
                 price = float(price_text.replace('$', '').replace(',', ''))
 
+                current_value = quantity * price
+                cost_basis = None
+
                 # Only add if quantity > 0
                 if quantity > 0:
                     holdings.append({
@@ -603,7 +460,8 @@ class WellsFargoClient:
                         "name": name,
                         "quantity": quantity,
                         "price": price,
-                        "value": quantity * price
+                        "cost_basis": cost_basis,
+                        "current_value": current_value
                     })
 
             except (ValueError, IndexError, AttributeError) as e:
@@ -1096,7 +954,8 @@ class WellsFargoClient:
                 traceback.print_exc()
                 continue
 
-        return success_count > 0 if success_count else None
+        # Return True if at least one account succeeded, False if all failed
+        return success_count > 0
 
 
 async def wellsfargoGetHoldings(ticker=None):
@@ -1110,7 +969,8 @@ async def wellsfargoGetHoldings(ticker=None):
         return None
 
     # Create client and use it via async context manager
-    headless = os.getenv("HEADLESS", "true").lower() == "true"
+    # Default to visible browser (headless=false) for Wells Fargo since CAPTCHAs are common
+    headless = os.getenv("HEADLESS", "false").lower() == "true"
     try:
         async with WellsFargoClient(
             username=session["username"],
@@ -1126,7 +986,13 @@ async def wellsfargoGetHoldings(ticker=None):
 
 
 async def wellsfargoTrade(side, qty, ticker, price):
-    """Execute a trade on Wells Fargo Advisors."""
+    """Execute a trade on Wells Fargo Advisors.
+
+    Returns:
+        True: Trade executed successfully on at least one account
+        False: Trade failed on all accounts
+        None: No credentials (broker skipped)
+    """
     await rate_limiter.wait_if_needed("WellsFargo")
 
     from .session_manager import session_manager
@@ -1136,7 +1002,8 @@ async def wellsfargoTrade(side, qty, ticker, price):
         return None
 
     # Create client and use it via async context manager
-    headless = os.getenv("HEADLESS", "true").lower() == "true"
+    # Default to visible browser (headless=false) for Wells Fargo since CAPTCHAs are common
+    headless = os.getenv("HEADLESS", "false").lower() == "true"
     try:
         async with WellsFargoClient(
             username=session["username"],
@@ -1148,7 +1015,7 @@ async def wellsfargoTrade(side, qty, ticker, price):
     except Exception as e:
         print(f"Error during Wells Fargo trade: {e}")
         traceback.print_exc()
-        return None
+        return False
 
 
 async def get_wellsfargo_session(session_manager):

@@ -73,7 +73,13 @@ async def _discover_accounts(wb, start_index=0, max_accounts=11, existing_accoun
 
 
 async def webullTrade(side, qty, ticker, price):
-    """Execute a trade on Webull."""
+    """Execute a trade on Webull.
+
+    Returns:
+        True: Trade executed successfully on at least one account
+        False: Trade failed on all accounts
+        None: No credentials supplied
+    """
     await rate_limiter.wait_if_needed("Webull")
 
     from .session_manager import session_manager
@@ -84,6 +90,9 @@ async def webullTrade(side, qty, ticker, price):
 
     wb = webull_session["client"]
     accounts = webull_session["accounts"]
+
+    success_count = 0
+    failure_count = 0
 
     # Map side to action
     action = "BUY" if side.lower() == "buy" else "SELL"
@@ -122,10 +131,12 @@ async def webullTrade(side, qty, ticker, price):
                 print(f"⚠ Webull API error for {ticker} on account {account_id}")
                 print("  The stock might not be tradeable, or there's an issue with the order")
                 print(f"  Library error: Missing key '{ke}'")
+                failure_count += 1
                 continue
             except Exception as order_error:
                 print(f"Error placing order for {ticker} on Webull account {account_id}: {str(order_error)}")
                 traceback.print_exc()
+                failure_count += 1
                 continue
 
             # Check if order was successful
@@ -133,13 +144,18 @@ async def webullTrade(side, qty, ticker, price):
                 action_str = "Bought" if side.lower() == "buy" else "Sold"
                 order_type_str = "market" if not price else f"limit @ ${price}"
                 print(f"{action_str} {qty} shares of {ticker} on Webull account {account_id} ({order_type_str})")
+                success_count += 1
             else:
                 error_msg = response.get("msg", "Unknown error") if response else "No response"
                 print(f"Failed to place order for {ticker} on Webull account {account_id}: {error_msg}")
+                failure_count += 1
 
         except Exception as e:
             print(f"Error placing order for {ticker} on Webull account {account_id}: {str(e)}")
             traceback.print_exc()
+            failure_count += 1
+
+    return success_count > 0
 
 
 def _parse_webull_position(position, ticker=None):

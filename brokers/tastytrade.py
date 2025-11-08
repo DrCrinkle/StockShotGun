@@ -15,7 +15,13 @@ from .base import rate_limiter
 
 
 async def tastyTrade(side, qty, ticker, price):
-    """Execute a trade on TastyTrade."""
+    """Execute a trade on TastyTrade.
+
+    Returns:
+        True: Trade executed successfully on at least one account
+        False: Trade failed on all accounts
+        None: No credentials supplied
+    """
     await rate_limiter.wait_if_needed("TastyTrade")
 
     from .session_manager import session_manager
@@ -24,28 +30,47 @@ async def tastyTrade(side, qty, ticker, price):
         print("No TastyTrade credentials supplied, skipping")
         return None
 
-    accounts = await asyncio.to_thread(Account.get, session)
-    symbol = await asyncio.to_thread(Equity.get, session, ticker)
-    action = OrderAction.BUY_TO_OPEN if side == "buy" else OrderAction.SELL_TO_CLOSE
+    success_count = 0
+    failure_count = 0
 
-    # Build the order
-    leg = symbol.build_leg(Decimal(qty), action)
-    order_type = OrderType.LIMIT if price else OrderType.MARKET
-    price_value = Decimal(f'-{price}') if price and side == "buy" else Decimal(f'{price}') if price else None
-    order = NewOrder(
-        time_in_force=OrderTimeInForce.DAY,
-        order_type=order_type,
-        legs=[leg],
-        price=price_value
-    )
+    try:
+        accounts = await asyncio.to_thread(Account.get, session)
+        symbol = await asyncio.to_thread(Equity.get, session, ticker)
+        action = OrderAction.BUY_TO_OPEN if side == "buy" else OrderAction.SELL_TO_CLOSE
 
-    for account in accounts:
-        placed_order = await account.a_place_order(session, order, dry_run=False)
-        order_status = placed_order.order.status.value
+        # Build the order
+        leg = symbol.build_leg(Decimal(qty), action)
+        order_type = OrderType.LIMIT if price else OrderType.MARKET
+        price_value = Decimal(f'-{price}') if price and side == "buy" else Decimal(f'{price}') if price else None
+        order = NewOrder(
+            time_in_force=OrderTimeInForce.DAY,
+            order_type=order_type,
+            legs=[leg],
+            price=price_value
+        )
 
-        if order_status in ["Received", "Routed"]:
-            action_str = "Bought" if side == "buy" else "Sold"
-            print(f"{action_str} {ticker} on TastyTrade {account.account_type_name} account {account.account_number}")
+        for account in accounts:
+            try:
+                placed_order = await account.a_place_order(session, order, dry_run=False)
+                order_status = placed_order.order.status.value
+
+                if order_status in ["Received", "Routed"]:
+                    action_str = "Bought" if side == "buy" else "Sold"
+                    print(f"{action_str} {ticker} on TastyTrade {account.account_type_name} account {account.account_number}")
+                    success_count += 1
+                else:
+                    print(f"Order for {ticker} on TastyTrade account {account.account_number} has status: {order_status}")
+                    failure_count += 1
+            except Exception as e:
+                print(f"Error placing order for {ticker} on TastyTrade account {account.account_number}: {str(e)}")
+                failure_count += 1
+    except Exception as e:
+        print(f"Error trading {ticker} on TastyTrade: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+    return success_count > 0
 
 
 async def tastyGetHoldings(ticker=None):

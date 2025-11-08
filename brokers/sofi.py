@@ -242,7 +242,13 @@ async def _sofi_place_order(symbol, quantity, limit_price, account_id, order_typ
 
 
 async def sofiTrade(side, qty, ticker, price):
-    """Execute a trade on SoFi."""
+    """Execute a trade on SoFi.
+
+    Returns:
+        True: Trade executed successfully on at least one account
+        False: Trade failed on all accounts
+        None: No credentials (broker skipped)
+    """
     await rate_limiter.wait_if_needed("SoFi")
 
     from .session_manager import session_manager
@@ -256,20 +262,20 @@ async def sofiTrade(side, qty, ticker, price):
         cookies = await _sofi_get_cookies(session)
         if not cookies:
             print("Failed to authenticate with SoFi")
-            return None
+            return False
 
         # Get CSRF token
         csrf_token = cookies.get("SOFI_CSRF_COOKIE") or cookies.get("SOFI_R_CSRF_TOKEN")
         if not csrf_token:
             print("Failed to get SoFi CSRF token")
-            return None
+            return False
 
         # Get stock price if no limit price specified
         if not price:
             stock_price = await _sofi_get_stock_price(ticker)
             if not stock_price:
                 print(f"Failed to get price for {ticker}")
-                return None
+                return False
 
             # Set limit price slightly above/below market for better fill chance
             if side == "buy":
@@ -281,10 +287,12 @@ async def sofiTrade(side, qty, ticker, price):
         accounts = await _sofi_get_funded_accounts(cookies)
         if not accounts:
             print("No funded SoFi accounts found")
-            return None
+            return False
 
         # Place order on each account
         order_type = "BUY" if side == "buy" else "SELL"
+        success_count = 0
+        failure_count = 0
 
         for account in accounts:
             account_id = account["accountId"]
@@ -297,6 +305,7 @@ async def sofiTrade(side, qty, ticker, price):
 
                 if total_cost > buying_power:
                     print(f"Insufficient buying power in SoFi {account_type} account")
+                    failure_count += 1
                     continue
 
             # Place the order
@@ -307,12 +316,18 @@ async def sofiTrade(side, qty, ticker, price):
             if success:
                 action_str = "Bought" if side == "buy" else "Sold"
                 print(f"{action_str} {ticker} on SoFi {account_type} account")
+                success_count += 1
             else:
                 print(f"Failed to {side} {ticker} on SoFi {account_type} account")
+                failure_count += 1
+
+        # Return True if at least one account succeeded
+        return success_count > 0
 
     except Exception as e:
         print(f"Error during SoFi trade: {e}")
         traceback.print_exc()
+        return False
 
 
 async def sofiGetHoldings(ticker=None):
