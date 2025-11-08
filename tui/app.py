@@ -12,6 +12,7 @@ from .broker_functions import BROKER_CONFIG
 from .response_handler import ResponseWriter
 from .input_handler import tui_input_handler, setup_tui_input_interception, restore_original_input
 from order_processor import order_processor
+from robin_stocks.robinhood.helper import set_output as set_robinhood_output, get_output as get_robinhood_output
 
 
 def run_tui():
@@ -410,6 +411,8 @@ def run_tui():
     response_writer = ResponseWriter(response_box.add_response)
     sys.stdout = response_writer
     sys.stderr = response_writer
+    original_rh_output = get_robinhood_output()
+    set_robinhood_output(response_writer)
 
     # Create the main loop
     event_loop = asyncio.new_event_loop()
@@ -438,4 +441,5 @@ def run_tui():
         # Restore original stdout/stderr
         sys.stdout = original_stdout
         sys.stderr = original_stderr
+        set_robinhood_output(original_rh_output)
         event_loop.close()

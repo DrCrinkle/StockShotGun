@@ -1,9 +1,138 @@
 """Robinhood broker integration."""
 
 import asyncio
+import time
+from typing import Any, Dict, List, Optional, Tuple
+
 import pyotp
 import robin_stocks.robinhood as rh
 from .base import retry_operation, rate_limiter
+
+_ACCOUNT_CACHE_TTL = 300  # seconds
+_account_cache: Dict[str, Any] = {"accounts": None, "timestamp": 0.0}
+_instrument_symbol_cache: Dict[str, str] = {}
+
+
+async def _get_robinhood_accounts() -> List[dict]:
+    """Fetch and cache the user's Robinhood accounts."""
+    now = time.time()
+    cached_accounts = _account_cache.get("accounts")
+    if (
+        cached_accounts is not None
+        and now - _account_cache["timestamp"] < _ACCOUNT_CACHE_TTL
+    ):
+        return cached_accounts
+
+    accounts = await asyncio.to_thread(
+        rh.account.load_account_profile,
+        dataType="results",
+    )
+    _account_cache["accounts"] = accounts
+    _account_cache["timestamp"] = now
+    return accounts
+
+
+async def _get_symbol_for_instrument(instrument_url: str) -> str:
+    """Convert an instrument URL to a symbol using a simple cache."""
+    if instrument_url in _instrument_symbol_cache:
+        return _instrument_symbol_cache[instrument_url]
+
+    symbol = await asyncio.to_thread(rh.get_symbol_by_url, instrument_url)
+    _instrument_symbol_cache[instrument_url] = symbol
+    return symbol
+
+
+async def _get_latest_prices(symbols: List[str]) -> Dict[str, float]:
+    """Fetch latest prices for a list of symbols in a single API call."""
+    if not symbols:
+        return {}
+
+    prices = await asyncio.to_thread(rh.get_latest_price, symbols)
+    price_map: Dict[str, float] = {}
+    for symbol, price in zip(symbols, prices):
+        try:
+            price_map[symbol] = float(price)
+        except (TypeError, ValueError):
+            price_map[symbol] = 0.0
+    return price_map
+
+
+async def _submit_order_for_account(
+    account: dict,
+    order_function,
+    base_order_args: Dict[str, Any],
+    side: str,
+    ticker: str,
+) -> bool:
+    """Submit a single order for an account."""
+    account_number = account["account_number"]
+    brokerage_account_type = account["brokerage_account_type"]
+    order_args = dict(base_order_args)
+    order_args["account_number"] = account_number
+
+    try:
+        await asyncio.to_thread(order_function, **order_args)
+        action_str = "Bought" if side == "buy" else "Sold"
+        print(
+            f"{action_str} {ticker} on Robinhood "
+            f"{brokerage_account_type} account {account_number}"
+        )
+        return True
+    except Exception as exc:
+        print(
+            f"Failed to {side} {ticker} on Robinhood "
+            f"account {account_number}: {exc}"
+        )
+        return False
+
+
+async def _collect_account_holdings(
+    account: dict,
+    ticker_filter: Optional[str],
+) -> Tuple[str, Optional[List[dict]]]:
+    """Retrieve and format holdings for a single account."""
+    account_number = account["account_number"]
+    positions = await asyncio.to_thread(
+        rh.get_open_stock_positions,
+        account_number=account_number,
+    )
+
+    if not positions:
+        return account_number, None
+
+    symbol_tasks = [
+        asyncio.create_task(_get_symbol_for_instrument(position["instrument"]))
+        for position in positions
+    ]
+    symbols = await asyncio.gather(*symbol_tasks)
+
+    formatted_positions: List[dict] = []
+    unique_symbols = set()
+
+    for position, symbol in zip(positions, symbols):
+        if not symbol:
+            continue
+
+        quantity = float(position["quantity"])
+        if ticker_filter and symbol.upper() != ticker_filter.upper():
+            continue
+
+        cost_basis = float(position["average_buy_price"]) * quantity
+        formatted_positions.append(
+            {
+                "symbol": symbol,
+                "quantity": quantity,
+                "cost_basis": cost_basis,
+            }
+        )
+        unique_symbols.add(symbol)
+
+    price_map = await _get_latest_prices(list(unique_symbols))
+    for entry in formatted_positions:
+        current_price = price_map.get(entry["symbol"], 0.0)
+        entry["current_value"] = current_price * entry["quantity"]
+
+    return account_number, formatted_positions
 
 
 async def robinTrade(side, qty, ticker, price):
@@ -22,43 +151,44 @@ async def robinTrade(side, qty, ticker, price):
         print("No Robinhood credentials supplied, skipping")
         return None
 
-    all_accounts = await asyncio.to_thread(
-        rh.account.load_account_profile, dataType="results"
-    )
+    all_accounts = await _get_robinhood_accounts()
 
     if side not in ['buy', 'sell']:
         print(f"Invalid side: {side}")
         return False
 
-    success_count = 0
-    failure_count = 0
+    if side == 'buy':
+        order_function = rh.order_buy_limit if price else rh.order_buy_market
+    else:
+        order_function = rh.order_sell_limit if price else rh.order_sell_market
 
-    for account in all_accounts:
-        account_number = account['account_number']
-        brokerage_account_type = account['brokerage_account_type']
+    base_order_args = {
+        "symbol": ticker,
+        "quantity": qty,
+        "timeInForce": "gfd",
+    }
+    if price:
+        base_order_args["limitPrice"] = price
 
-        if side == 'buy':
-            order_function = rh.order_buy_limit if price else rh.order_buy_market
-        elif side == 'sell':
-            order_function = rh.order_sell_limit if price else rh.order_sell_market
+    order_tasks = [
+        asyncio.create_task(
+            _submit_order_for_account(
+                account,
+                order_function,
+                base_order_args,
+                side,
+                ticker,
+            )
+        )
+        for account in all_accounts
+    ]
 
-        order_args = {
-            "symbol": ticker,
-            "quantity": qty,
-            "account_number": account_number,
-            "timeInForce": "gfd",
-        }
-        if price:
-            order_args['limitPrice'] = price
+    if not order_tasks:
+        print("No Robinhood accounts available for trading")
+        return False
 
-        try:
-            await asyncio.to_thread(order_function, **order_args)
-            action_str = "Bought" if side == "buy" else "Sold"
-            print(f"{action_str} {ticker} on Robinhood {brokerage_account_type} account {account_number}")
-            success_count += 1
-        except Exception as e:
-            print(f"Failed to {side} {ticker} on Robinhood account {account_number}: {e}")
-            failure_count += 1
+    task_results = await asyncio.gather(*order_tasks, return_exceptions=True)
+    success_count = sum(result is True for result in task_results)
 
     # Return True if at least one account succeeded
     return success_count > 0
@@ -75,41 +205,25 @@ async def robinGetHoldings(ticker=None):
         return None
 
     holdings_data = {}
-    all_accounts = await asyncio.to_thread(
-        rh.account.load_account_profile, dataType="results"
-    )
+    all_accounts = await _get_robinhood_accounts()
 
-    for account in all_accounts:
-        account_number = account["account_number"]
-        positions = await asyncio.to_thread(
-            rh.get_open_stock_positions, account_number=account_number
-        )
+    account_tasks = [
+        asyncio.create_task(_collect_account_holdings(account, ticker))
+        for account in all_accounts
+    ]
 
-        if not positions:
+    if not account_tasks:
+        return holdings_data
+
+    account_results = await asyncio.gather(*account_tasks, return_exceptions=True)
+    for result in account_results:
+        if isinstance(result, Exception):
+            print(f"Failed to load holdings for a Robinhood account: {result}")
             continue
 
-        formatted_positions = []
-        for position in positions:
-            symbol = await asyncio.to_thread(
-                rh.get_symbol_by_url, position['instrument']
-            )
-            quantity = float(position['quantity'])
-            if ticker and symbol.upper() != ticker.upper():
-                continue
-
-            cost_basis = float(position['average_buy_price']) * quantity
-            quote_data = await asyncio.to_thread(rh.get_latest_price, symbol)
-            current_price = float(quote_data[0]) if quote_data[0] else 0.0
-            current_value = current_price * quantity
-
-            formatted_positions.append({
-                'symbol': symbol,
-                'quantity': quantity,
-                'cost_basis': cost_basis,
-                'current_value': current_value
-            })
-
-        holdings_data[account_number] = formatted_positions
+        account_number, formatted_positions = result
+        if formatted_positions is not None:
+            holdings_data[account_number] = formatted_positions
 
     return holdings_data
 
