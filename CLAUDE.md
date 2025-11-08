@@ -13,10 +13,11 @@ The application supports both CLI and TUI (Terminal User Interface) modes for fl
 ### Core Components
 
 **brokers/** - Modular broker integrations
-- Each broker has its own module (e.g., `fennel.py`, `schwab.py`, `robinhood.py`)
+- Each broker has its own module (12 brokers supported: Robinhood, Tradier, TastyTrade, Public, Firstrade, Fennel, Schwab, BBAE, DSPAC, SoFi, Webull, Wells Fargo)
 - All broker modules follow a consistent pattern with two main functions:
   - `{broker}Trade(side, qty, ticker, price)` - Execute trades
   - `{broker}GetHoldings(ticker=None)` - Retrieve holdings
+- Most brokers use API-based authentication, while Wells Fargo uses browser automation (see Browser Automation Pattern section)
 - `base.py` - Shared infrastructure including:
   - `BrokerConfig` - Centralized broker configuration (credentials, session keys, enabled status)
   - `http_client` - Shared async HTTP client with connection pooling and HTTP/2 support
@@ -165,15 +166,6 @@ python3 main.py buy 10 TSLA --broker Fennel --broker Public  # Specific brokers
 python3 main.py holdings TSLA --broker Fennel
 ```
 
-### Testing
-```bash
-# Run all tests
-pytest tests/ -v
-
-# Run specific test file
-pytest tests/test_broker.py -v
-```
-
 ### Type Checking and Linting
 ```bash
 # Type checking with mypy
@@ -185,6 +177,8 @@ python3 -m py_compile main.py brokers/*.py tui/*.py setup.py
 
 ## Adding a New Broker
 
+### Standard Pattern (API-based brokers)
+
 1. **Create broker module** in `brokers/{broker}.py` with:
    - `{broker}Trade(side, qty, ticker, price)` - async function
    - `{broker}GetHoldings(ticker=None)` - async function
@@ -193,6 +187,71 @@ python3 -m py_compile main.py brokers/*.py tui/*.py setup.py
    - **IMPORTANT**: Add `await rate_limiter.wait_if_needed("BrokerName")` at the start of trade/holdings functions
    - Use shared `http_client` from `brokers/base.py` instead of creating new HTTP clients
    - Cache static data (account IDs, profiles) in session initialization
+
+### Browser Automation Pattern (Wells Fargo)
+
+For brokers requiring browser automation (like Wells Fargo), use a class-based encapsulation pattern:
+
+1. **Create a client class** in `brokers/{broker}.py`:
+   - Encapsulate browser state, authentication, and operations in a class
+   - Implement async context manager (`__aenter__`, `__aexit__`) for automatic cleanup
+   - Use lazy authentication (browser created on first operation)
+   - Cache browser session across multiple operations within the same instance
+
+   Example structure:
+   ```python
+   class WellsFargoClient:
+       def __init__(self, username, password, phone_suffix="", headless=True):
+           self._username = username
+           self._password = password
+           self._browser = None  # Lazy initialization
+           self._page = None
+           self._is_authenticated = False
+
+       async def __aenter__(self):
+           return self
+
+       async def __aexit__(self, exc_type, exc_val, exc_tb):
+           if self._browser:
+               await self._browser.stop()
+
+       async def _ensure_authenticated(self):
+           # Lazy auth: only create browser when needed
+           if not self._is_authenticated:
+               await self._authenticate()
+
+       async def get_holdings(self, ticker=None):
+           await self._ensure_authenticated()
+           # Implementation...
+
+       async def trade(self, side, qty, ticker, price):
+           await self._ensure_authenticated()
+           # Implementation...
+   ```
+
+2. **Wrapper functions for compatibility**:
+   ```python
+   async def wellsfargoGetHoldings(ticker=None):
+       await rate_limiter.wait_if_needed("WellsFargo")
+       session = await session_manager.get_session("WellsFargo")
+
+       headless = os.getenv("HEADLESS", "true").lower() == "true"
+       async with WellsFargoClient(
+           username=session["username"],
+           password=session["password"],
+           phone_suffix=session.get("phone_suffix", ""),
+           headless=headless
+       ) as client:
+           return await client.get_holdings(ticker)
+   ```
+
+3. **Browser automation best practices**:
+   - Set `self._page` early in authentication flow to prevent `None` errors
+   - Add clear user prompts for anti-bot challenges/CAPTCHAs
+   - Verify both URL and page title for successful login (not just one)
+   - Handle re-authentication after puzzle solving
+   - Use comprehensive debugging (can be commented out later)
+   - Proper error handling with browser cleanup in exception handlers
 
 2. **Update `brokers/base.py`**:
    - Add broker entry to `BrokerConfig.BROKERS` with session_key, env_vars, requires_mfa, enabled
@@ -212,6 +271,27 @@ python3 -m py_compile main.py brokers/*.py tui/*.py setup.py
 
 6. **Update `setup.py`**:
    - Add broker credentials to the `brokers` dict with env_vars and prompts
+
+## Supported Brokers
+
+The following 12 brokers are currently integrated and enabled:
+
+| Broker | Auth Method | Required Env Vars | MFA/Special Notes |
+|--------|-------------|-------------------|-------------------|
+| **Robinhood** | Username/Password | `ROBINHOOD_USER`, `ROBINHOOD_PASS`, `ROBINHOOD_MFA` | Requires MFA code |
+| **Tradier** | API Token | `TRADIER_ACCESS_TOKEN` | Simple token auth |
+| **TastyTrade** | Username/Password | `TASTY_USER`, `TASTY_PASS` | Standard API auth |
+| **Public** | API Token | `PUBLIC_API_SECRET` | Simple token auth |
+| **Firstrade** | Username/Password | `FIRSTRADE_USER`, `FIRSTRADE_PASS`, `FIRSTRADE_MFA` | Requires MFA code |
+| **Fennel** | Personal Access Token | `FENNEL_ACCESS_TOKEN` | Get from Fennel dashboard |
+| **Schwab** | OAuth 2.0 | `SCHWAB_API_KEY`, `SCHWAB_API_SECRET`, `SCHWAB_CALLBACK_URL`, `SCHWAB_TOKEN_PATH` | Token cached in `tokens/` |
+| **BBAE** | Username/Password | `BBAE_USER`, `BBAE_PASS` | May require CAPTCHA/OTP |
+| **DSPAC** | Username/Password | `DSPAC_USER`, `DSPAC_PASS` | May require CAPTCHA/OTP |
+| **SoFi** | Username/Password | `SOFI_USER`, `SOFI_PASS` | Standard API auth |
+| **Webull** | Pre-obtained credentials | `WEBULL_ACCESS_TOKEN`, `WEBULL_REFRESH_TOKEN`, `WEBULL_UUID`, `WEBULL_ACCOUNT_ID`, `WEBULL_DID` | Chrome extension required (see Notes) |
+| **Wells Fargo** | Browser automation | `WELLSFARGO_USER`, `WELLSFARGO_PASS`, optional: `WELLSFARGO_PHONE_SUFFIX` | Uses Zendriver, may need manual CAPTCHA |
+
+All brokers support both `Trade` and `GetHoldings` operations.
 
 ## Common Patterns
 
@@ -302,17 +382,51 @@ async def get_mybroker_session(session_manager):
 
 - `.env` - Credentials (NEVER commit, in .gitignore)
 - `tokens/` - OAuth tokens for brokers like Schwab
-- `logs/` - Application logs
-- `requirements.txt` - Python dependencies
 - `.venv/` - Virtual environment (if using venv)
+- `requirements.txt` - Python dependencies
+
+### Environment Variables
+
+The application uses environment variables for configuration, stored in `.env` file:
+
+**Global Settings:**
+- `HEADLESS` - Browser headless mode for Wells Fargo (default: `true`)
+
+**Broker Credentials:** (see Supported Brokers table for complete list)
+- Each broker requires specific environment variables for authentication
+- Use `python3 main.py setup` to interactively configure credentials
+- Never commit `.env` file - it's in `.gitignore`
+
+### Key Dependencies
+
+- **urwid** (3.0.2) - Terminal UI framework for the TUI mode
+- **python-dotenv** (1.1.1) - Environment variable management from `.env` file
+- **pyotp** (2.9.0) - One-time password (MFA/2FA) support
+- **httpx** (0.28.1) - Modern async HTTP client with HTTP/2 support
+- **zendriver** (0.14.2) - Browser automation for Wells Fargo (Chrome DevTools Protocol)
+- **beautifulsoup4** (4.12.3) - HTML parsing for web scraping
+- **curl-cffi** (0.7.3) - HTTP client with TLS fingerprint spoofing
+
+Broker-specific SDKs:
+- **tastytrade** (10.2.3) - TastyTrade API client
+- **firstrade** (0.0.33) - Firstrade API client
+- **schwab-py** (1.4.0) - Schwab OAuth and trading API
+- **robin-stocks** (3.4.0) - Robinhood API wrapper
+- **bbae-invest-api** (0.1.3) - BBAE broker API
+- **dspac-invest-api** (0.1.3) - DSPAC broker API
+- **webull** (git) - Webull API (custom fork for api_login support)
 
 ## Notes
 
 - The project uses Python 3.13+ and async/await throughout
 - TUI is built with urwid library for terminal interfaces
-- Each broker may have different authentication methods (API keys, username/password, OAuth)
-- Some brokers (BBAE, DSPAC) may require CAPTCHA or OTP codes during initial login
-- Fennel uses personal access tokens from their dashboard, not email/password authentication
+- Each broker may have different authentication methods (API keys, username/password, OAuth, browser automation)
+
+### Broker-Specific Notes
+
+- **Fennel**: Uses personal access tokens from their dashboard, not email/password authentication
+- **BBAE/DSPAC**: May require CAPTCHA or OTP codes during initial login
+- **Schwab**: Uses OAuth with token persistence in `tokens/` directory
 - **Webull**: Due to Webull API changes (Sept 2025), traditional username/password login is broken. Instead, use pre-obtained credentials from a browser session:
   1. Install Chrome extension: https://github.com/ImNotOssy/webull/releases/tag/1
   2. Login to Webull in Chrome with extension active
@@ -320,3 +434,11 @@ async def get_mybroker_session(session_manager):
   4. Add these to your .env file (supports comma-separated account IDs for multiple accounts)
   5. The integration uses `api_login()` method instead of traditional login
   6. Multiple accounts: `WEBULL_ACCOUNT_ID=12345678,87654321` or the system will auto-discover them
+- **Wells Fargo**: Uses browser automation (Zendriver) instead of API:
+  - Requires `WELLSFARGO_USER` and `WELLSFARGO_PASS` environment variables
+  - Optional: `WELLSFARGO_PHONE_SUFFIX` for MFA (last 4 digits of phone)
+  - Supports headless mode via `HEADLESS=true/false` environment variable (default: true)
+  - May require manual anti-bot/CAPTCHA solving in non-headless mode
+  - Implements class-based pattern with `WellsFargoClient` for state management
+  - Automatically discovers multiple accounts (WELLSTRADE, IRAs) from single login
+  - Browser session is cached within a single client instance for efficiency
