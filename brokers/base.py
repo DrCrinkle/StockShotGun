@@ -8,6 +8,7 @@ used across all broker implementations.
 import httpx
 import asyncio
 import time
+import traceback
 from typing import Dict, Optional, Any, ClassVar
 from dotenv import load_dotenv
 
@@ -272,8 +273,6 @@ async def _login_broker(broker_api, broker_name):
 
 async def _get_broker_holdings(broker_api, broker_name, ticker=None):
     """Helper function to get holdings for BBAE and DSPAC brokers"""
-    import traceback
-
     try:
         holdings_data = {}
         holdings_response = broker_api.get_account_holdings()

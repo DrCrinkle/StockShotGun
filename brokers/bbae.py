@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import traceback
 from bbae_invest_api import BBAEAPI
 from .base import _login_broker, _get_broker_holdings, rate_limiter
 
@@ -63,7 +64,6 @@ async def bbaeTrade(side, qty, ticker, price):
             failure_count += 1
     except Exception as e:
         print(f"Error trading {ticker} on BBAE: {str(e)}")
-        import traceback
         traceback.print_exc()
         failure_count += 1
 

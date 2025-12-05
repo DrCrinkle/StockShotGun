@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import traceback
 from schwab import auth
 from schwab.orders.equities import (
     equity_buy_limit,
@@ -70,7 +71,6 @@ async def schwabTrade(side, qty, ticker, price):
                 failure_count += 1
     except Exception as e:
         print(f"Error trading {ticker} on Schwab: {str(e)}")
-        import traceback
         traceback.print_exc()
         return False
 
