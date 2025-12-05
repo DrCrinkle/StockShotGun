@@ -2,6 +2,7 @@
 
 import os
 import asyncio
+import traceback
 from dspac_invest_api import DSPACAPI
 from .base import _login_broker, _get_broker_holdings, rate_limiter
 
@@ -74,7 +75,6 @@ async def dspacTrade(side, qty, ticker, price):
             failure_count += 1
     except Exception as e:
         print(f"Error trading {ticker} on DSPAC: {str(e)}")
-        import traceback
         traceback.print_exc()
         failure_count += 1
 

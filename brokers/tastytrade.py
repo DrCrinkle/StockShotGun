@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import traceback
 from decimal import Decimal
 from tastytrade import Session, Account
 from tastytrade.instruments import Equity
@@ -66,7 +67,6 @@ async def tastyTrade(side, qty, ticker, price):
                 failure_count += 1
     except Exception as e:
         print(f"Error trading {ticker} on TastyTrade: {str(e)}")
-        import traceback
         traceback.print_exc()
         return False
 
