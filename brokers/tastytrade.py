@@ -12,7 +12,7 @@ from tastytrade.order import (
     OrderType,
     OrderAction,
 )
-from .base import rate_limiter
+from .base import rate_limiter, retry_operation
 
 
 async def tastyTrade(side, qty, ticker, price):
@@ -120,8 +120,11 @@ async def get_tastytrade_session(session_manager):
             session_manager._initialized.add("tastytrade")
             return None
 
+        async def _create_tastytrade_session():
+            return await asyncio.to_thread(Session, TASTY_USER, TASTY_PASS)
+
         try:
-            session = await asyncio.to_thread(Session, TASTY_USER, TASTY_PASS)
+            session = await retry_operation(_create_tastytrade_session)
             session_manager.sessions["tastytrade"] = session
             print("✓ TastyTrade session initialized")
         except Exception as e:

@@ -10,6 +10,7 @@ from schwab.orders.equities import (
     equity_sell_limit,
     equity_sell_market,
 )
+from .base import retry_operation
 
 
 async def schwabTrade(side, qty, ticker, price):
@@ -157,8 +158,8 @@ async def get_schwab_session(session_manager):
             session_manager._initialized.add("schwab")
             return None
 
-        try:
-            client = await asyncio.to_thread(
+        async def _initialize_schwab_client():
+            return await asyncio.to_thread(
                 auth.easy_client,
                 SCHWAB_API_KEY,
                 SCHWAB_API_SECRET,
@@ -166,6 +167,9 @@ async def get_schwab_session(session_manager):
                 SCHWAB_TOKEN_PATH,
                 interactive=False
             )
+
+        try:
+            client = await retry_operation(_initialize_schwab_client)
             session_manager.sessions["schwab"] = client
             print("✓ Schwab session initialized")
         except Exception as e:
