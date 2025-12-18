@@ -234,7 +234,10 @@ async def retry_operation(operation, max_attempts=RETRY_ATTEMPTS, delay=RETRY_DE
                 await asyncio.sleep(delay * (2 ** attempt))  # Exponential backoff
             continue
 
-    raise last_exception
+    if last_exception:
+        raise last_exception
+    else:
+        raise Exception("Retry operation failed")
 
 
 async def _login_broker(broker_api, broker_name):

@@ -44,7 +44,7 @@ class BrokerSessionManager:
         self._env_cache = {}  # Cache environment variables
         self._session_locks = {}  # Prevent concurrent session creation for same broker
 
-    def _get_env(self, key: str, default: str = None) -> str:
+    def _get_env(self, key: str, default: str | None = None) -> str:
         """Get environment variable with caching."""
         if key not in self._env_cache:
             self._env_cache[key] = os.getenv(key, default)
