@@ -1,44 +1,37 @@
 """Robinhood broker integration."""
 
 import asyncio
-import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import pyotp
 import robin_stocks.robinhood as rh
-from .base import retry_operation, rate_limiter
-
-_ACCOUNT_CACHE_TTL = 300  # seconds
-_account_cache: Dict[str, Any] = {"accounts": None, "timestamp": 0.0}
-_instrument_symbol_cache: Dict[str, str] = {}
+from .base import retry_operation, rate_limiter, api_cache
 
 
 async def _get_robinhood_accounts() -> List[dict]:
     """Fetch and cache the user's Robinhood accounts."""
-    now = time.time()
-    cached_accounts = _account_cache.get("accounts")
-    if (
-        cached_accounts is not None
-        and now - _account_cache["timestamp"] < _ACCOUNT_CACHE_TTL
-    ):
+    cache_key = "robinhood_accounts"
+    cached_accounts = api_cache.get(cache_key)
+    if cached_accounts is not None:
         return cached_accounts
 
     accounts = await asyncio.to_thread(
         rh.account.load_account_profile,
         dataType="results",
     )
-    _account_cache["accounts"] = accounts
-    _account_cache["timestamp"] = now
+    api_cache.set(cache_key, accounts)
     return accounts
 
 
 async def _get_symbol_for_instrument(instrument_url: str) -> str:
     """Convert an instrument URL to a symbol using a simple cache."""
-    if instrument_url in _instrument_symbol_cache:
-        return _instrument_symbol_cache[instrument_url]
+    cache_key = f"robinhood_instrument_{instrument_url}"
+    cached_symbol = api_cache.get(cache_key)
+    if cached_symbol is not None:
+        return cached_symbol
 
     symbol = await asyncio.to_thread(rh.get_symbol_by_url, instrument_url)
-    _instrument_symbol_cache[instrument_url] = symbol
+    api_cache.set(cache_key, symbol)
     return symbol
 
 
@@ -217,7 +210,7 @@ async def robinGetHoldings(ticker=None):
 
     account_results = await asyncio.gather(*account_tasks, return_exceptions=True)
     for result in account_results:
-        if isinstance(result, Exception):
+        if isinstance(result, BaseException):
             print(f"Failed to load holdings for a Robinhood account: {result}")
             continue
 
