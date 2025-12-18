@@ -1,7 +1,7 @@
 """Tradier broker integration."""
 
 import os
-from .base import http_client, rate_limiter, api_cache
+from .base import http_client, rate_limiter, api_cache, retry_operation
 
 
 async def tradierTrade(side, qty, ticker, price):
@@ -186,41 +186,41 @@ async def get_tradier_session(session_manager):
                 print(f"✓ Tradier credentials available ({account_count} account{'s' if account_count != 1 else ''}) [cached]")
             else:
                 # Fetch and cache account IDs during initialization
-                headers = {
-                    "Authorization": f"Bearer {TRADIER_ACCESS_TOKEN}",
-                    "Accept": "application/json",
-                }
+                async def _fetch_tradier_profile():
+                    headers = {
+                        "Authorization": f"Bearer {TRADIER_ACCESS_TOKEN}",
+                        "Accept": "application/json",
+                    }
 
-                try:
                     response = await http_client.get("https://api.tradier.com/v1/user/profile", headers=headers)
 
                     if response.status_code == 200:
-                        # Parse JSON response - guard against non-dict responses
-                        try:
-                            profile_data = response.json()
-                            if not isinstance(profile_data, dict):
-                                print(f"Unexpected profile response format from Tradier: {profile_data}")
-                                session_manager.sessions["tradier"] = None
-                            else:
-                                accounts = profile_data.get("profile", {}).get("account", [])
-                                account_ids = [account["account_number"] for account in accounts] if accounts else []
+                        profile_data = response.json()
+                        if not isinstance(profile_data, dict):
+                            raise Exception(f"Unexpected profile response format: {profile_data}")
 
-                                session_data = {
-                                    "token": TRADIER_ACCESS_TOKEN,
-                                    "account_ids": account_ids
-                                }
+                        accounts = profile_data.get("profile", {}).get("account", [])
+                        account_ids = [account["account_number"] for account in accounts] if accounts else []
 
-                                # Cache the profile data
-                                api_cache.set(cache_key, session_data)
-
-                                session_manager.sessions["tradier"] = session_data
-                                print(f"✓ Tradier credentials available ({len(account_ids)} account{'s' if len(account_ids) != 1 else ''})")
-                        except (ValueError, AttributeError) as e:
-                            print(f"Error parsing Tradier profile response: {e}. Response: {response.text[:200]}")
-                            session_manager.sessions["tradier"] = None
+                        return {
+                            "token": TRADIER_ACCESS_TOKEN,
+                            "account_ids": account_ids
+                        }
                     else:
-                        print(f"✗ Failed to fetch Tradier profile: {response.status_code}")
-                        session_manager.sessions["tradier"] = None
+                        raise Exception(f"Failed to fetch profile: HTTP {response.status_code}")
+
+                try:
+                    session_data = await retry_operation(_fetch_tradier_profile)
+
+                    # Cache the profile data
+                    api_cache.set(cache_key, session_data)
+
+                    session_manager.sessions["tradier"] = session_data
+                    account_count = len(session_data.get("account_ids", []))
+                    print(f"✓ Tradier credentials available ({account_count} account{'s' if account_count != 1 else ''})")
+                except (ValueError, AttributeError) as e:
+                    print(f"Error parsing Tradier profile response: {e}")
+                    session_manager.sessions["tradier"] = None
                 except Exception as e:
                     print(f"✗ Error initializing Tradier session: {e}")
                     session_manager.sessions["tradier"] = None

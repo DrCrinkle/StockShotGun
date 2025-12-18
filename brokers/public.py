@@ -6,7 +6,7 @@ import traceback
 import time
 from pathlib import Path
 import uuid
-from .base import rate_limiter, http_client
+from .base import rate_limiter, http_client, retry_operation
 
 
 # Token cache file location
@@ -67,18 +67,22 @@ async def _generate_access_token(api_secret):
         "secret": api_secret
     }
 
-    try:
+    async def _fetch_token():
+        """Fetch token with retry support."""
         response = await http_client.post(url, json=payload)
         response.raise_for_status()
         data = response.json()
         access_token = data.get('accessToken')
 
-        if access_token:
-            _save_token(access_token)
-            return access_token
-        else:
-            print("Error: No access token in response")
-            return None
+        if not access_token:
+            raise Exception("No access token in response")
+
+        return access_token
+
+    try:
+        access_token = await retry_operation(_fetch_token)
+        _save_token(access_token)
+        return access_token
     except Exception as e:
         print(f"Error generating Public access token: {str(e)}")
         return None

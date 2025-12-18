@@ -4,6 +4,7 @@ import asyncio
 import os
 import traceback
 from firstrade import account as ft_account, order, symbols
+from .base import retry_operation
 
 
 async def firstradeTrade(side, qty, ticker, price):
@@ -158,14 +159,18 @@ async def get_firstrade_session(session_manager):
             session_manager._initialized.add("firstrade")
             return None
 
-        try:
-            ft_ss = await asyncio.to_thread(
+        async def _create_firstrade_session():
+            """Create Firstrade session with retry support."""
+            return await asyncio.to_thread(
                 ft_account.FTSession,
                 username=FIRSTRADE_USER,
                 password=FIRSTRADE_PASS,
                 mfa_secret=FIRSTRADE_MFA,
                 profile_path="./tokens/"
             )
+
+        try:
+            ft_ss = await retry_operation(_create_firstrade_session)
             need_code = await asyncio.to_thread(ft_ss.login)
             if need_code:
                 code = input("Please enter the pin sent to your email/phone: ")

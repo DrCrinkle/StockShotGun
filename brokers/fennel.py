@@ -2,7 +2,7 @@
 
 import os
 import traceback
-from .base import http_client, rate_limiter
+from .base import http_client, rate_limiter, retry_operation
 
 
 API_BASE = "https://api.fennel.com"
@@ -35,7 +35,7 @@ async def fennelTrade(side, qty, ticker, price):
 
     # Map side and type to API enums
     # side: 1=BUY, 2=SELL
-    # type: 1=MARKET, 2=LIMIT
+    # order_type: 1=MARKET, 2=LIMIT
     side_enum = 1 if side.lower() == "buy" else 2
     order_type = 1 if not price else 2  # Market if no price, Limit if price given
 
@@ -159,8 +159,7 @@ async def get_fennel_session(session_manager):
             session_manager._initialized.add("fennel")
             return None
 
-        try:
-            # Fetch account information to validate token and get account IDs
+        async def _fetch_fennel_accounts():
             headers = {
                 "Authorization": f"Bearer {access_token}",
                 "Accept": "application/json",
@@ -176,17 +175,18 @@ async def get_fennel_session(session_manager):
             if response.status_code == 200:
                 accounts = response.json().get("accounts", [])
                 account_ids = [account["id"] for account in accounts]
-
-                session_manager.sessions["fennel"] = {
-                    "access_token": access_token,
-                    "account_ids": account_ids
-                }
-                print(f"✓ Fennel session initialized ({len(account_ids)} account(s))")
+                return account_ids
             else:
                 error_msg = response.text or "Unknown error"
-                print(f"✗ Failed to initialize Fennel session: {error_msg}")
-                session_manager.sessions["fennel"] = None
+                raise Exception(f"Failed to fetch accounts: {error_msg}")
 
+        try:
+            account_ids = await retry_operation(_fetch_fennel_accounts)
+            session_manager.sessions["fennel"] = {
+                "access_token": access_token,
+                "account_ids": account_ids
+            }
+            print(f"✓ Fennel session initialized ({len(account_ids)} account(s))")
         except Exception as e:
             print(f"✗ Failed to initialize Fennel session: {e}")
             traceback.print_exc()
