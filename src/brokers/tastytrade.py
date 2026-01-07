@@ -12,7 +12,7 @@ from tastytrade.order import (
     OrderType,
     OrderAction,
 )
-from .base import rate_limiter, retry_operation
+from brokers.base import rate_limiter, retry_operation
 
 
 async def tastyTrade(side, qty, ticker, price):
@@ -25,7 +25,8 @@ async def tastyTrade(side, qty, ticker, price):
     """
     await rate_limiter.wait_if_needed("TastyTrade")
 
-    from .session_manager import session_manager
+    from session_manager import session_manager
+
     session = await session_manager.get_session("TastyTrade")
     if not session:
         print("No TastyTrade credentials supplied, skipping")
@@ -42,28 +43,42 @@ async def tastyTrade(side, qty, ticker, price):
         # Build the order
         leg = symbol.build_leg(Decimal(qty), action)
         order_type = OrderType.LIMIT if price else OrderType.MARKET
-        price_value = Decimal(f'-{price}') if price and side == "buy" else Decimal(f'{price}') if price else None
+        price_value = (
+            Decimal(f"-{price}")
+            if price and side == "buy"
+            else Decimal(f"{price}")
+            if price
+            else None
+        )
         order = NewOrder(
             time_in_force=OrderTimeInForce.DAY,
             order_type=order_type,
             legs=[leg],
-            price=price_value
+            price=price_value,
         )
 
         for account in accounts:
             try:
-                placed_order = await account.a_place_order(session, order, dry_run=False)
+                placed_order = await account.a_place_order(
+                    session, order, dry_run=False
+                )
                 order_status = placed_order.order.status.value
 
                 if order_status in ["Received", "Routed"]:
                     action_str = "Bought" if side == "buy" else "Sold"
-                    print(f"{action_str} {ticker} on TastyTrade {account.account_type_name} account {account.account_number}")
+                    print(
+                        f"{action_str} {ticker} on TastyTrade {account.account_type_name} account {account.account_number}"
+                    )
                     success_count += 1
                 else:
-                    print(f"Order for {ticker} on TastyTrade account {account.account_number} has status: {order_status}")
+                    print(
+                        f"Order for {ticker} on TastyTrade account {account.account_number} has status: {order_status}"
+                    )
                     failure_count += 1
             except Exception as e:
-                print(f"Error placing order for {ticker} on TastyTrade account {account.account_number}: {str(e)}")
+                print(
+                    f"Error placing order for {ticker} on TastyTrade account {account.account_number}: {str(e)}"
+                )
                 failure_count += 1
     except Exception as e:
         print(f"Error trading {ticker} on TastyTrade: {str(e)}")
@@ -77,7 +92,8 @@ async def tastyGetHoldings(ticker=None):
     """Get holdings from TastyTrade."""
     await rate_limiter.wait_if_needed("TastyTrade")
 
-    from .session_manager import session_manager
+    from session_manager import session_manager
+
     session = await session_manager.get_session("TastyTrade")
     if not session:
         print("No TastyTrade credentials supplied, skipping")
@@ -97,12 +113,15 @@ async def tastyGetHoldings(ticker=None):
             if ticker and position.symbol != ticker:
                 continue
 
-            formatted_positions.append({
-                "symbol": position.symbol,
-                "quantity": float(position.quantity),
-                "cost_basis": float(position.average_open_price),
-                "current_value": float(position.close_price) * float(position.quantity)
-            })
+            formatted_positions.append(
+                {
+                    "symbol": position.symbol,
+                    "quantity": float(position.quantity),
+                    "cost_basis": float(position.average_open_price),
+                    "current_value": float(position.close_price)
+                    * float(position.quantity),
+                }
+            )
 
         holdings_data[account.account_number] = formatted_positions
 

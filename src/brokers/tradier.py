@@ -1,7 +1,7 @@
 """Tradier broker integration."""
 
 import os
-from .base import http_client, rate_limiter, api_cache, retry_operation
+from brokers.base import http_client, rate_limiter, api_cache, retry_operation
 
 
 async def tradierTrade(side, qty, ticker, price):
@@ -14,7 +14,8 @@ async def tradierTrade(side, qty, ticker, price):
     """
     await rate_limiter.wait_if_needed("Tradier")
 
-    from .session_manager import session_manager
+    from session_manager import session_manager
+
     session = await session_manager.get_session("Tradier")
     if not session:
         print("Missing Tradier credentials, skipping")
@@ -53,7 +54,7 @@ async def tradierTrade(side, qty, ticker, price):
                     "duration": "day",
                     **price_data,
                 },
-                headers=headers
+                headers=headers,
             )
 
             if response.status_code != 200:
@@ -64,7 +65,9 @@ async def tradierTrade(side, qty, ticker, price):
                 print(f"{action_str} {ticker} on Tradier account {account_id}")
                 success_count += 1
         except Exception as e:
-            print(f"Error placing order for {ticker} on Tradier account {account_id}: {str(e)}")
+            print(
+                f"Error placing order for {ticker} on Tradier account {account_id}: {str(e)}"
+            )
             failure_count += 1
 
     return success_count > 0
@@ -74,7 +77,8 @@ async def tradierGetHoldings(ticker=None):
     """Get holdings from Tradier."""
     await rate_limiter.wait_if_needed("Tradier")
 
-    from .session_manager import session_manager
+    from session_manager import session_manager
+
     session = await session_manager.get_session("Tradier")
     if not session:
         print("Missing Tradier credentials, skipping")
@@ -110,12 +114,16 @@ async def tradierGetHoldings(ticker=None):
         try:
             data = response.json()
             if not isinstance(data, dict):
-                print(f"Unexpected response format from Tradier for account {account_id}: {data}")
+                print(
+                    f"Unexpected response format from Tradier for account {account_id}: {data}"
+                )
                 continue
             positions = data.get("positions", {}).get("position", [])
         except (ValueError, AttributeError) as e:
             # Handle JSON decode errors or unexpected response types
-            print(f"Error parsing Tradier response for account {account_id}: {e}. Response: {response.text[:200]}")
+            print(
+                f"Error parsing Tradier response for account {account_id}: {e}. Response: {response.text[:200]}"
+            )
             continue
 
         # Handle case where positions is None (no positions)
@@ -137,31 +145,39 @@ async def tradierGetHoldings(ticker=None):
             quotes_response = await http_client.get(
                 "https://api.tradier.com/v1/markets/quotes",
                 params={"symbols": ",".join(symbols)},
-                headers=headers
+                headers=headers,
             )
             # Parse JSON response - guard against non-dict responses
             try:
                 quotes_data = quotes_response.json()
                 if not isinstance(quotes_data, dict):
-                    print(f"Unexpected quotes response format from Tradier: {quotes_data}")
+                    print(
+                        f"Unexpected quotes response format from Tradier: {quotes_data}"
+                    )
                     quotes = []
                 else:
                     quotes = quotes_data.get("quotes", {}).get("quote", [])
                     if not isinstance(quotes, list):
                         quotes = [quotes] if quotes else []
             except (ValueError, AttributeError) as e:
-                print(f"Error parsing Tradier quotes response: {e}. Response: {quotes_response.text[:200]}")
+                print(
+                    f"Error parsing Tradier quotes response: {e}. Response: {quotes_response.text[:200]}"
+                )
                 quotes = []
             quotes_dict = {quote.get("symbol"): quote.get("last") for quote in quotes}
         else:
             quotes_dict = {}
 
-        holdings_data[account_id] = [{
-            "symbol": pos.get("symbol"),
-            "quantity": pos.get("quantity"),
-            "cost_basis": pos.get("cost_basis"),
-            "current_value": float(pos.get("quantity", 0)) * quotes_dict.get(pos.get("symbol"), 0)
-        } for pos in positions]
+        holdings_data[account_id] = [
+            {
+                "symbol": pos.get("symbol"),
+                "quantity": pos.get("quantity"),
+                "cost_basis": pos.get("cost_basis"),
+                "current_value": float(pos.get("quantity", 0))
+                * quotes_dict.get(pos.get("symbol"), 0),
+            }
+            for pos in positions
+        ]
 
     return holdings_data
 
@@ -183,7 +199,9 @@ async def get_tradier_session(session_manager):
                 # Use cached profile data
                 session_manager.sessions["tradier"] = cached_profile
                 account_count = len(cached_profile.get("account_ids", []))
-                print(f"✓ Tradier credentials available ({account_count} account{'s' if account_count != 1 else ''}) [cached]")
+                print(
+                    f"✓ Tradier credentials available ({account_count} account{'s' if account_count != 1 else ''}) [cached]"
+                )
             else:
                 # Fetch and cache account IDs during initialization
                 async def _fetch_tradier_profile():
@@ -192,22 +210,32 @@ async def get_tradier_session(session_manager):
                         "Accept": "application/json",
                     }
 
-                    response = await http_client.get("https://api.tradier.com/v1/user/profile", headers=headers)
+                    response = await http_client.get(
+                        "https://api.tradier.com/v1/user/profile", headers=headers
+                    )
 
                     if response.status_code == 200:
                         profile_data = response.json()
                         if not isinstance(profile_data, dict):
-                            raise Exception(f"Unexpected profile response format: {profile_data}")
+                            raise Exception(
+                                f"Unexpected profile response format: {profile_data}"
+                            )
 
                         accounts = profile_data.get("profile", {}).get("account", [])
-                        account_ids = [account["account_number"] for account in accounts] if accounts else []
+                        account_ids = (
+                            [account["account_number"] for account in accounts]
+                            if accounts
+                            else []
+                        )
 
                         return {
                             "token": TRADIER_ACCESS_TOKEN,
-                            "account_ids": account_ids
+                            "account_ids": account_ids,
                         }
                     else:
-                        raise Exception(f"Failed to fetch profile: HTTP {response.status_code}")
+                        raise Exception(
+                            f"Failed to fetch profile: HTTP {response.status_code}"
+                        )
 
                 try:
                     session_data = await retry_operation(_fetch_tradier_profile)
@@ -217,7 +245,9 @@ async def get_tradier_session(session_manager):
 
                     session_manager.sessions["tradier"] = session_data
                     account_count = len(session_data.get("account_ids", []))
-                    print(f"✓ Tradier credentials available ({account_count} account{'s' if account_count != 1 else ''})")
+                    print(
+                        f"✓ Tradier credentials available ({account_count} account{'s' if account_count != 1 else ''})"
+                    )
                 except (ValueError, AttributeError) as e:
                     print(f"Error parsing Tradier profile response: {e}")
                     session_manager.sessions["tradier"] = None

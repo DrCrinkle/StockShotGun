@@ -6,13 +6,19 @@ import asyncio
 import traceback
 from bs4 import BeautifulSoup
 from zendriver import Browser
-from .base import rate_limiter
+from brokers.base import rate_limiter
 
 
 class WellsFargoClient:
     """Wells Fargo Advisors client with browser automation."""
 
-    def __init__(self, username: str, password: str, phone_suffix: str = "", headless: bool = True):
+    def __init__(
+        self,
+        username: str,
+        password: str,
+        phone_suffix: str = "",
+        headless: bool = True,
+    ):
         """Initialize Wells Fargo client with credentials.
 
         Args:
@@ -63,8 +69,7 @@ class WellsFargoClient:
             ]
 
             self._browser = await Browser.create(
-                browser_args=browser_args,
-                headless=self._headless
+                browser_args=browser_args, headless=self._headless
             )
 
             # Navigate to Wells Fargo Advisors login
@@ -96,23 +101,25 @@ class WellsFargoClient:
             needs_additional_verification = False
             current_url = page.url
             page_title = ""
-    
+
             success_url_markers = ("wellstrade", "brokoverview")
             success_title_markers = ("brokerage overview", "wellstrade")
-    
-            for attempt in range(12):  # Give the login a little longer before assuming puzzle
+
+            for attempt in range(
+                12
+            ):  # Give the login a little longer before assuming puzzle
                 await asyncio.sleep(1)
-    
+
                 try:
                     current_url = await page.evaluate("window.location.href")
                 except Exception:
                     current_url = page.url
-    
+
                 try:
                     page_title = await page.evaluate("document.title")
                 except Exception:
                     page_title = ""
-    
+
                 url_lower = (current_url or "").lower()
                 title_lower = page_title.lower()
 
@@ -123,8 +130,9 @@ class WellsFargoClient:
                     # print(f"[DEBUG] Login error detected in URL!")
                     pass
 
-                if any(marker in url_lower for marker in success_url_markers) or \
-                   any(marker in title_lower for marker in success_title_markers):
+                if any(marker in url_lower for marker in success_url_markers) or any(
+                    marker in title_lower for marker in success_title_markers
+                ):
                     if not login_verified:
                         print("Successfully logged in!")
                     login_verified = True
@@ -134,15 +142,15 @@ class WellsFargoClient:
                     needs_additional_verification = True
                     # print(f"[DEBUG] 2FA required (interdiction detected)")
                     break
-    
+
             if needs_additional_verification and not login_verified:
                 print("Login requires additional Wells Fargo verification (e.g. 2FA).")
-    
+
             # Check if we got an error (anti-bot check)
             if not login_verified and not needs_additional_verification:
                 # Check for anti-bot challenge
                 if "error=yes" in current_url.lower() or "login" in current_url.lower():
-                    print(f"\n{'='*60}")
+                    print(f"\n{'=' * 60}")
                     print("⚠️  Anti-bot challenge detected!")
                     print("Current URL:", current_url)
                     print("Page title:", page_title)
@@ -150,17 +158,17 @@ class WellsFargoClient:
                     print("  1. Solve any CAPTCHA/puzzle if shown")
                     print("  2. Log in manually after solving the puzzle")
                     print("\nWaiting for login to complete...")
-                    print(f"{'='*60}\n")
+                    print(f"{'=' * 60}\n")
                 else:
                     # Still haven't navigated - likely a puzzle or extra verification
                     print(f"Current URL: {current_url}")
                     print(f"Page title: {page_title}")
 
-                    print(f"\n{'='*60}")
+                    print(f"\n{'=' * 60}")
                     print("⚠️  Login not completing - likely a CAPTCHA/Puzzle!")
                     print("Please check the browser window and log in manually")
                     print("\nWaiting for login to complete...")
-                    print(f"{'='*60}\n")
+                    print(f"{'=' * 60}\n")
 
                 # Poll for successful login (up to 2 minutes)
                 print("Polling for successful login...")
@@ -171,29 +179,34 @@ class WellsFargoClient:
                         poll_title = await page.evaluate("document.title")
 
                         # Check if we successfully logged in
-                        if ("wellstrade" in poll_url.lower() or "brokoverview" in poll_url.lower()) and \
-                           any(keyword in poll_title.lower() for keyword in ["brokerage overview", "wellstrade"]):
+                        if (
+                            "wellstrade" in poll_url.lower()
+                            or "brokoverview" in poll_url.lower()
+                        ) and any(
+                            keyword in poll_title.lower()
+                            for keyword in ["brokerage overview", "wellstrade"]
+                        ):
                             print("✓ Login successful!")
                             login_verified = True
                             break
                     except Exception:
                         pass
-    
+
             # Handle 2FA if needed (check for INTERDICTION in URL as per reference)
             try:
                 current_url = await page.evaluate("window.location.href")
             except:
                 current_url = page.url
-    
+
             if "dest=INTERDICTION" in current_url:
-                print(f"\n{'='*60}")
+                print(f"\n{'=' * 60}")
                 print("⚠️  Wells Fargo 2FA required!")
                 print("Please complete 2FA in the browser window:")
                 print("  - Select your 2FA method (SMS, email, etc.)")
                 print("  - Enter the code when prompted")
                 print("  - Click submit")
                 print("\nWaiting for 2FA to complete...")
-                print(f"{'='*60}\n")
+                print(f"{'=' * 60}\n")
 
                 # Poll for 2FA completion (up to 120 seconds)
                 for attempt in range(60):
@@ -208,7 +221,7 @@ class WellsFargoClient:
                             break
                     except Exception:
                         pass
-    
+
             # Verify login was successful
             # print(f"[DEBUG] Verifying login, login_verified={login_verified}")
             try:
@@ -221,8 +234,13 @@ class WellsFargoClient:
             # print(f"[DEBUG] Final verification - URL: {current_url[:80]}... | Title: {page_title[:50]}...")
 
             # Check if we're already on the overview/accounts page
-            already_on_overview = any(keyword in current_url.lower() for keyword in ["brokoverview", "wellstrade"]) or \
-                                 any(keyword in page_title.lower() for keyword in ["brokerage overview", "wellstrade"])
+            already_on_overview = any(
+                keyword in current_url.lower()
+                for keyword in ["brokoverview", "wellstrade"]
+            ) or any(
+                keyword in page_title.lower()
+                for keyword in ["brokerage overview", "wellstrade"]
+            )
 
             # print(f"[DEBUG] already_on_overview: {already_on_overview}")
 
@@ -238,7 +256,9 @@ class WellsFargoClient:
             if not already_on_overview:
                 # print(f"[DEBUG] Navigating to brokoverview page...")
                 try:
-                    await page.get("https://wfawellstrade.wellsfargo.com/BW/brokoverview.do")
+                    await page.get(
+                        "https://wfawellstrade.wellsfargo.com/BW/brokoverview.do"
+                    )
                     await asyncio.sleep(3)
                     # print(f"[DEBUG] After navigation, URL: {await page.evaluate('window.location.href') if page else 'unknown'}")
                 except Exception as e:
@@ -251,7 +271,7 @@ class WellsFargoClient:
             self._page = page
             self._is_authenticated = True
             # print(f"[DEBUG] self._page set: {self._page is not None}, self._is_authenticated: {self._is_authenticated}")
-    
+
         except Exception as e:
             print(f"Error during Wells Fargo authentication: {e}")
             traceback.print_exc()
@@ -270,7 +290,7 @@ class WellsFargoClient:
             except:
                 current_url = self._page.url
 
-            match = re.search(r'_x=([^&]+)', current_url)
+            match = re.search(r"_x=([^&]+)", current_url)
             if match:
                 return f"_x={match.group(1)}"
             return ""
@@ -292,27 +312,33 @@ class WellsFargoClient:
 
             if "brokoverview" not in (current_url or "").lower():
                 try:
-                    await self._page.get("https://wfawellstrade.wellsfargo.com/BW/brokoverview.t.do")
+                    await self._page.get(
+                        "https://wfawellstrade.wellsfargo.com/BW/brokoverview.t.do"
+                    )
                     await asyncio.sleep(3)
                 except Exception as nav_err:
-                    print(f"Warning: Unable to navigate to Wells Fargo accounts overview: {nav_err}")
+                    print(
+                        f"Warning: Unable to navigate to Wells Fargo accounts overview: {nav_err}"
+                    )
             else:
                 # Give the overview table a moment to populate after login
                 await asyncio.sleep(2)
 
             # Poll for the accounts table to populate before parsing to capture all accounts
-            soup = BeautifulSoup("", 'html.parser')
+            soup = BeautifulSoup("", "html.parser")
             account_rows = []
             for attempt in range(6):
                 try:
-                    row_count = await self._page.evaluate("document.querySelectorAll('tr[data-p_account]').length")
+                    row_count = await self._page.evaluate(
+                        "document.querySelectorAll('tr[data-p_account]').length"
+                    )
                 except Exception:
                     row_count = 0
 
                 if row_count > 0:
                     html = await self._page.get_content()
-                    soup = BeautifulSoup(html, 'html.parser')
-                    account_rows = soup.select('tr[data-p_account]')
+                    soup = BeautifulSoup(html, "html.parser")
+                    account_rows = soup.select("tr[data-p_account]")
                     if account_rows:
                         break
 
@@ -325,57 +351,69 @@ class WellsFargoClient:
             # If still no rows found, fall back to parsing whatever content is available
             if not account_rows:
                 html = await self._page.get_content()
-                soup = BeautifulSoup(html, 'html.parser')
-                account_rows = soup.select('tr[data-p_account]')
+                soup = BeautifulSoup(html, "html.parser")
+                account_rows = soup.select("tr[data-p_account]")
 
             print(f"Found {len(account_rows)} account rows in HTML")
 
             # Debug: also check for any table rows
-            all_table_rows = soup.select('table tr')
+            all_table_rows = soup.select("table tr")
             print(f"Total table rows on page: {len(all_table_rows)}")
 
             accounts = []
             account_index = 0  # Separate counter for non-"-1" accounts
             for idx, row in enumerate(account_rows):
                 # Skip "All Accounts" row (data-p_account="-1")
-                account_attr = row.get('data-p_account')
-                if account_attr == '-1':
-                    print(f"Skipping 'All Accounts' row (data-p_account={account_attr})")
+                account_attr = row.get("data-p_account")
+                if account_attr == "-1":
+                    print(
+                        f"Skipping 'All Accounts' row (data-p_account={account_attr})"
+                    )
                     continue
 
                 try:
                     # Get account name from rowheader
                     name_elem = row.select_one('[role="rowheader"] .ellipsis')
-                    account_name = name_elem.get_text(strip=True) if name_elem else f"Account {account_index}"
+                    account_name = (
+                        name_elem.get_text(strip=True)
+                        if name_elem
+                        else f"Account {account_index}"
+                    )
 
                     # Get account number
-                    number_elem = row.select_one('div:not(.ellipsis-container)')
+                    number_elem = row.select_one("div:not(.ellipsis-container)")
                     account_number = ""
                     if number_elem:
-                        account_number = number_elem.get_text(strip=True).replace('*', '')
+                        account_number = number_elem.get_text(strip=True).replace(
+                            "*", ""
+                        )
 
                     # Get balance from last td with data-sort-value
-                    balance_cells = row.select('td[data-sort-value]')
+                    balance_cells = row.select("td[data-sort-value]")
                     balance = 0.0
                     if balance_cells:
                         balance_text = balance_cells[-1].get_text(strip=True)
                         # Remove currency symbols and commas
-                        balance_text = balance_text.replace('$', '').replace(',', '')
+                        balance_text = balance_text.replace("$", "").replace(",", "")
                         try:
                             balance = float(balance_text)
                         except (ValueError, TypeError):
                             pass
 
-                    accounts.append({
-                        'index': account_index,  # Use separate counter, not enumerate idx
-                        'data_p_account': account_attr,  # Store the actual attribute value too
-                        'name': account_name,
-                        'number': account_number,
-                        'balance': balance,
-                        'x_param': x_param
-                    })
+                    accounts.append(
+                        {
+                            "index": account_index,  # Use separate counter, not enumerate idx
+                            "data_p_account": account_attr,  # Store the actual attribute value too
+                            "name": account_name,
+                            "number": account_number,
+                            "balance": balance,
+                            "x_param": x_param,
+                        }
+                    )
 
-                    print(f"Found account #{account_index}: {account_name} ({account_number}) - ${balance:,.2f} [data-p_account={account_attr}]")
+                    print(
+                        f"Found account #{account_index}: {account_name} ({account_number}) - ${balance:,.2f} [data-p_account={account_attr}]"
+                    )
                     account_index += 1
 
                 except Exception as e:
@@ -385,13 +423,15 @@ class WellsFargoClient:
             if not accounts:
                 print("Warning: No accounts found on page")
                 # Fallback: return single account with index 0
-                accounts = [{
-                    'index': 0,
-                    'name': 'Default Account',
-                    'number': '',
-                    'balance': 0.0,
-                    'x_param': x_param
-                }]
+                accounts = [
+                    {
+                        "index": 0,
+                        "name": "Default Account",
+                        "number": "",
+                        "balance": 0.0,
+                        "x_param": x_param,
+                    }
+                ]
 
             return accounts
 
@@ -400,69 +440,77 @@ class WellsFargoClient:
             traceback.print_exc()
             # Fallback to single account
             x_param = await self._extract_x_param() if self._page else ""
-            return [{
-                'index': 0,
-                'name': 'Default Account',
-                'number': '',
-                'balance': 0.0,
-                'x_param': x_param
-            }]
+            return [
+                {
+                    "index": 0,
+                    "name": "Default Account",
+                    "number": "",
+                    "balance": 0.0,
+                    "x_param": x_param,
+                }
+            ]
 
     async def _parse_holdings_table(self, html):
         """Parse Wells Fargo holdings table HTML using exact selectors."""
-        soup = BeautifulSoup(html, 'html.parser')
+        soup = BeautifulSoup(html, "html.parser")
         holdings = []
 
         # Find holdings rows using exact selector: tbody > tr.level1
-        rows = soup.select('tbody > tr.level1')
+        rows = soup.select("tbody > tr.level1")
 
         for row in rows:
             try:
                 # Symbol: a.navlink.quickquote (remove ",popup" suffix as per reference)
-                symbol_elem = row.select_one('a.navlink.quickquote')
+                symbol_elem = row.select_one("a.navlink.quickquote")
                 if not symbol_elem:
                     continue
 
                 symbol_text = symbol_elem.get_text(strip=True)
-                symbol = symbol_text.split(',')[0].strip()
+                symbol = symbol_text.split(",")[0].strip()
 
-                if not symbol or symbol.lower() == 'popup':
+                if not symbol or symbol.lower() == "popup":
                     # Skip empty helper rows
                     continue
 
                 # Name: td[role="rowheader"] .data-content > div:last-child
-                name_elem = row.select_one('td[role="rowheader"] .data-content > div:last-child')
+                name_elem = row.select_one(
+                    'td[role="rowheader"] .data-content > div:last-child'
+                )
                 name = name_elem.get_text(strip=True) if name_elem else "N/A"
 
                 # Quantity and Price: td.datanumeric cells
-                data_cells = row.select('td.datanumeric')
+                data_cells = row.select("td.datanumeric")
                 if len(data_cells) < 3:
                     continue
 
                 # Quantity is index [1], price is index [2]
                 quantity_cell = data_cells[1]
-                quantity_div = quantity_cell.select_one('div:first-child')
-                quantity_text = quantity_div.get_text(strip=True) if quantity_div else "0"
-                quantity = float(quantity_text.replace(',', ''))
+                quantity_div = quantity_cell.select_one("div:first-child")
+                quantity_text = (
+                    quantity_div.get_text(strip=True) if quantity_div else "0"
+                )
+                quantity = float(quantity_text.replace(",", ""))
 
                 price_cell = data_cells[2]
-                price_div = price_cell.select_one('div:first-child')
+                price_div = price_cell.select_one("div:first-child")
                 price_text = price_div.get_text(strip=True) if price_div else "0"
-                price = float(price_text.replace('$', '').replace(',', ''))
+                price = float(price_text.replace("$", "").replace(",", ""))
 
                 current_value = quantity * price
                 cost_basis = None
 
                 # Only add if quantity > 0
                 if quantity > 0:
-                    holdings.append({
-                        "symbol": symbol,
-                        "name": name,
-                        "quantity": quantity,
-                        "price": price,
-                        "cost_basis": cost_basis,
-                        "current_value": current_value
-                    })
+                    holdings.append(
+                        {
+                            "symbol": symbol,
+                            "name": name,
+                            "quantity": quantity,
+                            "price": price,
+                            "cost_basis": cost_basis,
+                            "current_value": current_value,
+                        }
+                    )
 
             except (ValueError, IndexError, AttributeError) as e:
                 print(f"Error parsing holdings row: {e}")
@@ -525,10 +573,10 @@ class WellsFargoClient:
 
         # Iterate through each account
         for account in accounts:
-            account_name = account['name']
-            account_number = account['number']
-            account_index = account['index']
-            x_param = account['x_param']
+            account_name = account["name"]
+            account_number = account["number"]
+            account_index = account["index"]
+            x_param = account["x_param"]
 
             print(f"\nFetching holdings for: {account_name}")
 
@@ -561,7 +609,9 @@ class WellsFargoClient:
 
                 # Filter by ticker if specified
                 if ticker:
-                    holdings = [h for h in holdings if h["symbol"].upper() == ticker.upper()]
+                    holdings = [
+                        h for h in holdings if h["symbol"].upper() == ticker.upper()
+                    ]
 
                 if holdings:
                     # Use account number or name as key
@@ -604,10 +654,10 @@ class WellsFargoClient:
 
         # Trade on all accounts
         for account in accounts:
-            account_name = account['name']
+            account_name = account["name"]
             # Use data_p_account if available, otherwise fall back to index
-            account_param = account.get('data_p_account', account['index'])
-            x_param = account['x_param']
+            account_param = account.get("data_p_account", account["index"])
+            x_param = account["x_param"]
 
             # Reset price for this account (use per-account copy to avoid stale pricing)
             price_for_account = user_specified_price
@@ -654,11 +704,15 @@ class WellsFargoClient:
                 print("Checking if quote loaded...")
                 try:
                     await asyncio.sleep(2)
-                    quote_loaded = await self._page.evaluate("document.getElementById('last')?.value")
-                    if quote_loaded and quote_loaded != 'None' and quote_loaded.strip():
+                    quote_loaded = await self._page.evaluate(
+                        "document.getElementById('last')?.value"
+                    )
+                    if quote_loaded and quote_loaded != "None" and quote_loaded.strip():
                         print(f"Quote loaded: ${quote_loaded}")
                     else:
-                        print(f"Warning: Quote may not have loaded (value: '{quote_loaded}'), will use default pricing")
+                        print(
+                            f"Warning: Quote may not have loaded (value: '{quote_loaded}'), will use default pricing"
+                        )
                 except Exception as e:
                     print(f"Error checking quote: {e}")
 
@@ -690,14 +744,18 @@ class WellsFargoClient:
                 # Get last price from page for limit orders
                 if not price_for_account:
                     try:
-                        last_price_str = await self._page.evaluate("document.getElementById('last')?.value")
+                        last_price_str = await self._page.evaluate(
+                            "document.getElementById('last')?.value"
+                        )
                         print(f"Retrieved last price: {last_price_str}")
 
                         if last_price_str and last_price_str.strip():
                             price_for_account = float(last_price_str.strip())
                             print(f"Current stock price: ${price_for_account}")
                         else:
-                            print("Could not get price from page, defaulting to $1 (will use limit order)")
+                            print(
+                                "Could not get price from page, defaulting to $1 (will use limit order)"
+                            )
                             price_for_account = 1.00
                     except Exception as e:
                         print(f"Error getting price: {e}")
@@ -743,10 +801,14 @@ class WellsFargoClient:
                     else:
                         if side == "buy":
                             adjusted_price = round(price_for_account + 0.01, 2)
-                            print(f"Using last price ${price_for_account} + $0.01 for buy")
+                            print(
+                                f"Using last price ${price_for_account} + $0.01 for buy"
+                            )
                         else:
                             adjusted_price = round(price_for_account - 0.01, 2)
-                            print(f"Using last price ${price_for_account} - $0.01 for sell")
+                            print(
+                                f"Using last price ${price_for_account} - $0.01 for sell"
+                            )
 
                     if adjusted_price <= 0:
                         adjusted_price = 0.01
@@ -814,7 +876,9 @@ class WellsFargoClient:
 
                 # Click continue button
                 print("Clicking continue button...")
-                continue_button = await self._page.select("button[id=actionbtnContinue]", timeout=5)
+                continue_button = await self._page.select(
+                    "button[id=actionbtnContinue]", timeout=5
+                )
                 if continue_button:
                     await continue_button.click()
                     await asyncio.sleep(3)
@@ -841,10 +905,10 @@ class WellsFargoClient:
                     has_errors = False
                     error_messages = []
                     if error_texts:
-                        lines = error_texts.split('\\n')
+                        lines = error_texts.split("\\n")
                         for line in lines:
                             line = line.strip()
-                            if line.startswith('Error:') and 'Warning:' not in line:
+                            if line.startswith("Error:") and "Warning:" not in line:
                                 has_errors = True
                                 error_messages.append(line[:200])
                                 if len(error_messages) >= 3:
@@ -863,13 +927,17 @@ class WellsFargoClient:
                 # Find confirm button
                 confirm_button = None
                 try:
-                    confirm_button = await self._page.select(".btn-wfa-primary.btn-wfa-submit", timeout=5)
+                    confirm_button = await self._page.select(
+                        ".btn-wfa-primary.btn-wfa-submit", timeout=5
+                    )
                     if confirm_button:
                         print("Found submit button (.btn-wfa-primary.btn-wfa-submit)")
                 except Exception:
-                    for button_id in ['actionbtnContinue', 'confirmBtn', 'submitBtn']:
+                    for button_id in ["actionbtnContinue", "confirmBtn", "submitBtn"]:
                         try:
-                            confirm_button = await self._page.select(f"button[id={button_id}]", timeout=2)
+                            confirm_button = await self._page.select(
+                                f"button[id={button_id}]", timeout=2
+                            )
                             if confirm_button:
                                 print(f"Found confirm button: {button_id}")
                                 break
@@ -877,7 +945,9 @@ class WellsFargoClient:
                             continue
 
                 if not confirm_button:
-                    print(f"Wells Fargo order cannot be placed on {account_name} - no confirmation button found")
+                    print(
+                        f"Wells Fargo order cannot be placed on {account_name} - no confirmation button found"
+                    )
                     try:
                         buttons = await self._page.evaluate("""
                             Array.from(document.querySelectorAll('button')).map(btn => ({
@@ -894,7 +964,9 @@ class WellsFargoClient:
                 # Check dry-run
                 dry_run = os.getenv("DRY_RUN", "false").lower() == "true"
                 if dry_run:
-                    print(f"[DRY RUN] Would {side} {qty} shares of {ticker} on {account_name}")
+                    print(
+                        f"[DRY RUN] Would {side} {qty} shares of {ticker} on {account_name}"
+                    )
                     success_count += 1
                     continue
 
@@ -911,29 +983,39 @@ class WellsFargoClient:
                     page_text = await self._page.evaluate("document.body.textContent")
 
                     success_patterns = [
-                        'order has been placed',
-                        'successfully',
-                        'Success',
-                        'confirmed',
-                        'Confirmed',
-                        'Order Number',
-                        'order number',
-                        'has been received',
-                        'Acknowledgment'
+                        "order has been placed",
+                        "successfully",
+                        "Success",
+                        "confirmed",
+                        "Confirmed",
+                        "Order Number",
+                        "order number",
+                        "has been received",
+                        "Acknowledgment",
                     ]
 
-                    is_success = any(pattern.lower() in page_text.lower() for pattern in success_patterns)
+                    is_success = any(
+                        pattern.lower() in page_text.lower()
+                        for pattern in success_patterns
+                    )
 
                     final_url = await self._current_url()
-                    if 'confirmation' in final_url.lower() or 'orderack' in final_url.lower():
+                    if (
+                        "confirmation" in final_url.lower()
+                        or "orderack" in final_url.lower()
+                    ):
                         is_success = True
 
                     if is_success:
                         action_str = "Bought" if side == "buy" else "Sold"
-                        print(f"✓ {action_str} {qty} shares of {ticker} on {account_name}")
+                        print(
+                            f"✓ {action_str} {qty} shares of {ticker} on {account_name}"
+                        )
                         success_count += 1
                     else:
-                        print(f"Wells Fargo order may have failed on {account_name} - no clear success confirmation")
+                        print(
+                            f"Wells Fargo order may have failed on {account_name} - no clear success confirmation"
+                        )
                         print(f"Final URL: {final_url}")
 
                         errors_on_page = await self._page.evaluate("""
@@ -944,7 +1026,7 @@ class WellsFargoClient:
                         """)
                         if errors_on_page:
                             for error in errors_on_page:
-                                clean_error = ' '.join(error.split())
+                                clean_error = " ".join(error.split())
                                 print(f"  ⚠ {clean_error}")
                 except Exception as e:
                     print(f"Could not verify order success: {e}")
@@ -962,7 +1044,8 @@ async def wellsfargoGetHoldings(ticker=None):
     """Get holdings from all Wells Fargo accounts."""
     await rate_limiter.wait_if_needed("WellsFargo")
 
-    from .session_manager import session_manager
+    from session_manager import session_manager
+
     session = await session_manager.get_session("WellsFargo")
     if not session:
         print("No Wells Fargo credentials supplied, skipping")
@@ -976,7 +1059,7 @@ async def wellsfargoGetHoldings(ticker=None):
             username=session["username"],
             password=session["password"],
             phone_suffix=session.get("phone_suffix", ""),
-            headless=headless
+            headless=headless,
         ) as client:
             return await client.get_holdings(ticker)
     except Exception as e:
@@ -995,7 +1078,8 @@ async def wellsfargoTrade(side, qty, ticker, price):
     """
     await rate_limiter.wait_if_needed("WellsFargo")
 
-    from .session_manager import session_manager
+    from session_manager import session_manager
+
     session = await session_manager.get_session("WellsFargo")
     if not session:
         print("No Wells Fargo credentials supplied, skipping")
@@ -1009,7 +1093,7 @@ async def wellsfargoTrade(side, qty, ticker, price):
             username=session["username"],
             password=session["password"],
             phone_suffix=session.get("phone_suffix", ""),
-            headless=headless
+            headless=headless,
         ) as client:
             return await client.trade(side, qty, ticker, price)
     except Exception as e:
@@ -1023,7 +1107,9 @@ async def get_wellsfargo_session(session_manager):
     if "wellsfargo" not in session_manager._initialized:
         WELLSFARGO_USER = os.getenv("WELLSFARGO_USER")
         WELLSFARGO_PASS = os.getenv("WELLSFARGO_PASS")
-        WELLSFARGO_PHONE = os.getenv("WELLSFARGO_PHONE_SUFFIX")  # Optional phone suffix for 2FA
+        WELLSFARGO_PHONE = os.getenv(
+            "WELLSFARGO_PHONE_SUFFIX"
+        )  # Optional phone suffix for 2FA
 
         if not (WELLSFARGO_USER and WELLSFARGO_PASS):
             session_manager.sessions["wellsfargo"] = None

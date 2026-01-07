@@ -2,7 +2,7 @@
 
 import os
 import traceback
-from .base import http_client, rate_limiter, retry_operation
+from brokers.base import http_client, rate_limiter, retry_operation
 
 
 API_BASE = "https://api.fennel.com"
@@ -18,7 +18,8 @@ async def fennelTrade(side, qty, ticker, price):
     """
     await rate_limiter.wait_if_needed("Fennel")
 
-    from .session_manager import session_manager
+    from session_manager import session_manager
+
     fennel_session = await session_manager.get_session("Fennel")
     if not fennel_session:
         print("No Fennel credentials supplied, skipping")
@@ -30,7 +31,7 @@ async def fennelTrade(side, qty, ticker, price):
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Accept": "application/json",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
     }
 
     # Map side and type to API enums
@@ -51,7 +52,7 @@ async def fennelTrade(side, qty, ticker, price):
             "side": side_enum,
             "type": order_type,
             "time_in_force": 1,  # DAY
-            "route": 0  # ROUTING_UNSPECIFIED (use default routing)
+            "route": 0,  # ROUTING_UNSPECIFIED (use default routing)
         }
 
         try:
@@ -59,21 +60,27 @@ async def fennelTrade(side, qty, ticker, price):
                 f"{API_BASE}/order/create",
                 headers=headers,
                 json=order_data,
-                timeout=30.0
+                timeout=30.0,
             )
 
             if response.status_code == 200:
                 action_str = "Bought" if side.lower() == "buy" else "Sold"
                 order_type_str = "market" if not price else f"limit @ ${price}"
-                print(f"{action_str} {qty} shares of {ticker} on Fennel account {account_id} ({order_type_str})")
+                print(
+                    f"{action_str} {qty} shares of {ticker} on Fennel account {account_id} ({order_type_str})"
+                )
                 success_count += 1
             else:
                 error_msg = response.text or "Unknown error"
-                print(f"Failed to place order for {ticker} on Fennel account {account_id}: {error_msg}")
+                print(
+                    f"Failed to place order for {ticker} on Fennel account {account_id}: {error_msg}"
+                )
                 failure_count += 1
 
         except Exception as e:
-            print(f"Error placing order for {ticker} on Fennel account {account_id}: {str(e)}")
+            print(
+                f"Error placing order for {ticker} on Fennel account {account_id}: {str(e)}"
+            )
             traceback.print_exc()
             failure_count += 1
 
@@ -85,7 +92,8 @@ async def fennelGetHoldings(ticker=None):
     """Get holdings from Fennel using official API."""
     await rate_limiter.wait_if_needed("Fennel")
 
-    from .session_manager import session_manager
+    from session_manager import session_manager
+
     fennel_session = await session_manager.get_session("Fennel")
     if not fennel_session:
         print("No Fennel credentials supplied, skipping")
@@ -97,7 +105,7 @@ async def fennelGetHoldings(ticker=None):
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Accept": "application/json",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
     }
 
     try:
@@ -109,11 +117,13 @@ async def fennelGetHoldings(ticker=None):
                 f"{API_BASE}/portfolio/positions",
                 headers=headers,
                 json={"account_id": account_id},
-                timeout=30.0
+                timeout=30.0,
             )
 
             if response.status_code != 200:
-                print(f"Failed to get holdings for Fennel account {account_id}: {response.text}")
+                print(
+                    f"Failed to get holdings for Fennel account {account_id}: {response.text}"
+                )
                 continue
 
             response_data = response.json()
@@ -132,12 +142,14 @@ async def fennelGetHoldings(ticker=None):
                 if ticker and symbol.upper() != ticker.upper():
                     continue
 
-                formatted_positions.append({
-                    "symbol": symbol,
-                    "quantity": quantity,
-                    "cost_basis": cost_basis,
-                    "current_value": market_value
-                })
+                formatted_positions.append(
+                    {
+                        "symbol": symbol,
+                        "quantity": quantity,
+                        "cost_basis": cost_basis,
+                        "current_value": market_value,
+                    }
+                )
 
             holdings_data[account_id] = formatted_positions
 
@@ -163,13 +175,11 @@ async def get_fennel_session(session_manager):
             headers = {
                 "Authorization": f"Bearer {access_token}",
                 "Accept": "application/json",
-                "Content-Type": "application/json"
+                "Content-Type": "application/json",
             }
 
             response = await http_client.get(
-                f"{API_BASE}/accounts/info",
-                headers=headers,
-                timeout=30.0
+                f"{API_BASE}/accounts/info", headers=headers, timeout=30.0
             )
 
             if response.status_code == 200:
@@ -184,7 +194,7 @@ async def get_fennel_session(session_manager):
             account_ids = await retry_operation(_fetch_fennel_accounts)
             session_manager.sessions["fennel"] = {
                 "access_token": access_token,
-                "account_ids": account_ids
+                "account_ids": account_ids,
             }
             print(f"✓ Fennel session initialized ({len(account_ids)} account(s))")
         except Exception as e:

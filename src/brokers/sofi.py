@@ -6,7 +6,7 @@ import pyotp
 import traceback
 from zendriver import Browser
 from curl_cffi import requests as curl_requests
-from .base import rate_limiter
+from brokers.base import rate_limiter
 
 
 def _build_sofi_headers(csrf_token=None):
@@ -185,7 +185,9 @@ async def _sofi_get_stock_price(symbol):
 async def _sofi_get_funded_accounts(cookies):
     """Get list of funded SoFi accounts."""
     try:
-        url = "https://www.sofi.com/wealth/backend/api/v1/user/funded-brokerage-accounts"
+        url = (
+            "https://www.sofi.com/wealth/backend/api/v1/user/funded-brokerage-accounts"
+        )
         response = await asyncio.to_thread(
             curl_requests.get,
             url,
@@ -204,7 +206,9 @@ async def _sofi_get_funded_accounts(cookies):
         return None
 
 
-async def _sofi_place_order(symbol, quantity, limit_price, account_id, order_type, cookies, csrf_token):
+async def _sofi_place_order(
+    symbol, quantity, limit_price, account_id, order_type, cookies, csrf_token
+):
     """Place a limit or market order on SoFi."""
     try:
         payload = {
@@ -251,7 +255,8 @@ async def sofiTrade(side, qty, ticker, price):
     """
     await rate_limiter.wait_if_needed("SoFi")
 
-    from .session_manager import session_manager
+    from session_manager import session_manager
+
     session = await session_manager.get_session("SoFi")
     if not session:
         print("No SoFi credentials supplied, skipping")
@@ -334,7 +339,8 @@ async def sofiGetHoldings(ticker=None):
     """Get holdings from SoFi accounts."""
     await rate_limiter.wait_if_needed("SoFi")
 
-    from .session_manager import session_manager
+    from session_manager import session_manager
+
     session = await session_manager.get_session("SoFi")
     if not session:
         print("No SoFi credentials supplied, skipping")
@@ -402,12 +408,14 @@ async def sofiGetHoldings(ticker=None):
                     avg_cost = float(holding.get("avgCost", 0))
                     cost_basis = avg_cost * shares
 
-                formatted_positions.append({
-                    "symbol": symbol,
-                    "quantity": shares,
-                    "cost_basis": cost_basis,
-                    "current_value": price * shares
-                })
+                formatted_positions.append(
+                    {
+                        "symbol": symbol,
+                        "quantity": shares,
+                        "cost_basis": cost_basis,
+                        "current_value": price * shares,
+                    }
+                )
 
             if formatted_positions:
                 holdings_data[account_number] = formatted_positions
@@ -441,7 +449,7 @@ async def get_sofi_session(session_manager):
                 "username": SOFI_USER,
                 "password": SOFI_PASS,
                 "totp_secret": SOFI_TOTP,
-                "cookies_path": "./tokens/sofi_cookies.pkl"
+                "cookies_path": "./tokens/sofi_cookies.pkl",
             }
 
             session_manager.sessions["sofi"] = sofi_session
