@@ -145,7 +145,7 @@ async def publicTrade(side, qty, ticker, price):
     """
     await rate_limiter.wait_if_needed("Public")
 
-    from session_manager import session_manager
+    from brokers.session_manager import session_manager
 
     session = await session_manager.get_session("Public")
     if not session:
@@ -241,7 +241,7 @@ async def publicGetHoldings(ticker=None):
     """Get holdings from Public across all accounts."""
     await rate_limiter.wait_if_needed("Public")
 
-    from session_manager import session_manager
+    from brokers.session_manager import session_manager
 
     session = await session_manager.get_session("Public")
     if not session:

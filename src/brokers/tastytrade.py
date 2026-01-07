@@ -25,7 +25,7 @@ async def tastyTrade(side, qty, ticker, price):
     """
     await rate_limiter.wait_if_needed("TastyTrade")
 
-    from session_manager import session_manager
+    from brokers.session_manager import session_manager
 
     session = await session_manager.get_session("TastyTrade")
     if not session:
@@ -92,7 +92,7 @@ async def tastyGetHoldings(ticker=None):
     """Get holdings from TastyTrade."""
     await rate_limiter.wait_if_needed("TastyTrade")
 
-    from session_manager import session_manager
+    from brokers.session_manager import session_manager
 
     session = await session_manager.get_session("TastyTrade")
     if not session:

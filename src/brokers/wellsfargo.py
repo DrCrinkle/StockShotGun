@@ -1044,7 +1044,7 @@ async def wellsfargoGetHoldings(ticker=None):
     """Get holdings from all Wells Fargo accounts."""
     await rate_limiter.wait_if_needed("WellsFargo")
 
-    from session_manager import session_manager
+    from brokers.session_manager import session_manager
 
     session = await session_manager.get_session("WellsFargo")
     if not session:
@@ -1078,7 +1078,7 @@ async def wellsfargoTrade(side, qty, ticker, price):
     """
     await rate_limiter.wait_if_needed("WellsFargo")
 
-    from session_manager import session_manager
+    from brokers.session_manager import session_manager
 
     session = await session_manager.get_session("WellsFargo")
     if not session:
