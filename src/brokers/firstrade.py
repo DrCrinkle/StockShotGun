@@ -19,7 +19,7 @@ async def firstradeTrade(side, qty, ticker, price):
 
     await rate_limiter.wait_if_needed("Firstrade")
 
-    from session_manager import session_manager
+    from brokers.session_manager import session_manager
 
     ft_ss = await session_manager.get_session("Firstrade")
     if not ft_ss:
@@ -121,7 +121,7 @@ async def firstradeGetHoldings(ticker=None):
 
     await rate_limiter.wait_if_needed("Firstrade")
 
-    from session_manager import session_manager
+    from brokers.session_manager import session_manager
 
     ft_ss = await session_manager.get_session("Firstrade")
     if not ft_ss:

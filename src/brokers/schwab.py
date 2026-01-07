@@ -25,7 +25,7 @@ async def schwabTrade(side, qty, ticker, price):
 
     await rate_limiter.wait_if_needed("Schwab")
 
-    from session_manager import session_manager
+    from brokers.session_manager import session_manager
 
     c = await session_manager.get_session("Schwab")
     if not c:
@@ -92,7 +92,7 @@ async def schwabGetHoldings(ticker=None):
 
     await rate_limiter.wait_if_needed("Schwab")
 
-    from session_manager import session_manager
+    from brokers.session_manager import session_manager
 
     c = await session_manager.get_session("Schwab")
     if not c:

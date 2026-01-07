@@ -17,7 +17,7 @@ async def dspacTrade(side, qty, ticker, price):
     """
     await rate_limiter.wait_if_needed("DSPAC")
 
-    from session_manager import session_manager
+    from brokers.session_manager import session_manager
 
     dspac = await session_manager.get_session("DSPAC")
     if not dspac:
@@ -88,7 +88,7 @@ async def dspacGetHoldings(ticker=None):
     """Get holdings from DSPAC."""
     await rate_limiter.wait_if_needed("DSPAC")
 
-    from session_manager import session_manager
+    from brokers.session_manager import session_manager
 
     dspac = await session_manager.get_session("DSPAC")
     if not dspac:

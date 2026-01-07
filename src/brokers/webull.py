@@ -81,7 +81,7 @@ async def webullTrade(side, qty, ticker, price):
     """
     await rate_limiter.wait_if_needed("Webull")
 
-    from session_manager import session_manager
+    from brokers.session_manager import session_manager
 
     webull_session = await session_manager.get_session("Webull")
     if not webull_session:
@@ -247,7 +247,7 @@ async def webullGetHoldings(ticker=None):
     """Get holdings from Webull."""
     await rate_limiter.wait_if_needed("Webull")
 
-    from session_manager import session_manager
+    from brokers.session_manager import session_manager
 
     webull_session = await session_manager.get_session("Webull")
     if not webull_session:

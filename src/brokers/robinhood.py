@@ -135,7 +135,7 @@ async def robinTrade(side, qty, ticker, price):
     """
     await rate_limiter.wait_if_needed("Robinhood")
 
-    from session_manager import session_manager
+    from brokers.session_manager import session_manager
 
     session = await session_manager.get_session("Robinhood")
     if not session:
@@ -189,7 +189,7 @@ async def robinGetHoldings(ticker=None):
     """Get holdings from Robinhood."""
     await rate_limiter.wait_if_needed("Robinhood")
 
-    from session_manager import session_manager
+    from brokers.session_manager import session_manager
 
     session = await session_manager.get_session("Robinhood")
     if not session:

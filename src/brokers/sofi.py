@@ -255,7 +255,7 @@ async def sofiTrade(side, qty, ticker, price):
     """
     await rate_limiter.wait_if_needed("SoFi")
 
-    from session_manager import session_manager
+    from brokers.session_manager import session_manager
 
     session = await session_manager.get_session("SoFi")
     if not session:
@@ -339,7 +339,7 @@ async def sofiGetHoldings(ticker=None):
     """Get holdings from SoFi accounts."""
     await rate_limiter.wait_if_needed("SoFi")
 
-    from session_manager import session_manager
+    from brokers.session_manager import session_manager
 
     session = await session_manager.get_session("SoFi")
     if not session:

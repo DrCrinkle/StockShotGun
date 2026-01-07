@@ -14,7 +14,7 @@ async def tradierTrade(side, qty, ticker, price):
     """
     await rate_limiter.wait_if_needed("Tradier")
 
-    from session_manager import session_manager
+    from brokers.session_manager import session_manager
 
     session = await session_manager.get_session("Tradier")
     if not session:
@@ -77,7 +77,7 @@ async def tradierGetHoldings(ticker=None):
     """Get holdings from Tradier."""
     await rate_limiter.wait_if_needed("Tradier")
 
-    from session_manager import session_manager
+    from brokers.session_manager import session_manager
 
     session = await session_manager.get_session("Tradier")
     if not session:

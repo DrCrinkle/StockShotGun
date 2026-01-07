@@ -17,7 +17,7 @@ async def bbaeTrade(side, qty, ticker, price):
     """
     await rate_limiter.wait_if_needed("BBAE")
 
-    from session_manager import session_manager
+    from brokers.session_manager import session_manager
 
     bbae = await session_manager.get_session("BBAE")
     if not bbae:
@@ -77,7 +77,7 @@ async def bbaeGetHoldings(ticker=None):
     """Get holdings from BBAE."""
     await rate_limiter.wait_if_needed("BBAE")
 
-    from session_manager import session_manager
+    from brokers.session_manager import session_manager
 
     bbae = await session_manager.get_session("BBAE")
     if not bbae:
