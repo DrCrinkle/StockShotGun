@@ -5,7 +5,7 @@ This package contains modular components for the terminal user interface.
 """
 
 # Export all components for easy importing
-from .config import (
+from tui.config import (
     MAX_RESPONSE_HISTORY,
     RESPONSE_BOX_HEIGHT,
     MODAL_WIDTH,
@@ -14,12 +14,12 @@ from .config import (
     PALETTE,
 )
 
-from .widgets import (
+from tui.widgets import (
     EditWithCallback,
     AsyncioEventLoop,
 )
 
-from .input_handler import (
+from tui.input_handler import (
     TUIInputHandler,
     TUICompatibleInput,
     tui_input_handler,
@@ -28,27 +28,27 @@ from .input_handler import (
     restore_original_input,
 )
 
-from .response_handler import (
+from tui.response_handler import (
     ResponseWriter,
     MemoryEfficientResponseStorage,
 )
 
-from .session_cache import (
+from tui.session_cache import (
     SessionStatusCache,
     session_cache,
 )
 
-from .holdings_view import (
+from tui.holdings_view import (
     HoldingsView,
 )
 
-from .broker_functions import (
+from tui.broker_functions import (
     BROKER_CONFIG as BROKER_FUNC_CONFIG,
     get_broker_function,
 )
 
 # Import run_tui from app module
-from .app import run_tui
+from tui.app import run_tui
 
 __all__ = [
     # Config

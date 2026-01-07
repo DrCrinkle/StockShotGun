@@ -28,25 +28,27 @@ See: https://github.com/tedchou12/webull/issues/456
 import asyncio
 import os
 import traceback
-from .base import rate_limiter
+from brokers.base import rate_limiter
 
 
-async def _discover_accounts(wb, start_index=0, max_accounts=11, existing_account_ids=None):
+async def _discover_accounts(
+    wb, start_index=0, max_accounts=11, existing_account_ids=None
+):
     """
     Discover accounts by probing indices. Returns list of account dicts.
-    
+
     Args:
         wb: Webull client instance
         start_index: Starting index to probe (default 0)
         max_accounts: Maximum number of accounts to probe (default 11)
         existing_account_ids: Set of account IDs to skip (default None)
-        
+
     Returns:
         List of dicts with keys: account_id, index
     """
     accounts = []
     existing_set = set(existing_account_ids) if existing_account_ids else set()
-    
+
     for i in range(start_index, max_accounts):
         account_id = None
         try:
@@ -58,17 +60,14 @@ async def _discover_accounts(wb, start_index=0, max_accounts=11, existing_accoun
             # Unexpected error - log but continue
             print(f"⚠ Unexpected error getting account at index {i}: {e}")
             break
-        
+
         if account_id and account_id not in existing_set:
-            accounts.append({
-                "account_id": account_id,
-                "index": i
-            })
+            accounts.append({"account_id": account_id, "index": i})
             existing_set.add(account_id)
         elif not account_id:
             # No account at this index - stop probing
             break
-    
+
     return accounts
 
 
@@ -82,7 +81,8 @@ async def webullTrade(side, qty, ticker, price):
     """
     await rate_limiter.wait_if_needed("Webull")
 
-    from .session_manager import session_manager
+    from session_manager import session_manager
+
     webull_session = await session_manager.get_session("Webull")
     if not webull_session:
         print("No Webull credentials supplied, skipping")
@@ -114,7 +114,7 @@ async def webullTrade(side, qty, ticker, price):
                         stock=ticker.upper(),
                         action=action,
                         orderType=order_type,
-                        quant=qty
+                        quant=qty,
                     )
                 else:
                     response = await asyncio.to_thread(
@@ -123,18 +123,22 @@ async def webullTrade(side, qty, ticker, price):
                         action=action,
                         orderType=order_type,
                         price=float(price),
-                        quant=qty
+                        quant=qty,
                     )
             except KeyError as ke:
                 # The webull library is expecting a response key that doesn't exist
                 # This usually means the API returned an error
                 print(f"⚠ Webull API error for {ticker} on account {account_id}")
-                print("  The stock might not be tradeable, or there's an issue with the order")
+                print(
+                    "  The stock might not be tradeable, or there's an issue with the order"
+                )
                 print(f"  Library error: Missing key '{ke}'")
                 failure_count += 1
                 continue
             except Exception as order_error:
-                print(f"Error placing order for {ticker} on Webull account {account_id}: {str(order_error)}")
+                print(
+                    f"Error placing order for {ticker} on Webull account {account_id}: {str(order_error)}"
+                )
                 traceback.print_exc()
                 failure_count += 1
                 continue
@@ -143,15 +147,23 @@ async def webullTrade(side, qty, ticker, price):
             if response and response.get("success"):
                 action_str = "Bought" if side.lower() == "buy" else "Sold"
                 order_type_str = "market" if not price else f"limit @ ${price}"
-                print(f"{action_str} {qty} shares of {ticker} on Webull account {account_id} ({order_type_str})")
+                print(
+                    f"{action_str} {qty} shares of {ticker} on Webull account {account_id} ({order_type_str})"
+                )
                 success_count += 1
             else:
-                error_msg = response.get("msg", "Unknown error") if response else "No response"
-                print(f"Failed to place order for {ticker} on Webull account {account_id}: {error_msg}")
+                error_msg = (
+                    response.get("msg", "Unknown error") if response else "No response"
+                )
+                print(
+                    f"Failed to place order for {ticker} on Webull account {account_id}: {error_msg}"
+                )
                 failure_count += 1
 
         except Exception as e:
-            print(f"Error placing order for {ticker} on Webull account {account_id}: {str(e)}")
+            print(
+                f"Error placing order for {ticker} on Webull account {account_id}: {str(e)}"
+            )
             traceback.print_exc()
             failure_count += 1
 
@@ -161,73 +173,73 @@ async def webullTrade(side, qty, ticker, price):
 def _parse_webull_position(position, ticker=None):
     """
     Parse a Webull position from either v1 or v2 API format.
-    
+
     Args:
         position: Position dict from Webull API (v1 or v2 format)
         ticker: Optional ticker symbol to filter by
-        
+
     Returns:
         Dict with keys: symbol, quantity, cost_basis, current_value, or None if invalid/filtered
     """
     # Detect API version by checking for v1 format marker
     has_ticker = "ticker" in position and isinstance(position.get("ticker"), dict)
     has_items = "items" in position and isinstance(position.get("items"), list)
-    
+
     if has_ticker:
         # v1 format: flat structure with ticker object
         symbol = position.get("ticker", {}).get("symbol", "")
         quantity = float(position.get("position", 0))
         market_value = float(position.get("marketValue", 0))
         cost_basis = float(position.get("costBasis", market_value))
-        
+
     elif has_items:
         # v2 format: nested items array with lot-level detail
         items = position.get("items", [])
         if not items:
             return None
-        
+
         # Extract symbol from first item (all items should have same symbol)
         symbol = items[0].get("symbol", "")
         if not symbol:
             return None
-        
+
         # Aggregate quantities, cost basis, and unrealized P&L across all items (lots)
         total_quantity = 0.0
         total_cost = 0.0
         total_unrealized_pl = 0.0
-        
+
         for item in items:
             # v2 uses strings for numeric values
             item_quantity = float(item.get("quantity", "0") or "0")
             item_cost_price = float(item.get("cost_price", "0") or "0")
             item_unrealized_pl = float(item.get("unrealized_profit_loss", "0") or "0")
-            
+
             total_quantity += item_quantity
             total_cost += item_cost_price * item_quantity  # Weighted cost basis
             total_unrealized_pl += item_unrealized_pl
-        
+
         quantity = total_quantity
         cost_basis = total_cost if total_quantity > 0 else 0.0
         # Calculate market value: cost_basis + unrealized_profit_loss
         market_value = cost_basis + total_unrealized_pl
-        
+
     else:
         # Unknown format - skip this position
         return None
-    
+
     # Skip zero quantity positions
     if quantity <= 0:
         return None
-    
+
     # Filter by ticker if specified
     if ticker and symbol.upper() != ticker.upper():
         return None
-    
+
     return {
         "symbol": symbol,
         "quantity": quantity,
         "cost_basis": cost_basis,
-        "current_value": market_value
+        "current_value": market_value,
     }
 
 
@@ -235,7 +247,8 @@ async def webullGetHoldings(ticker=None):
     """Get holdings from Webull."""
     await rate_limiter.wait_if_needed("Webull")
 
-    from .session_manager import session_manager
+    from session_manager import session_manager
+
     webull_session = await session_manager.get_session("Webull")
     if not webull_session:
         print("No Webull credentials supplied, skipping")
@@ -264,7 +277,9 @@ async def webullGetHoldings(ticker=None):
                     try:
                         positions = await asyncio.to_thread(wb.get_positions, v2=True)
                     except Exception as v2_error:
-                        print(f"⚠ Both v1 and v2 get_positions failed for account {account_id}")
+                        print(
+                            f"⚠ Both v1 and v2 get_positions failed for account {account_id}"
+                        )
                         print(f"  v1 error: {type(e).__name__}: {e}")
                         print(f"  v2 error: {type(v2_error).__name__}: {v2_error}")
                         positions = None
@@ -283,7 +298,9 @@ async def webullGetHoldings(ticker=None):
                 holdings_data[account_id] = formatted_positions
 
             except Exception as e:
-                print(f"Error getting holdings for Webull account {account_id}: {str(e)}")
+                print(
+                    f"Error getting holdings for Webull account {account_id}: {str(e)}"
+                )
                 traceback.print_exc()
                 holdings_data[account_id] = []
 
@@ -337,8 +354,8 @@ async def get_webull_session(session_manager):
                     wb.api_login,
                     access_token=access_token,
                     refresh_token=refresh_token,
-                    token_expire='2099-01-01T00:00:00.000+0000',  # Far future date
-                    uuid=uuid
+                    token_expire="2099-01-01T00:00:00.000+0000",  # Far future date
+                    uuid=uuid,
                 )
                 # Manually set the account ID
                 wb._account_id = account_id
@@ -352,13 +369,17 @@ async def get_webull_session(session_manager):
                 except Exception:
                     # Other unexpected errors - continue with provided account_id
                     pass
-                
+
                 if test_account is None:
-                    print("⚠ Warning: Could not verify account ID, using provided value")
+                    print(
+                        "⚠ Warning: Could not verify account ID, using provided value"
+                    )
 
             # Fallback to traditional login (will likely fail with 403)
             elif has_login_creds:
-                print("⚠ Warning: Using traditional login (likely to fail due to Webull API changes)")
+                print(
+                    "⚠ Warning: Using traditional login (likely to fail due to Webull API changes)"
+                )
                 print("  Consider using pre-obtained credentials instead")
                 print("  See: https://github.com/ImNotOssy/webull/releases/tag/1")
 
@@ -378,22 +399,23 @@ async def get_webull_session(session_manager):
             # If using api_login with provided account IDs
             if has_token_creds and account_id:
                 # Support comma-separated account IDs
-                account_ids = [aid.strip() for aid in account_id.split(',')]
+                account_ids = [aid.strip() for aid in account_id.split(",")]
                 print(f"Using {len(account_ids)} provided account ID(s)")
 
                 for idx, aid in enumerate(account_ids):
-                    accounts.append({
-                        "account_id": aid,
-                        "index": idx
-                    })
+                    accounts.append({"account_id": aid, "index": idx})
 
                 # Try to discover additional accounts that weren't explicitly provided
                 print("Attempting to discover additional accounts...")
                 existing_ids = [acc["account_id"] for acc in accounts]
-                discovered = await _discover_accounts(wb, start_index=0, existing_account_ids=existing_ids)
-                
+                discovered = await _discover_accounts(
+                    wb, start_index=0, existing_account_ids=existing_ids
+                )
+
                 for account in discovered:
-                    account["index"] = len(accounts)  # Update index based on final position
+                    account["index"] = len(
+                        accounts
+                    )  # Update index based on final position
                     accounts.append(account)
                     print(f"  + Discovered additional account: {account['account_id']}")
             else:
@@ -403,10 +425,7 @@ async def get_webull_session(session_manager):
             if not accounts:
                 raise Exception("No Webull accounts found")
 
-            session_manager.sessions["webull"] = {
-                "client": wb,
-                "accounts": accounts
-            }
+            session_manager.sessions["webull"] = {"client": wb, "accounts": accounts}
             print(f"✓ Webull session initialized ({len(accounts)} account(s))")
 
         except Exception as e:

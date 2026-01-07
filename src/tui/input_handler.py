@@ -1,7 +1,7 @@
 """Input handling and modal dialogs for the TUI."""
 
 import urwid
-from .config import MODAL_WIDTH, MODAL_HEIGHT
+from tui.config import MODAL_WIDTH, MODAL_HEIGHT
 
 # Store original input function before any modifications
 original_input = input
@@ -61,35 +61,47 @@ class TUIInputHandler:
 
         # Create dialog content
         dialog_content = [
-            urwid.Text(("header", "📝 Input Required"), align='center'),
+            urwid.Text(("header", "📝 Input Required"), align="center"),
             urwid.Divider(),
             urwid.Text(prompt_text.strip()),
             urwid.Divider(),
             urwid.AttrMap(self.input_edit, "editcp"),
             urwid.Divider(),
-            urwid.Columns([
-                ('weight', 1, urwid.Button("Submit (Enter)", on_press=lambda btn: self._submit_input())),
-                ('weight', 1, urwid.Button("Cancel (Esc)", on_press=lambda btn: self._cancel_input())),
-            ], dividechars=2)
+            urwid.Columns(
+                [
+                    (
+                        "weight",
+                        1,
+                        urwid.Button(
+                            "Submit (Enter)", on_press=lambda btn: self._submit_input()
+                        ),
+                    ),
+                    (
+                        "weight",
+                        1,
+                        urwid.Button(
+                            "Cancel (Esc)", on_press=lambda btn: self._cancel_input()
+                        ),
+                    ),
+                ],
+                dividechars=2,
+            ),
         ]
 
         # Create modal dialog
         dialog = urwid.LineBox(
-            urwid.Filler(
-                urwid.Pile(dialog_content),
-                valign='middle'
-            ),
-            title=" User Input Required "
+            urwid.Filler(urwid.Pile(dialog_content), valign="middle"),
+            title=" User Input Required ",
         )
 
         # Create overlay
         self.overlay = urwid.Overlay(
             dialog,
             self.loop.widget,
-            align='center',
+            align="center",
             width=MODAL_WIDTH,
-            valign='middle',
-            height=MODAL_HEIGHT
+            valign="middle",
+            height=MODAL_HEIGHT,
         )
 
         # Store original widget and show overlay
@@ -104,10 +116,10 @@ class TUIInputHandler:
 
     def _handle_modal_input(self, key):
         """Handle input events in the modal dialog."""
-        if key == 'enter':
+        if key == "enter":
             self._submit_input()
             return True
-        elif key == 'esc':
+        elif key == "esc":
             self._cancel_input()
             return True
         else:
@@ -129,7 +141,7 @@ class TUIInputHandler:
 
     def _close_modal(self):
         """Close the modal dialog and restore original widget."""
-        if hasattr(self, 'original_widget'):
+        if hasattr(self, "original_widget"):
             self.loop.widget = self.original_widget
             self.loop.unhandled_input = self.original_unhandled_input
             self.waiting_for_input = False
@@ -156,9 +168,9 @@ tui_compatible_input = TUICompatibleInput()
 
 def setup_tui_input_interception():
     """Setup input interception for the TUI."""
-    __builtins__['input'] = tui_compatible_input
+    __builtins__["input"] = tui_compatible_input
 
 
 def restore_original_input():
     """Restore the original input function."""
-    __builtins__['input'] = original_input
+    __builtins__["input"] = original_input

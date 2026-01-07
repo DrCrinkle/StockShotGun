@@ -5,14 +5,21 @@ import urwid
 import asyncio
 import traceback
 
-from .config import BROKERS
-from .widgets import EditWithCallback, ResponseBox
-from .holdings_view import HoldingsView
-from .broker_functions import BROKER_CONFIG
-from .response_handler import ResponseWriter
-from .input_handler import tui_input_handler, setup_tui_input_interception, restore_original_input
+from tui.config import BROKERS
+from tui.widgets import EditWithCallback, ResponseBox
+from tui.holdings_view import HoldingsView
+from tui.broker_functions import BROKER_CONFIG
+from tui.response_handler import ResponseWriter
+from tui.input_handler import (
+    tui_input_handler,
+    setup_tui_input_interception,
+    restore_original_input,
+)
 from order_processor import order_processor
-from robin_stocks.robinhood.helper import set_output as set_robinhood_output, get_output as get_robinhood_output
+from robin_stocks.robinhood.helper import (
+    set_output as set_robinhood_output,
+    get_output as get_robinhood_output,
+)
 
 
 def run_tui():
@@ -130,7 +137,9 @@ def run_tui():
             response_box.add_response("No brokers selected!")
             return
         if not all([current_order["ticker"], current_order["quantity"]]):
-            response_box.add_response("Please fill in all order details (Ticker, Quantity)!")
+            response_box.add_response(
+                "Please fill in all order details (Ticker, Quantity)!"
+            )
             return
 
         orders.append(current_order.copy())
@@ -182,21 +191,23 @@ def run_tui():
         response_box.add_response(f"Submitting {len(orders)} orders...")
 
         # Convert BROKER_CONFIG to simple {broker: trade_function} mapping for order_processor
-        trade_functions = {broker: config["trade"] for broker, config in BROKER_CONFIG.items()}
+        trade_functions = {
+            broker: config["trade"] for broker, config in BROKER_CONFIG.items()
+        }
 
         try:
             # Use concurrent order processor
             results = await order_processor.process_orders(
                 orders,
                 trade_functions=trade_functions,
-                add_response_fn=response_box.add_response
+                add_response_fn=response_box.add_response,
             )
 
             # Build summary with total broker counts across all orders
             summary_parts = [f"✅ {results['successful']} succeeded"]
-            if results['failed'] > 0:
+            if results["failed"] > 0:
                 summary_parts.append(f"❌ {results['failed']} failed")
-            if results['skipped'] > 0:
+            if results["skipped"] > 0:
                 summary_parts.append(f"⚠️ {results['skipped']} skipped")
 
             response_box.add_response(f"\n🎯 Total Results: {', '.join(summary_parts)}")
@@ -229,7 +240,9 @@ def run_tui():
             holdings = await holdings_function(ticker_filter)
 
             if not holdings:
-                response_box.add_response(f"No holdings found or error accessing {broker} account")
+                response_box.add_response(
+                    f"No holdings found or error accessing {broker} account"
+                )
                 return
 
             holdings_view, key_handler = create_holdings_screen(holdings, broker)
@@ -306,19 +319,23 @@ def run_tui():
                 case _:
                     return False
 
-        body.extend([
-            urwid.AttrMap(
-                urwid.Button("Clear All Orders", on_press=lambda btn: handle_key("c")),
-                None,
-                focus_map="reversed",
-            ),
-            urwid.Divider(),
-            urwid.AttrMap(
-                urwid.Button("Back to Main Menu", on_press=show_main_screen),
-                None,
-                focus_map="reversed",
-            ),
-        ])
+        body.extend(
+            [
+                urwid.AttrMap(
+                    urwid.Button(
+                        "Clear All Orders", on_press=lambda btn: handle_key("c")
+                    ),
+                    None,
+                    focus_map="reversed",
+                ),
+                urwid.Divider(),
+                urwid.AttrMap(
+                    urwid.Button("Back to Main Menu", on_press=show_main_screen),
+                    None,
+                    focus_map="reversed",
+                ),
+            ]
+        )
 
         listbox = urwid.ListBox(urwid.SimpleFocusListWalker(body))
         return (

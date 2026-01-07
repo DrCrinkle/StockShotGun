@@ -4,7 +4,7 @@ import asyncio
 import os
 import traceback
 from firstrade import account as ft_account, order, symbols
-from .base import retry_operation
+from brokers.base import retry_operation
 
 
 async def firstradeTrade(side, qty, ticker, price):
@@ -15,10 +15,12 @@ async def firstradeTrade(side, qty, ticker, price):
         False: Trade failed on all accounts
         None: No credentials (broker skipped)
     """
-    from .base import rate_limiter
+    from base import rate_limiter
+
     await rate_limiter.wait_if_needed("Firstrade")
 
-    from .session_manager import session_manager
+    from session_manager import session_manager
+
     ft_ss = await session_manager.get_session("Firstrade")
     if not ft_ss:
         print("No Firstrade credentials supplied, skipping")
@@ -57,7 +59,9 @@ async def firstradeTrade(side, qty, ticker, price):
                 "account": account_number,
                 "symbol": ticker,
                 "price_type": price_type,
-                "order_type": order.OrderType.BUY if side == "buy" else order.OrderType.SELL,
+                "order_type": order.OrderType.BUY
+                if side == "buy"
+                else order.OrderType.SELL,
                 "quantity": adjusted_qty,
                 "duration": order.Duration.DAY,
                 "price": price,
@@ -67,7 +71,9 @@ async def firstradeTrade(side, qty, ticker, price):
             order_conf = await asyncio.to_thread(ft_order.place_order, **order_params)
 
             if order_conf.get("message") == "Normal":
-                print(f"Order for {adjusted_qty} shares of {ticker} placed on Firstrade successfully.")
+                print(
+                    f"Order for {adjusted_qty} shares of {ticker} placed on Firstrade successfully."
+                )
                 print(f"Order ID: {order_conf.get('result').get('order_id')}.")
                 success_count += 1
 
@@ -79,20 +85,30 @@ async def firstradeTrade(side, qty, ticker, price):
                         "price": symbol_data.last - 0.01,
                     }
 
-                    sell_conf = await asyncio.to_thread(ft_order.place_order, **sell_params)
+                    sell_conf = await asyncio.to_thread(
+                        ft_order.place_order, **sell_params
+                    )
 
                     if sell_conf.get("message") == "Normal":
-                        print(f"Sell order for excess {sell_qty} shares placed successfully.")
-                        print(f"Sell Order ID: {sell_conf.get('result').get('order_id')}.")
+                        print(
+                            f"Sell order for excess {sell_qty} shares placed successfully."
+                        )
+                        print(
+                            f"Sell Order ID: {sell_conf.get('result').get('order_id')}."
+                        )
                     else:
-                        print("Failed to place sell order for excess shares on Firstrade.")
+                        print(
+                            "Failed to place sell order for excess shares on Firstrade."
+                        )
                         print(sell_conf)
             else:
                 print(f"Failed to place order for {ticker} on Firstrade.")
                 print(order_conf)
                 failure_count += 1
         except Exception as e:
-            print(f"An error occurred while placing order for {ticker} on Firstrade: {e}")
+            print(
+                f"An error occurred while placing order for {ticker} on Firstrade: {e}"
+            )
             failure_count += 1
 
     # Return True if at least one account succeeded
@@ -101,10 +117,12 @@ async def firstradeTrade(side, qty, ticker, price):
 
 async def firstradeGetHoldings(ticker=None):
     """Get holdings from Firstrade."""
-    from .base import rate_limiter
+    from base import rate_limiter
+
     await rate_limiter.wait_if_needed("Firstrade")
 
-    from .session_manager import session_manager
+    from session_manager import session_manager
+
     ft_ss = await session_manager.get_session("Firstrade")
     if not ft_ss:
         print("No Firstrade credentials supplied, skipping")
@@ -115,7 +133,9 @@ async def firstradeGetHoldings(ticker=None):
         holdings_data = {}
 
         for account_number in ft_accounts.account_numbers:
-            positions = await asyncio.to_thread(ft_accounts.get_positions, account_number)
+            positions = await asyncio.to_thread(
+                ft_accounts.get_positions, account_number
+            )
             if not positions:
                 continue
 
@@ -129,12 +149,14 @@ async def firstradeGetHoldings(ticker=None):
                 if ticker and symbol.upper() != ticker.upper():
                     continue
 
-                formatted_positions.append({
-                    "symbol": symbol,
-                    "quantity": quantity,
-                    "cost_basis": cost_basis,
-                    "current_value": current_value
-                })
+                formatted_positions.append(
+                    {
+                        "symbol": symbol,
+                        "quantity": quantity,
+                        "cost_basis": cost_basis,
+                        "current_value": current_value,
+                    }
+                )
 
             if formatted_positions:
                 holdings_data[account_number] = formatted_positions
@@ -166,7 +188,7 @@ async def get_firstrade_session(session_manager):
                 username=FIRSTRADE_USER,
                 password=FIRSTRADE_PASS,
                 mfa_secret=FIRSTRADE_MFA,
-                profile_path="./tokens/"
+                profile_path="./tokens/",
             )
 
         try:

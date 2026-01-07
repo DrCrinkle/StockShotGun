@@ -4,7 +4,7 @@ import os
 import asyncio
 import traceback
 from dspac_invest_api import DSPACAPI
-from .base import _login_broker, _get_broker_holdings, rate_limiter
+from brokers.base import _login_broker, _get_broker_holdings, rate_limiter
 
 
 async def dspacTrade(side, qty, ticker, price):
@@ -17,7 +17,8 @@ async def dspacTrade(side, qty, ticker, price):
     """
     await rate_limiter.wait_if_needed("DSPAC")
 
-    from .session_manager import session_manager
+    from session_manager import session_manager
+
     dspac = await session_manager.get_session("DSPAC")
     if not dspac:
         print("No DSPAC credentials supplied, skipping")
@@ -28,13 +29,13 @@ async def dspacTrade(side, qty, ticker, price):
 
     try:
         account_info = await asyncio.to_thread(dspac.get_account_info)
-        account_number = account_info.get("Data").get('accountNumber')
+        account_number = account_info.get("Data").get("accountNumber")
 
         if not account_number:
             print("Failed to retrieve account number from DSPAC.")
             return False
 
-        if side == 'buy':
+        if side == "buy":
             response = await asyncio.to_thread(
                 dspac.execute_buy,
                 ticker,
@@ -42,16 +43,18 @@ async def dspacTrade(side, qty, ticker, price):
                 account_number,
                 dry_run=False,
             )
-        elif side == 'sell':
+        elif side == "sell":
             holdings_response = await asyncio.to_thread(
                 dspac.check_stock_holdings,
                 ticker,
                 account_number,
             )
-            available_qty = holdings_response.get("Data").get('enableAmount', 0)
+            available_qty = holdings_response.get("Data").get("enableAmount", 0)
 
             if int(available_qty) < qty:
-                print(f"Not enough shares to sell. Available: {available_qty}, Requested: {qty}")
+                print(
+                    f"Not enough shares to sell. Available: {available_qty}, Requested: {qty}"
+                )
                 return False
 
             response = await asyncio.to_thread(
@@ -85,7 +88,8 @@ async def dspacGetHoldings(ticker=None):
     """Get holdings from DSPAC."""
     await rate_limiter.wait_if_needed("DSPAC")
 
-    from .session_manager import session_manager
+    from session_manager import session_manager
+
     dspac = await session_manager.get_session("DSPAC")
     if not dspac:
         print("No DSPAC credentials supplied, skipping")

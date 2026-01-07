@@ -6,6 +6,7 @@ from brokers import session_manager, BrokerConfig
 from tui.broker_functions import BROKER_CONFIG as BROKER_FUNCTIONS
 from order_processor import order_processor
 
+
 async def print_holdings(holdings):
     """Print holdings in a formatted way."""
     if holdings:
@@ -14,21 +15,21 @@ async def print_holdings(holdings):
             if not positions:
                 print("No positions found")
             for pos in positions:
-                symbol = pos.get('symbol', 'N/A')
-                quantity = pos.get('quantity', 0)
+                symbol = pos.get("symbol", "N/A")
+                quantity = pos.get("quantity", 0)
 
-                cost_basis = pos.get('cost_basis')
+                cost_basis = pos.get("cost_basis")
                 if cost_basis is None:
                     cost_basis_display = "N/A"
                 else:
                     cost_basis_display = f"${float(cost_basis):.2f}"
 
-                current_value = pos.get('current_value')
+                current_value = pos.get("current_value")
                 if current_value is None:
-                    fallback_value = pos.get('value')
-                    if fallback_value is None and pos.get('price') is not None:
+                    fallback_value = pos.get("value")
+                    if fallback_value is None and pos.get("price") is not None:
                         try:
-                            fallback_value = float(pos['price']) * float(quantity)
+                            fallback_value = float(pos["price"]) * float(quantity)
                         except (TypeError, ValueError):
                             fallback_value = None
                     current_value = fallback_value
@@ -44,6 +45,7 @@ async def print_holdings(holdings):
                     f"Cost Basis: {cost_basis_display}\n"
                     f"Current Value: {current_value_display}"
                 )
+
 
 async def run_cli(args, parser):
     if args.action == "setup":
@@ -106,12 +108,16 @@ async def run_cli(args, parser):
         "quantity": args.quantity,
         "ticker": args.ticker,
         "price": args.price,
-        "selected_brokers": brokers_to_use
+        "selected_brokers": brokers_to_use,
     }
 
     # Use order processor for concurrent execution with better error handling
-    print(f"\n{args.action.upper()} {args.quantity} {args.ticker} @ ${args.price if args.price else 'market'}")
-    print(f"Executing across {len(brokers_to_use)} broker(s): {', '.join(brokers_to_use)}\n")
+    print(
+        f"\n{args.action.upper()} {args.quantity} {args.ticker} @ ${args.price if args.price else 'market'}"
+    )
+    print(
+        f"Executing across {len(brokers_to_use)} broker(s): {', '.join(brokers_to_use)}\n"
+    )
 
     # Wrapper function for CLI mode that ignores force_redraw parameter
     def cli_response_fn(message, force_redraw=False):
@@ -121,26 +127,39 @@ async def run_cli(args, parser):
     results = await order_processor.process_orders(
         [order],
         trade_functions,
-        cli_response_fn  # Use wrapper that handles force_redraw parameter
+        cli_response_fn,  # Use wrapper that handles force_redraw parameter
     )
 
     # Print summary
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("🎯 Total Results:")
     print(f"  ✅ Successful brokers: {results['successful']}")
     print(f"  ❌ Failed brokers: {results['failed']}")
-    if results['skipped'] > 0:
+    if results["skipped"] > 0:
         print(f"  ⚠️  Skipped brokers: {results['skipped']}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="A one click solution to submitting an order across multiple brokers")
-    parser.add_argument("action", choices=["buy", "sell", "setup", "holdings"], nargs="?", help="Action to perform")
+    parser = argparse.ArgumentParser(
+        description="A one click solution to submitting an order across multiple brokers"
+    )
+    parser.add_argument(
+        "action",
+        choices=["buy", "sell", "setup", "holdings"],
+        nargs="?",
+        help="Action to perform",
+    )
     parser.add_argument("quantity", type=int, nargs="?", help="Quantity to trade")
     parser.add_argument("ticker", nargs="?", help="Ticker symbol")
-    parser.add_argument("price", nargs="?", type=float, help="Price for limit order (optional)")
-    parser.add_argument("--broker", action="append", help="Broker(s) to use. Can be specified multiple times (e.g., --broker Public --broker Robinhood)")
+    parser.add_argument(
+        "price", nargs="?", type=float, help="Price for limit order (optional)"
+    )
+    parser.add_argument(
+        "--broker",
+        action="append",
+        help="Broker(s) to use. Can be specified multiple times (e.g., --broker Public --broker Robinhood)",
+    )
     args = parser.parse_args()
 
     try:

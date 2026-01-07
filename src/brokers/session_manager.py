@@ -2,21 +2,21 @@
 
 import os
 import asyncio
-from .base import BrokerConfig
+from brokers.base import BrokerConfig
 
 # Import broker modules dynamically
-from . import robinhood
-from . import tradier
-from . import tastytrade
-from . import public
-from . import firstrade
-from . import fennel
-from . import schwab
-from . import bbae
-from . import dspac
-from . import sofi
-from . import webull
-from . import wellsfargo
+import brokers.robinhood
+import brokers.tradier
+import brokers.tastytrade
+import brokers.public
+import brokers.firstrade
+import brokers.fennel
+import brokers.schwab
+import brokers.bbae
+import brokers.dspac
+import brokers.sofi
+import brokers.webull
+import brokers.wellsfargo
 
 
 class BrokerSessionManager:
@@ -24,18 +24,18 @@ class BrokerSessionManager:
 
     # Mapping of broker names to their modules and session getter functions
     BROKER_MODULES = {
-        "Robinhood": (robinhood, "get_robinhood_session"),
-        "Tradier": (tradier, "get_tradier_session"),
-        "TastyTrade": (tastytrade, "get_tastytrade_session"),
-        "Public": (public, "get_public_session"),
-        "Firstrade": (firstrade, "get_firstrade_session"),
-        "Fennel": (fennel, "get_fennel_session"),
-        "Schwab": (schwab, "get_schwab_session"),
-        "BBAE": (bbae, "get_bbae_session"),
-        "DSPAC": (dspac, "get_dspac_session"),
-        "SoFi": (sofi, "get_sofi_session"),
-        "Webull": (webull, "get_webull_session"),
-        "WellsFargo": (wellsfargo, "get_wellsfargo_session"),
+        "Robinhood": (brokers.robinhood, "get_robinhood_session"),
+        "Tradier": (brokers.tradier, "get_tradier_session"),
+        "TastyTrade": (brokers.tastytrade, "get_tastytrade_session"),
+        "Public": (brokers.public, "get_public_session"),
+        "Firstrade": (brokers.firstrade, "get_firstrade_session"),
+        "Fennel": (brokers.fennel, "get_fennel_session"),
+        "Schwab": (brokers.schwab, "get_schwab_session"),
+        "BBAE": (brokers.bbae, "get_bbae_session"),
+        "DSPAC": (brokers.dspac, "get_dspac_session"),
+        "SoFi": (brokers.sofi, "get_sofi_session"),
+        "Webull": (brokers.webull, "get_webull_session"),
+        "WellsFargo": (brokers.wellsfargo, "get_wellsfargo_session"),
     }
 
     def __init__(self):
@@ -88,7 +88,9 @@ class BrokerSessionManager:
             print("No brokers selected for initialization")
             return
 
-        print(f"🔐 Initializing sessions for selected brokers: {', '.join(broker_names)}")
+        print(
+            f"🔐 Initializing sessions for selected brokers: {', '.join(broker_names)}"
+        )
 
         # Initialize only selected brokers using dynamic session getter
         tasks = []
@@ -105,11 +107,17 @@ class BrokerSessionManager:
         active_sessions = []
         for broker_name in broker_names:
             session_key = BrokerConfig.get_session_key(broker_name)
-            if session_key and session_key in self.sessions and self.sessions[session_key] is not None:
+            if (
+                session_key
+                and session_key in self.sessions
+                and self.sessions[session_key] is not None
+            ):
                 active_sessions.append(broker_name)
 
         if active_sessions:
-            print(f"✅ Selected broker sessions initialized: {', '.join(active_sessions)}")
+            print(
+                f"✅ Selected broker sessions initialized: {', '.join(active_sessions)}"
+            )
         else:
             print("⚠️  No broker sessions were successfully initialized")
 
@@ -124,8 +132,12 @@ class BrokerSessionManager:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
-        active_sessions = [name for name, session in self.sessions.items() if session is not None]
-        print(f"✅ Session initialization complete. Active sessions: {', '.join(active_sessions)}")
+        active_sessions = [
+            name for name, session in self.sessions.items() if session is not None
+        ]
+        print(
+            f"✅ Session initialization complete. Active sessions: {', '.join(active_sessions)}"
+        )
 
     def cleanup(self):
         """Clean up broker sessions (safe to call multiple times)."""
@@ -135,7 +147,8 @@ class BrokerSessionManager:
 
     async def shutdown(self):
         """Shutdown and close HTTP client (call only on application exit)."""
-        from .base import http_client
+        from base import http_client
+
         try:
             await http_client.aclose()
         except Exception as e:

@@ -1,7 +1,7 @@
 """Response handling for the TUI."""
 
 import time
-from .config import MAX_RESPONSE_HISTORY
+from tui.config import MAX_RESPONSE_HISTORY
 
 
 class ResponseWriter:
@@ -44,8 +44,9 @@ class MemoryEfficientResponseStorage:
         estimated_chars = len(str(text))
 
         # If adding this would exceed limits, remove oldest items
-        while (len(self._items) >= self.max_items or
-               (self._total_chars + estimated_chars > self._max_chars and self._items)):
+        while len(self._items) >= self.max_items or (
+            self._total_chars + estimated_chars > self._max_chars and self._items
+        ):
             removed_item = self._items.pop(0)
             self._total_chars -= len(str(removed_item))
 

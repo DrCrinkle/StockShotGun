@@ -20,3 +20,9 @@ dependencies = [
     "curl-cffi==0.13.0",
     "webull @ git+https://github.com/ImNotOssy/webull.git@587b3c7bea32a475f1596f3328cf515b4566f624",
 ]
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[project.scripts]
+stockshotgun = "main:main"

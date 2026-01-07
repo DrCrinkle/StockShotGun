@@ -10,7 +10,7 @@ from schwab.orders.equities import (
     equity_sell_limit,
     equity_sell_market,
 )
-from .base import retry_operation
+from brokers.base import retry_operation
 
 
 async def schwabTrade(side, qty, ticker, price):
@@ -21,10 +21,12 @@ async def schwabTrade(side, qty, ticker, price):
         False: Trade failed on all accounts
         None: No credentials supplied
     """
-    from .base import rate_limiter
+    from base import rate_limiter
+
     await rate_limiter.wait_if_needed("Schwab")
 
-    from .session_manager import session_manager
+    from session_manager import session_manager
+
     c = await session_manager.get_session("Schwab")
     if not c:
         print("No Schwab credentials supplied, skipping")
@@ -62,13 +64,19 @@ async def schwabTrade(side, qty, ticker, price):
                 )
 
                 if order.status_code == 201:
-                    print(f"Order placed for {qty} shares of {ticker} on Schwab account {account['accountNumber']}")
+                    print(
+                        f"Order placed for {qty} shares of {ticker} on Schwab account {account['accountNumber']}"
+                    )
                     success_count += 1
                 else:
-                    print(f"Error placing order on Schwab account {account['accountNumber']}: {order.json()}")
+                    print(
+                        f"Error placing order on Schwab account {account['accountNumber']}: {order.json()}"
+                    )
                     failure_count += 1
             except Exception as e:
-                print(f"Error placing order for {ticker} on Schwab account {account['accountNumber']}: {str(e)}")
+                print(
+                    f"Error placing order for {ticker} on Schwab account {account['accountNumber']}: {str(e)}"
+                )
                 failure_count += 1
     except Exception as e:
         print(f"Error trading {ticker} on Schwab: {str(e)}")
@@ -80,10 +88,12 @@ async def schwabTrade(side, qty, ticker, price):
 
 async def schwabGetHoldings(ticker=None):
     """Get holdings from Schwab."""
-    from .base import rate_limiter
+    from base import rate_limiter
+
     await rate_limiter.wait_if_needed("Schwab")
 
-    from .session_manager import session_manager
+    from session_manager import session_manager
+
     c = await session_manager.get_session("Schwab")
     if not c:
         print("No Schwab credentials supplied, skipping")
@@ -98,22 +108,22 @@ async def schwabGetHoldings(ticker=None):
     holdings_data = {}
 
     for account in accounts:
-        account_number = account['accountNumber']
-        account_hash = account['hashValue']
+        account_number = account["accountNumber"]
+        account_hash = account["hashValue"]
         positions_response = await asyncio.to_thread(
-            c.get_account,
-            account_hash,
-            fields=c.Account.Fields.POSITIONS
+            c.get_account, account_hash, fields=c.Account.Fields.POSITIONS
         )
 
         if positions_response.status_code != 200:
-            print(f"Error getting positions for account {account_number}: {positions_response.text}")
+            print(
+                f"Error getting positions for account {account_number}: {positions_response.text}"
+            )
             continue
 
         # Update parsing logic based on the data structure
         positions_data = positions_response.json()
-        securities_account = positions_data.get('securitiesAccount', {})
-        positions = securities_account.get('positions', [])
+        securities_account = positions_data.get("securitiesAccount", {})
+        positions = securities_account.get("positions", [])
 
         # Handle case where positions is a dict (single position)
         if isinstance(positions, dict):
@@ -121,11 +131,11 @@ async def schwabGetHoldings(ticker=None):
 
         formatted_positions = []
         for position in positions:
-            instrument = position.get('instrument', {})
-            symbol = instrument.get('symbol')
-            quantity = float(position.get('longQuantity', 0))
-            average_price = float(position.get('averagePrice', 0))
-            market_value = float(position.get('marketValue', 0))
+            instrument = position.get("instrument", {})
+            symbol = instrument.get("symbol")
+            quantity = float(position.get("longQuantity", 0))
+            average_price = float(position.get("averagePrice", 0))
+            market_value = float(position.get("marketValue", 0))
 
             if not symbol:
                 continue
@@ -133,12 +143,14 @@ async def schwabGetHoldings(ticker=None):
             if ticker and symbol.upper() != ticker.upper():
                 continue
 
-            formatted_positions.append({
-                'symbol': symbol,
-                'quantity': quantity,
-                'cost_basis': average_price * quantity,
-                'current_value': market_value
-            })
+            formatted_positions.append(
+                {
+                    "symbol": symbol,
+                    "quantity": quantity,
+                    "cost_basis": average_price * quantity,
+                    "current_value": market_value,
+                }
+            )
 
         holdings_data[account_number] = formatted_positions
 
@@ -153,7 +165,12 @@ async def get_schwab_session(session_manager):
         SCHWAB_CALLBACK_URL = os.getenv("SCHWAB_CALLBACK_URL")
         SCHWAB_TOKEN_PATH = os.getenv("SCHWAB_TOKEN_PATH")
 
-        if not (SCHWAB_API_KEY and SCHWAB_API_SECRET and SCHWAB_CALLBACK_URL and SCHWAB_TOKEN_PATH):
+        if not (
+            SCHWAB_API_KEY
+            and SCHWAB_API_SECRET
+            and SCHWAB_CALLBACK_URL
+            and SCHWAB_TOKEN_PATH
+        ):
             session_manager.sessions["schwab"] = None
             session_manager._initialized.add("schwab")
             return None
@@ -165,7 +182,7 @@ async def get_schwab_session(session_manager):
                 SCHWAB_API_SECRET,
                 SCHWAB_CALLBACK_URL,
                 SCHWAB_TOKEN_PATH,
-                interactive=False
+                interactive=False,
             )
 
         try:

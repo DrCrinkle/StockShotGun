@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pyotp
 import robin_stocks.robinhood as rh
-from .base import retry_operation, rate_limiter, api_cache
+from brokers.base import retry_operation, rate_limiter, api_cache
 
 
 async def _get_robinhood_accounts() -> List[dict]:
@@ -72,10 +72,7 @@ async def _submit_order_for_account(
         )
         return True
     except Exception as exc:
-        print(
-            f"Failed to {side} {ticker} on Robinhood "
-            f"account {account_number}: {exc}"
-        )
+        print(f"Failed to {side} {ticker} on Robinhood account {account_number}: {exc}")
         return False
 
 
@@ -138,7 +135,8 @@ async def robinTrade(side, qty, ticker, price):
     """
     await rate_limiter.wait_if_needed("Robinhood")
 
-    from .session_manager import session_manager
+    from session_manager import session_manager
+
     session = await session_manager.get_session("Robinhood")
     if not session:
         print("No Robinhood credentials supplied, skipping")
@@ -146,11 +144,11 @@ async def robinTrade(side, qty, ticker, price):
 
     all_accounts = await _get_robinhood_accounts()
 
-    if side not in ['buy', 'sell']:
+    if side not in ["buy", "sell"]:
         print(f"Invalid side: {side}")
         return False
 
-    if side == 'buy':
+    if side == "buy":
         order_function = rh.order_buy_limit if price else rh.order_buy_market
     else:
         order_function = rh.order_sell_limit if price else rh.order_sell_market
@@ -191,7 +189,8 @@ async def robinGetHoldings(ticker=None):
     """Get holdings from Robinhood."""
     await rate_limiter.wait_if_needed("Robinhood")
 
-    from .session_manager import session_manager
+    from session_manager import session_manager
+
     session = await session_manager.get_session("Robinhood")
     if not session:
         print("No Robinhood credentials supplied, skipping")
@@ -237,8 +236,11 @@ async def get_robinhood_session(session_manager):
             async def _robinhood_login():
                 mfa = pyotp.TOTP(ROBINHOOD_MFA).now()
                 await asyncio.to_thread(
-                    rh.login, ROBINHOOD_USER, ROBINHOOD_PASS,
-                    mfa_code=mfa, pickle_path="./tokens/"
+                    rh.login,
+                    ROBINHOOD_USER,
+                    ROBINHOOD_PASS,
+                    mfa_code=mfa,
+                    pickle_path="./tokens/",
                 )
                 return True
 
