@@ -5,7 +5,7 @@ import re
 import asyncio
 import traceback
 from bs4 import BeautifulSoup
-from zendriver import Browser
+from zendriver import Browser, SpecialKeys
 from brokers.base import rate_limiter
 
 
@@ -38,6 +38,7 @@ class WellsFargoClient:
         self._accounts = None
         self._is_authenticated = False
         self._x_param = ""
+        self._account_indices = {}
 
     async def __aenter__(self):
         """Async context manager entry. Browser created lazily on first operation."""
@@ -55,6 +56,40 @@ class WellsFargoClient:
                 self._page = None
                 self._is_authenticated = False
 
+    async def _take_screenshot_on_error(self, message):
+        try:
+            if self._page:
+                import datetime
+
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                screenshot_name = f"wells-fargo-error-{timestamp}.png"
+                await self._page.save_screenshot(filename=screenshot_name)
+                print(f"Screenshot saved: {screenshot_name}")
+        except Exception as e:
+            print(f"Failed to take screenshot: {e}")
+
+    async def _select_dropdown_option(
+        self, dropdown_selector, option_value, timeout=10
+    ):
+        try:
+            await self._page.wait_for_ready_state("complete")
+            opener = await self._page.select(dropdown_selector, timeout=timeout)
+            await opener.scroll_into_view()
+            await opener.mouse_click()
+            await asyncio.sleep(0.5)
+
+            option_selector = f"a[data-val='{option_value}']"
+            option = await self._page.select(option_selector, timeout=timeout)
+            await option.scroll_into_view()
+            await option.mouse_click()
+            await asyncio.sleep(0.5)
+            return True
+        except Exception as e:
+            print(
+                f"Failed to select '{option_value}' from dropdown '{dropdown_selector}': {e}"
+            )
+            return False
+
     async def _ensure_authenticated(self):
         """Ensure browser is authenticated. Lazy authentication - only creates browser when needed."""
         if not self._is_authenticated or not self._browser:
@@ -63,21 +98,35 @@ class WellsFargoClient:
     async def _authenticate(self):
         """Authenticate with Wells Fargo using browser automation."""
         try:
-            # Start browser
             browser_args = [
-                "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+                "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+                "--no-first-run",
+                "--disable-default-apps",
             ]
 
+            profile_dir = os.path.join(
+                os.path.dirname(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                ),
+                "tokens",
+                "wellsfargo_profile",
+            )
+            if not os.path.exists(profile_dir):
+                os.makedirs(profile_dir)
+
             self._browser = await Browser.create(
-                browser_args=browser_args, headless=self._headless
+                browser_args=browser_args,
+                headless=self._headless,
+                user_data_dir=profile_dir,
             )
 
             # Navigate to Wells Fargo Advisors login
-            self._page = await self._browser.get("https://www.wellsfargoadvisors.com/")
+            self._page = await self._browser.get(
+                "https://www.wellsfargoadvisors.com/online-access/signon.htm"
+            )
             page = self._page
-            await asyncio.sleep(2)
-
-            # print(f"[DEBUG] Initial page loaded, URL: {page.url}")
+            await page.wait_for_ready_state("complete", timeout=20)
+            await asyncio.sleep(1)
 
             # Enter username (exact selector from reference)
             username_input = await page.select("input[id=j_username]")
@@ -93,7 +142,6 @@ class WellsFargoClient:
             sign_on_button = await page.select(".button.button--login.button--signOn")
             await sign_on_button.click()
 
-            # print(f"[DEBUG] Sign on button clicked")
             print("Waiting for login to process...")
 
             # Wait and check multiple times for navigation
@@ -123,11 +171,8 @@ class WellsFargoClient:
                 url_lower = (current_url or "").lower()
                 title_lower = page_title.lower()
 
-                # print(f"[DEBUG] Attempt {attempt + 1}/12 - URL: {current_url[:80]}... | Title: {page_title[:50]}...")
-
                 # Check for error in URL
                 if "error=yes" in url_lower:
-                    # print(f"[DEBUG] Login error detected in URL!")
                     pass
 
                 if any(marker in url_lower for marker in success_url_markers) or any(
@@ -140,7 +185,6 @@ class WellsFargoClient:
 
                 if "interdiction" in url_lower:
                     needs_additional_verification = True
-                    # print(f"[DEBUG] 2FA required (interdiction detected)")
                     break
 
             if needs_additional_verification and not login_verified:
@@ -201,37 +245,125 @@ class WellsFargoClient:
             if "dest=INTERDICTION" in current_url:
                 print(f"\n{'=' * 60}")
                 print("⚠️  Wells Fargo 2FA required!")
-                print("Please complete 2FA in the browser window:")
-                print("  - Select your 2FA method (SMS, email, etc.)")
-                print("  - Enter the code when prompted")
-                print("  - Click submit")
-                print("\nWaiting for 2FA to complete...")
-                print(f"{'=' * 60}\n")
 
-                # Poll for 2FA completion (up to 120 seconds)
+                try:
+                    await page.wait_for_ready_state("complete")
+                    await asyncio.sleep(1)
+                    content = await page.get_content()
+
+                    if "We sent a notification to your phone" in content:
+                        print(
+                            "Push notification detected. Please approve on your mobile device."
+                        )
+                        print("Waiting up to 2 minutes...")
+
+                        for _ in range(60):
+                            await asyncio.sleep(2)
+                            current_url = await page.evaluate("window.location.href")
+                            if "brokoverview" in current_url:
+                                print("✓ Push notification approved.")
+                                login_verified = True
+                                break
+
+                        if not login_verified:
+                            print(
+                                "Push notification timed out. Trying alternate method..."
+                            )
+                            try:
+                                try_another_method_btn = await page.select(
+                                    "#buttonTryAnotherMethod", timeout=10
+                                )
+                                if try_another_method_btn:
+                                    await try_another_method_btn.scroll_into_view()
+                                    await try_another_method_btn.mouse_click()
+                                    await page.wait_for_ready_state("complete")
+                                    await asyncio.sleep(2)
+                            except Exception:
+                                pass
+
+                    if not login_verified:
+                        try:
+                            contact_options = await page.select_all(
+                                '[role="listitem"] button', timeout=5
+                            )
+                            if contact_options:
+                                for option in contact_options:
+                                    option_text = (
+                                        option.text_all
+                                        if hasattr(option, "text_all")
+                                        else ""
+                                    )
+                                    if "Mobile" in option_text:
+                                        print("Found 'Mobile' option. Clicking it.")
+                                        await option.mouse_click()
+                                        await page.wait_for_ready_state("complete")
+                                        await asyncio.sleep(1)
+                                        break
+                        except Exception:
+                            pass
+
+                        try:
+                            text_me_btn = await page.select(
+                                "#optionSMS button", timeout=5
+                            )
+                            if text_me_btn:
+                                await text_me_btn.mouse_click()
+                                print("Clicked 'Text me a code'. Waiting for OTP page.")
+                                await page.wait_for_ready_state("complete")
+                                await asyncio.sleep(2)
+                        except Exception:
+                            pass
+
+                        try:
+                            otp_input = await page.select("#otp", timeout=5)
+                            if otp_input:
+                                print("\n!!! WELLS FARGO OTP REQUIRED !!!")
+                                otp_code = (
+                                    await asyncio.get_event_loop().run_in_executor(
+                                        None,
+                                        input,
+                                        "Please enter Wells Fargo OTP code: ",
+                                    )
+                                )
+                                if otp_code:
+                                    await otp_input.send_keys(otp_code)
+                                    continue_btn = await page.select(
+                                        'button[type="submit"]', timeout=10
+                                    )
+                                    if continue_btn:
+                                        await continue_btn.mouse_click()
+                                        print("OTP submitted.")
+                                        await page.wait_for_ready_state("complete")
+                                        await asyncio.sleep(2)
+                        except Exception:
+                            pass
+
+                except Exception as e:
+                    print(f"Error during 2FA handling: {e}")
+
+                if not login_verified:
+                    print("\nPlease complete 2FA in the browser window if needed...")
+                    print(f"{'=' * 60}\n")
+
                 for attempt in range(60):
                     await asyncio.sleep(2)
                     try:
                         current_url = await page.evaluate("window.location.href")
-                        page_title = await page.evaluate("document.title")
 
-                        # Check if we've moved past 2FA
                         if "interdiction" not in current_url.lower():
                             print("✓ 2FA completed successfully")
+                            login_verified = True
                             break
                     except Exception:
                         pass
 
             # Verify login was successful
-            # print(f"[DEBUG] Verifying login, login_verified={login_verified}")
             try:
                 current_url = await page.evaluate("window.location.href")
                 page_title = await page.evaluate("document.title")
             except:
                 current_url = page.url
                 page_title = ""
-
-            # print(f"[DEBUG] Final verification - URL: {current_url[:80]}... | Title: {page_title[:50]}...")
 
             # Check if we're already on the overview/accounts page
             already_on_overview = any(
@@ -241,8 +373,6 @@ class WellsFargoClient:
                 keyword in page_title.lower()
                 for keyword in ["brokerage overview", "wellstrade"]
             )
-
-            # print(f"[DEBUG] already_on_overview: {already_on_overview}")
 
             if "login" in current_url.lower() and not already_on_overview:
                 print("✗ Wells Fargo login failed - still on login page")
@@ -254,27 +384,22 @@ class WellsFargoClient:
             print("Login successful! Loading account information...")
 
             if not already_on_overview:
-                # print(f"[DEBUG] Navigating to brokoverview page...")
                 try:
                     await page.get(
                         "https://wfawellstrade.wellsfargo.com/BW/brokoverview.do"
                     )
                     await asyncio.sleep(3)
-                    # print(f"[DEBUG] After navigation, URL: {await page.evaluate('window.location.href') if page else 'unknown'}")
                 except Exception as e:
                     print(f"Warning: Could not navigate to overview page: {e}")
-            else:
-                # print(f"[DEBUG] Already on accounts overview page")
-                pass
 
             print("✓ Wells Fargo authenticated successfully")
             self._page = page
             self._is_authenticated = True
-            # print(f"[DEBUG] self._page set: {self._page is not None}, self._is_authenticated: {self._is_authenticated}")
 
         except Exception as e:
             print(f"Error during Wells Fargo authentication: {e}")
             traceback.print_exc()
+            await self._take_screenshot_on_error(f"Authentication error: {e}")
             if self._browser:
                 await self._browser.stop()
                 self._browser = None
@@ -400,16 +525,25 @@ class WellsFargoClient:
                         except (ValueError, TypeError):
                             pass
 
+                    account_key = (
+                        f"{account_name} {account_number}"
+                        if account_number
+                        else account_name
+                    )
                     accounts.append(
                         {
-                            "index": account_index,  # Use separate counter, not enumerate idx
-                            "data_p_account": account_attr,  # Store the actual attribute value too
+                            "index": account_index,
+                            "data_p_account": account_attr,
                             "name": account_name,
                             "number": account_number,
                             "balance": balance,
                             "x_param": x_param,
                         }
                     )
+                    self._account_indices[account_key] = {
+                        "index": account_index,
+                        "x_param": x_param,
+                    }
 
                     print(
                         f"Found account #{account_index}: {account_name} ({account_number}) - ${balance:,.2f} [data-p_account={account_attr}]"
@@ -540,18 +674,20 @@ class WellsFargoClient:
 
         print(f"  Navigating to: {holdings_url[:120]}...")
         await self._page.get(holdings_url)
-        await asyncio.sleep(3)
+        await self._page.wait_for_ready_state("complete", timeout=20)
+        await asyncio.sleep(1)
 
-    async def _goto_trade_form(self, account_param, ticker, side, x_param):
-        """Navigate to trade form for the specified account and ticker."""
-        action_value = "BUY" if side == "buy" else "SELL"
-        trade_url = f"https://wfawellstrade.wellsfargo.com/BW/equity.do?account={account_param}&symbol={ticker}&selectedAction={action_value}"
+    async def _goto_trade_form(self, account_param, x_param):
+        """Navigate to trade form for the specified account."""
+        trade_url = f"https://wfawellstrade.wellsfargo.com/BW/equity.do?account={account_param}&symbol=&selectedAction="
         if x_param:
             trade_url += f"&{x_param}"
 
         print(f"Navigating to trade URL: {trade_url}")
         await self._page.get(trade_url)
-        await asyncio.sleep(3)
+        await self._page.wait_for_ready_state("complete", timeout=20)
+        await asyncio.sleep(1)
+        await self._page.select("#eqentryfrm", timeout=10)
 
     async def get_holdings(self, ticker=None):
         """Get holdings from all Wells Fargo accounts.
@@ -665,58 +801,53 @@ class WellsFargoClient:
             print(f"\nTrading on: {account_name} (account param: {account_param})")
 
             try:
-                # Navigate to trade page for this account WITH symbol pre-filled
-                await self._goto_trade_form(account_param, ticker, side, x_param)
+                await self._goto_trade_form(account_param, x_param)
 
-                # Debug: Check if we're on the right page
-                current_url = await self._current_url()
-                print(f"Current URL after navigation: {current_url}")
-
-                # Wait for the page body to be fully rendered
-                await self._page.wait_for("body", timeout=10)
-
-                # Set buy/sell action by directly manipulating form
                 print("Setting buy/sell action...")
-                try:
-                    action_text = "Buy" if side == "buy" else "Sell"
-                    result = await self._page.evaluate(f"""
-                        (function() {{
-                            const buySellInput = document.getElementById('BuySell');
-                            const buySellBtn = document.getElementById('BuySellBtn');
-                            if (buySellInput && buySellBtn) {{
-                                buySellInput.value = '{action_text}';
-                                buySellBtn.textContent = '{action_text}';
-                                buySellBtn.setAttribute('aria-label', '{action_text}');
-                                return true;
-                            }}
-                            return false;
-                        }})()
-                    """)
-                    if result:
-                        print(f"Set action to {action_text}")
-                        await asyncio.sleep(0.5)
-                    else:
-                        print("Warning: Could not find BuySell elements")
-                except Exception as e:
-                    print(f"Warning: Could not set BuySell: {e}")
+                action_text = "Buy" if side == "buy" else "Sell"
+                if await self._select_dropdown_option("#BuySellBtn", action_text):
+                    print(f"Set action to {action_text}")
+                else:
+                    print(f"Error: Could not set BuySell to {action_text}, skipping order")
+                    continue
 
-                # Verify quote loaded
-                print("Checking if quote loaded...")
-                try:
-                    await asyncio.sleep(2)
-                    quote_loaded = await self._page.evaluate(
-                        "document.getElementById('last')?.value"
-                    )
-                    if quote_loaded and quote_loaded != "None" and quote_loaded.strip():
-                        print(f"Quote loaded: ${quote_loaded}")
-                    else:
-                        print(
-                            f"Warning: Quote may not have loaded (value: '{quote_loaded}'), will use default pricing"
+                print(f"Entering symbol: {ticker}")
+                symbol_input = await self._page.select("#Symbol", timeout=10)
+                await symbol_input.scroll_into_view()
+                await symbol_input.send_keys(ticker)
+                await symbol_input.send_keys(SpecialKeys.TAB)
+
+                print("Waiting for quote to load...")
+                await self._page.select("#prevdata", timeout=10)
+
+                if side == "sell":
+                    try:
+                        shares_element = await self._page.select(
+                            "#currentSharesOwned .numshares", timeout=5
                         )
-                except Exception as e:
-                    print(f"Error checking quote: {e}")
+                        if shares_element:
+                            owned_shares_text = shares_element.text_all.strip()
+                            owned_shares_digits = re.sub(r"[^\d]", "", owned_shares_text)
+                            if not owned_shares_digits:
+                                print(
+                                    f"Warning: Could not parse owned shares from '{owned_shares_text}', skipping order"
+                                )
+                                continue
+                            owned_shares = int(owned_shares_digits)
+                            print(f"Account owns {owned_shares} shares of {ticker}")
 
-                # Enter quantity
+                            if owned_shares == 0:
+                                print(f"Skipping {ticker}: You own 0 shares")
+                                continue
+
+                            if qty > owned_shares:
+                                print(
+                                    f"Skipping {ticker}: Order quantity ({qty}) exceeds shares owned ({owned_shares})"
+                                )
+                                continue
+                    except Exception as e:
+                        print(f"Warning: Could not check shares owned: {e}")
+
                 print("Setting quantity...")
                 try:
                     result = await self._page.evaluate(f"""
@@ -772,29 +903,11 @@ class WellsFargoClient:
                     use_limit_order = True
                     limit_reason = "low-priced stock (Wells Fargo requirement)"
 
+                order_type = "Limit" if use_limit_order else "Market"
+                print(f"Setting order type to {order_type.upper()}...")
+                await self._select_dropdown_option("#OrderTypeBtn", order_type)
+
                 if use_limit_order:
-                    print(f"Setting order type to LIMIT ({limit_reason})...")
-                    try:
-                        result = await self._page.evaluate("""
-                            (function() {
-                                const priceQualInput = document.getElementById('PriceQualifier');
-                                const orderTypeBtn = document.getElementById('OrderTypeBtn');
-                                if (priceQualInput && orderTypeBtn) {
-                                    priceQualInput.value = 'Limit';
-                                    orderTypeBtn.textContent = 'Limit';
-                                    return true;
-                                }
-                                return false;
-                            })()
-                        """)
-                        if result:
-                            print("Set order type to Limit")
-                    except Exception as e:
-                        print(f"Warning setting order type: {e}")
-
-                    await asyncio.sleep(0.5)
-
-                    # Calculate limit price
                     if user_specified_price:
                         adjusted_price = round(user_specified_price, 2)
                         print(f"Using user-specified price ${adjusted_price}")
@@ -813,78 +926,22 @@ class WellsFargoClient:
                     if adjusted_price <= 0:
                         adjusted_price = 0.01
 
-                    try:
-                        result = await self._page.evaluate(f"""
-                            (function() {{
-                                const priceInput = document.getElementById('Price');
-                                if (priceInput) {{
-                                    priceInput.value = '{adjusted_price}';
-                                    priceInput.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                                    priceInput.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                                    return true;
-                                }}
-                                return false;
-                            }})()
-                        """)
-                        if result:
-                            print(f"Limit price set to ${adjusted_price}")
-                    except Exception as e:
-                        print(f"Warning setting limit price: {e}")
-                else:
-                    print("Setting order type to MARKET...")
-                    try:
-                        result = await self._page.evaluate("""
-                            (function() {
-                                const priceQualInput = document.getElementById('PriceQualifier');
-                                const orderTypeBtn = document.getElementById('OrderTypeBtn');
-                                if (priceQualInput && orderTypeBtn) {
-                                    priceQualInput.value = 'Market';
-                                    orderTypeBtn.textContent = 'Market';
-                                    return true;
-                                }
-                                return false;
-                            })()
-                        """)
-                        if result:
-                            print("Set order type to Market")
-                            await asyncio.sleep(0.5)
-                    except Exception as e:
-                        print(f"Warning setting order type: {e}")
+                    print(f"Entering limit price ${adjusted_price}...")
+                    limit_input = await self._page.select("#Price", timeout=10)
+                    await limit_input.scroll_into_view()
+                    await limit_input.send_keys(str(adjusted_price))
 
-                # Set time in force to Day
                 print("Setting time in force to DAY...")
-                try:
-                    result = await self._page.evaluate("""
-                        (function() {
-                            const tifInput = document.getElementById('TIF');
-                            const tifBtn = document.getElementById('TIFBtn');
-                            if (tifInput && tifBtn) {
-                                tifInput.value = 'Day';
-                                tifBtn.textContent = 'Day';
-                                return true;
-                            }
-                            return false;
-                        })()
-                    """)
-                    if result:
-                        print("Set TIF to Day")
-                        await asyncio.sleep(0.5)
-                except Exception as e:
-                    print(f"Warning setting TIF: {e}")
+                await self._select_dropdown_option("#TIFBtn", "Day")
 
-                await asyncio.sleep(1)
-
-                # Click continue button
-                print("Clicking continue button...")
-                continue_button = await self._page.select(
-                    "button[id=actionbtnContinue]", timeout=5
+                print("Clicking preview order button...")
+                preview_button = await self._page.select(
+                    "#actionbtnContinue", timeout=10
                 )
-                if continue_button:
-                    await continue_button.click()
-                    await asyncio.sleep(3)
-                else:
-                    print("Warning: Could not find continue button")
-                    continue
+                await preview_button.scroll_into_view()
+                await preview_button.mouse_click()
+                await self._page.wait_for_ready_state("complete", timeout=20)
+                await asyncio.sleep(1)
 
                 # Check preview page
                 print("Checking order preview page...")
@@ -896,31 +953,18 @@ class WellsFargoClient:
                 except Exception:
                     pass
 
-                # Check for errors
                 try:
-                    error_texts = await self._page.evaluate("""
-                        Array.from(document.querySelectorAll('body')).map(el => el.textContent).join('\\n')
-                    """)
-
-                    has_errors = False
-                    error_messages = []
-                    if error_texts:
-                        lines = error_texts.split("\\n")
-                        for line in lines:
-                            line = line.strip()
-                            if line.startswith("Error:") and "Warning:" not in line:
-                                has_errors = True
-                                error_messages.append(line[:200])
-                                if len(error_messages) >= 3:
-                                    break
-
-                    if has_errors:
-                        print(f"Wells Fargo order errors for {account_name}:")
-                        for err in error_messages:
-                            print(f"  - {err}")
-                        continue
-                    else:
-                        print("Order preview looks good (warnings are OK)")
+                    error_element = await self._page.select(
+                        ".alert-msg-summary p", timeout=2
+                    )
+                    if error_element:
+                        error_text = error_element.text_all.strip().replace("\n", " ")
+                        if "Error:" in error_text or error_text.startswith("Error"):
+                            print(f"Wells Fargo HARD Error for {ticker}: {error_text}")
+                            continue
+                        else:
+                            print(f"Wells Fargo Warning for {ticker}: {error_text}")
+                            print("Continuing with order submission...")
                 except Exception as ex:
                     print(f"Error checking for validation errors: {ex}")
 
