@@ -72,7 +72,12 @@ class OrderBatchProcessor:
     async def _process_single_order(self, order, trade_functions, add_response_fn, idx, total_orders):
         """Process a single order and return its stats."""
         progress = f"[{idx}/{total_orders}]"
-        add_response_fn(f"{progress} {order['action'].upper()} {order['quantity']} {order['ticker']} @ ${order.get('price', 'market')} via {len(order['selected_brokers'])} brokers")
+        display_price = order.get("price")
+        if display_price is None:
+            display_price = "market"
+        add_response_fn(
+            f"{progress} {order['action'].upper()} {order['quantity']} {order['ticker']} @ ${display_price} via {len(order['selected_brokers'])} brokers"
+        )
 
         broker_status = {"successful": [], "failed": [], "skipped": []}
         broker_tasks = {}
