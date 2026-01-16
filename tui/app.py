@@ -160,12 +160,15 @@ def run_tui():
                 base.set_label("Buy")
 
     def update_order_summary():
+        display_price = current_order["price"]
+        if display_price is None:
+            display_price = "market"
         summary = (
             "Current order:\n"
             f"Action: {current_order['action']}\n"
             f"Ticker: {current_order['ticker']}\n"
             f"Quantity: {current_order['quantity']}\n"
-            f"Price: {current_order['price']}\n"
+            f"Price: {display_price}\n"
             f"Brokers: {', '.join(current_order['selected_brokers'])}\n\n"
             f"Total orders: {len(orders)}"
         )
