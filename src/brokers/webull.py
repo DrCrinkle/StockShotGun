@@ -71,6 +71,32 @@ async def _discover_accounts(
     return accounts
 
 
+async def webullValidate(side, qty, ticker, price):
+    """Validate order via Webull ticker lookup.
+
+    Returns:
+        (True, ""): Ticker is valid and tradeable
+        (False, reason): Ticker not found
+        (None, ""): No credentials
+    """
+    await rate_limiter.wait_if_needed("Webull")
+
+    from brokers.session_manager import session_manager
+
+    webull_session = await session_manager.get_session("Webull")
+    if not webull_session:
+        return (None, "")
+
+    try:
+        wb = webull_session["client"]
+        ticker_id = await asyncio.to_thread(wb.get_ticker, ticker)
+        if not ticker_id:
+            return (False, "Ticker not found")
+        return (True, "")
+    except Exception as e:
+        return (False, str(e).split("\n")[0][:100])
+
+
 async def webullTrade(side, qty, ticker, price):
     """Execute a trade on Webull.
 

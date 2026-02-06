@@ -84,6 +84,50 @@ async def dspacTrade(side, qty, ticker, price):
     return success_count > 0
 
 
+async def dspacValidate(side, qty, ticker, price):
+    """Validate order via DSPAC dry-run.
+
+    Returns:
+        (True, ""): Order is valid
+        (False, reason): Order would fail
+        (None, ""): No credentials
+    """
+    await rate_limiter.wait_if_needed("DSPAC")
+
+    from brokers.session_manager import session_manager
+
+    dspac = await session_manager.get_session("DSPAC")
+    if not dspac:
+        return (None, "")
+
+    try:
+        account_info = await asyncio.to_thread(dspac.get_account_info)
+        account_number = account_info.get("Data", {}).get("accountNumber")
+        if not account_number:
+            return (False, "No account found")
+
+        if side == "buy":
+            response = await asyncio.to_thread(
+                dspac.execute_buy, ticker, qty, account_number, dry_run=True
+            )
+        else:
+            holdings_response = await asyncio.to_thread(
+                dspac.check_stock_holdings, ticker, account_number
+            )
+            available_qty = holdings_response.get("Data", {}).get("enableAmount", 0)
+            if int(available_qty) < qty:
+                return (False, f"Insufficient shares ({available_qty} available)")
+            response = await asyncio.to_thread(
+                dspac.execute_sell, ticker, qty, account_number, price, dry_run=True
+            )
+
+        if response.get("Outcome") == "Success":
+            return (True, "")
+        return (False, response.get("Message", "Validation failed")[:100])
+    except Exception as e:
+        return (False, str(e).split("\n")[0][:100])
+
+
 async def dspacGetHoldings(ticker=None):
     """Get holdings from DSPAC."""
     await rate_limiter.wait_if_needed("DSPAC")

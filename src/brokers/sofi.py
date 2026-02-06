@@ -245,6 +245,23 @@ async def _sofi_place_order(
         return False
 
 
+async def sofiValidate(side, qty, ticker, price):
+    """Validate order via SoFi price check.
+
+    Returns:
+        (True, ""): Ticker is valid and tradeable
+        (False, reason): Ticker not found
+        (None, ""): No credentials
+    """
+    try:
+        stock_price = await _sofi_get_stock_price(ticker)
+        if stock_price is None:
+            return (False, "Ticker not found or not tradeable")
+        return (True, "")
+    except Exception as e:
+        return (False, str(e).split("\n")[0][:100])
+
+
 async def sofiTrade(side, qty, ticker, price):
     """Execute a trade on SoFi.
 

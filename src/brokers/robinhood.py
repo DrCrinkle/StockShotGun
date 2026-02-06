@@ -125,6 +125,31 @@ async def _collect_account_holdings(
     return account_number, formatted_positions
 
 
+async def robinValidate(side, qty, ticker, price):
+    """Validate order via Robinhood quote check.
+
+    Returns:
+        (True, ""): Ticker is valid and tradeable
+        (False, reason): Ticker not found
+        (None, ""): No credentials
+    """
+    await rate_limiter.wait_if_needed("Robinhood")
+
+    from brokers.session_manager import session_manager
+
+    session = await session_manager.get_session("Robinhood")
+    if not session:
+        return (None, "")
+
+    try:
+        prices = await asyncio.to_thread(rh.get_latest_price, ticker)
+        if not prices or prices[0] is None:
+            return (False, "Ticker not found or not tradeable")
+        return (True, "")
+    except Exception as e:
+        return (False, str(e).split("\n")[0][:100])
+
+
 async def robinTrade(side, qty, ticker, price):
     """Execute a trade on Robinhood.
 

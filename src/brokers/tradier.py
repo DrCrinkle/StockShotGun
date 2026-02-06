@@ -73,6 +73,54 @@ async def tradierTrade(side, qty, ticker, price):
     return success_count > 0
 
 
+async def tradierValidate(side, qty, ticker, price):
+    """Validate order via Tradier quote check.
+
+    Returns:
+        (True, ""): Ticker is valid and tradeable
+        (False, reason): Ticker not found
+        (None, ""): No credentials
+    """
+    await rate_limiter.wait_if_needed("Tradier")
+
+    from brokers.session_manager import session_manager
+
+    session = await session_manager.get_session("Tradier")
+    if not session:
+        return (None, "")
+
+    try:
+        token = session.get("token")
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+        }
+        response = await http_client.get(
+            "https://api.tradier.com/v1/markets/quotes",
+            params={"symbols": ticker},
+            headers=headers,
+        )
+        if response.status_code != 200:
+            return (False, f"Quote lookup failed (HTTP {response.status_code})")
+
+        data = response.json()
+        if not isinstance(data, dict):
+            return (False, "Invalid quote response")
+
+        # Tradier returns unmatched_symbols for unknown tickers
+        unmatched = data.get("quotes", {}).get("unmatched_symbols")
+        if unmatched:
+            return (False, "Ticker not found")
+
+        quote = data.get("quotes", {}).get("quote")
+        if not quote:
+            return (False, "Ticker not found")
+
+        return (True, "")
+    except Exception as e:
+        return (False, str(e).split("\n")[0][:100])
+
+
 async def tradierGetHoldings(ticker=None):
     """Get holdings from Tradier."""
     await rate_limiter.wait_if_needed("Tradier")

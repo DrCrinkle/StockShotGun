@@ -52,7 +52,7 @@ async def fennelTrade(side, qty, ticker, price):
             "side": side_enum,
             "type": order_type,
             "time_in_force": 1,  # DAY
-            "route": 0,  # ROUTING_UNSPECIFIED (use default routing)
+            "route": "EXCHANGE_ATS_SDP",
         }
 
         try:

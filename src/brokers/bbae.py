@@ -73,6 +73,50 @@ async def bbaeTrade(side, qty, ticker, price):
     return success_count > 0
 
 
+async def bbaeValidate(side, qty, ticker, price):
+    """Validate order via BBAE dry-run.
+
+    Returns:
+        (True, ""): Order is valid
+        (False, reason): Order would fail
+        (None, ""): No credentials
+    """
+    await rate_limiter.wait_if_needed("BBAE")
+
+    from brokers.session_manager import session_manager
+
+    bbae = await session_manager.get_session("BBAE")
+    if not bbae:
+        return (None, "")
+
+    try:
+        account_info = await asyncio.to_thread(bbae.get_account_info)
+        account_number = account_info.get("Data", {}).get("accountNumber")
+        if not account_number:
+            return (False, "No account found")
+
+        if side == "buy":
+            response = await asyncio.to_thread(
+                bbae.execute_buy, ticker, qty, account_number, dry_run=True
+            )
+        else:
+            holdings_response = await asyncio.to_thread(
+                bbae.check_stock_holdings, ticker, account_number
+            )
+            available_qty = holdings_response.get("Data", {}).get("enableAmount", 0)
+            if int(available_qty) < qty:
+                return (False, f"Insufficient shares ({available_qty} available)")
+            response = await asyncio.to_thread(
+                bbae.execute_sell, ticker, qty, account_number, price, dry_run=True
+            )
+
+        if response.get("Outcome") == "Success":
+            return (True, "")
+        return (False, response.get("Message", "Validation failed")[:100])
+    except Exception as e:
+        return (False, str(e).split("\n")[0][:100])
+
+
 async def bbaeGetHoldings(ticker=None):
     """Get holdings from BBAE."""
     await rate_limiter.wait_if_needed("BBAE")

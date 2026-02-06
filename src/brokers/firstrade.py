@@ -15,7 +15,7 @@ async def firstradeTrade(side, qty, ticker, price):
         False: Trade failed on all accounts
         None: No credentials (broker skipped)
     """
-    from base import rate_limiter
+    from brokers.base import rate_limiter
 
     await rate_limiter.wait_if_needed("Firstrade")
 
@@ -72,7 +72,7 @@ async def firstradeTrade(side, qty, ticker, price):
 
             if order_conf.get("message") == "Normal":
                 print(
-                    f"Order for {adjusted_qty} shares of {ticker} placed on Firstrade successfully."
+                    f"Order for {adjusted_qty} shares of {ticker} placed on Firstrade account {account_number} successfully."
                 )
                 print(f"Order ID: {order_conf.get('result').get('order_id')}.")
                 success_count += 1
@@ -91,23 +91,23 @@ async def firstradeTrade(side, qty, ticker, price):
 
                     if sell_conf.get("message") == "Normal":
                         print(
-                            f"Sell order for excess {sell_qty} shares placed successfully."
+                            f"Sell order for excess {sell_qty} shares on Firstrade account {account_number} placed successfully."
                         )
                         print(
                             f"Sell Order ID: {sell_conf.get('result').get('order_id')}."
                         )
                     else:
                         print(
-                            "Failed to place sell order for excess shares on Firstrade."
+                            f"Failed to place sell order for excess shares on Firstrade account {account_number}."
                         )
                         print(sell_conf)
             else:
-                print(f"Failed to place order for {ticker} on Firstrade.")
+                print(f"Failed to place order for {ticker} on Firstrade account {account_number}.")
                 print(order_conf)
                 failure_count += 1
         except Exception as e:
             print(
-                f"An error occurred while placing order for {ticker} on Firstrade: {e}"
+                f"An error occurred while placing order for {ticker} on Firstrade account {account_number}: {e}"
             )
             failure_count += 1
 
@@ -115,9 +115,71 @@ async def firstradeTrade(side, qty, ticker, price):
     return success_count > 0
 
 
+async def firstradeValidate(side, qty, ticker, price):
+    """Validate order via Firstrade dry-run.
+
+    Returns:
+        (True, ""): Order is valid
+        (False, reason): Order would fail
+        (None, ""): No credentials
+    """
+    from brokers.base import rate_limiter
+
+    await rate_limiter.wait_if_needed("Firstrade")
+
+    from brokers.session_manager import session_manager
+
+    ft_ss = await session_manager.get_session("Firstrade")
+    if not ft_ss:
+        return (None, "")
+
+    try:
+        ft_accounts = await asyncio.to_thread(ft_account.FTAccountData, ft_ss)
+        symbol_data = await asyncio.to_thread(
+            symbols.SymbolQuote, ft_ss, ft_accounts.account_numbers[0], ticker
+        )
+
+        adjusted_qty = qty
+        if symbol_data.last < 1.00 and side == "buy":
+            adjusted_qty = max(qty, 100)
+            price_type = order.PriceType.LIMIT
+            if price is None:
+                price = symbol_data.last + 0.01
+        else:
+            price_type = order.PriceType.MARKET if price is None else order.PriceType.LIMIT
+
+        ft_order = await asyncio.to_thread(order.Order, ft_ss)
+        order_conf = await asyncio.to_thread(
+            ft_order.place_order,
+            account=ft_accounts.account_numbers[0],
+            symbol=ticker,
+            price_type=price_type,
+            order_type=order.OrderType.BUY if side == "buy" else order.OrderType.SELL,
+            quantity=adjusted_qty,
+            duration=order.Duration.DAY,
+            price=price,
+            dry_run=True,
+        )
+
+        # Check for error responses
+        if isinstance(order_conf, dict):
+            if order_conf.get("error"):
+                msg = order_conf["error"]
+                if isinstance(msg, dict):
+                    msg = msg.get("message", str(msg))
+                return (False, str(msg)[:100])
+            if order_conf.get("statusCode") and order_conf["statusCode"] != 200:
+                msg = order_conf.get("message", "Validation failed")
+                return (False, str(msg)[:100])
+
+        return (True, "")
+    except Exception as e:
+        return (False, str(e).split("\n")[0][:100])
+
+
 async def firstradeGetHoldings(ticker=None):
     """Get holdings from Firstrade."""
-    from base import rate_limiter
+    from brokers.base import rate_limiter
 
     await rate_limiter.wait_if_needed("Firstrade")
 

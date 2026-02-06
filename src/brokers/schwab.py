@@ -86,6 +86,66 @@ async def schwabTrade(side, qty, ticker, price):
     return success_count > 0
 
 
+async def schwabValidate(side, qty, ticker, price):
+    """Validate order via Schwab preview.
+
+    Returns:
+        (True, ""): Order is valid
+        (False, reason): Order would fail
+        (None, ""): No credentials
+    """
+    from base import rate_limiter
+
+    await rate_limiter.wait_if_needed("Schwab")
+
+    from brokers.session_manager import session_manager
+
+    c = await session_manager.get_session("Schwab")
+    if not c:
+        return (None, "")
+
+    try:
+        accounts = await asyncio.to_thread(c.get_account_numbers)
+        if accounts.status_code != 200:
+            return (False, "Failed to get accounts")
+
+        account_list = accounts.json()
+        if not account_list:
+            return (False, "No accounts found")
+
+        account_hash = account_list[0]["hashValue"]
+
+        order_types = {
+            ("buy", True): equity_buy_limit,
+            ("buy", False): equity_buy_market,
+            ("sell", True): equity_sell_limit,
+            ("sell", False): equity_sell_market,
+        }
+        order_function = order_types.get((side.lower(), bool(price)))
+        if not order_function:
+            return (False, "Invalid side/price combination")
+
+        order_spec = (
+            order_function(ticker, qty, price)
+            if price
+            else order_function(ticker, qty)
+        )
+
+        preview = await asyncio.to_thread(c.preview_order, account_hash, order_spec)
+
+        if preview.status_code in (200, 201):
+            return (True, "")
+
+        try:
+            error_data = preview.json()
+            msg = error_data.get("message", error_data.get("error", f"HTTP {preview.status_code}"))
+        except Exception:
+            msg = f"HTTP {preview.status_code}"
+        return (False, str(msg)[:100])
+    except Exception as e:
+        return (False, str(e).split("\n")[0][:100])
+
+
 async def schwabGetHoldings(ticker=None):
     """Get holdings from Schwab."""
     from base import rate_limiter

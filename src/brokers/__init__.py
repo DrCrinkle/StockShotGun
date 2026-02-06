@@ -25,17 +25,17 @@ from brokers.base import (
 from brokers.session_manager import BrokerSessionManager, session_manager
 
 # Import individual broker functions
-from brokers.robinhood import robinTrade, robinGetHoldings
-from brokers.tradier import tradierTrade, tradierGetHoldings
-from brokers.tastytrade import tastyTrade, tastyGetHoldings
+from brokers.robinhood import robinTrade, robinGetHoldings, robinValidate
+from brokers.tradier import tradierTrade, tradierGetHoldings, tradierValidate
+from brokers.tastytrade import tastyTrade, tastyGetHoldings, tastyValidate
 from brokers.public import publicTrade, publicGetHoldings
-from brokers.firstrade import firstradeTrade, firstradeGetHoldings
+from brokers.firstrade import firstradeTrade, firstradeGetHoldings, firstradeValidate
 from brokers.fennel import fennelTrade, fennelGetHoldings
-from brokers.schwab import schwabTrade, schwabGetHoldings
-from brokers.bbae import bbaeTrade, bbaeGetHoldings
-from brokers.dspac import dspacTrade, dspacGetHoldings
-from brokers.sofi import sofiTrade, sofiGetHoldings
-from brokers.webull import webullTrade, webullGetHoldings
+from brokers.schwab import schwabTrade, schwabGetHoldings, schwabValidate
+from brokers.bbae import bbaeTrade, bbaeGetHoldings, bbaeValidate
+from brokers.dspac import dspacTrade, dspacGetHoldings, dspacValidate
+from brokers.sofi import sofiTrade, sofiGetHoldings, sofiValidate
+from brokers.webull import webullTrade, webullGetHoldings, webullValidate
 from brokers.wellsfargo import wellsfargoTrade, wellsfargoGetHoldings
 
 __all__ = [
@@ -58,36 +58,45 @@ __all__ = [
     # Robinhood
     "robinTrade",
     "robinGetHoldings",
+    "robinValidate",
     # Tradier
     "tradierTrade",
     "tradierGetHoldings",
+    "tradierValidate",
     # TastyTrade
     "tastyTrade",
     "tastyGetHoldings",
+    "tastyValidate",
     # Public
     "publicTrade",
     "publicGetHoldings",
     # Firstrade
     "firstradeTrade",
     "firstradeGetHoldings",
+    "firstradeValidate",
     # Fennel
     "fennelTrade",
     "fennelGetHoldings",
     # Schwab
     "schwabTrade",
     "schwabGetHoldings",
+    "schwabValidate",
     # BBAE
     "bbaeTrade",
     "bbaeGetHoldings",
+    "bbaeValidate",
     # DSPAC
     "dspacTrade",
     "dspacGetHoldings",
+    "dspacValidate",
     # SoFi
     "sofiTrade",
     "sofiGetHoldings",
+    "sofiValidate",
     # Webull
     "webullTrade",
     "webullGetHoldings",
+    "webullValidate",
     # WellsFargo
     "wellsfargoTrade",
     "wellsfargoGetHoldings",
