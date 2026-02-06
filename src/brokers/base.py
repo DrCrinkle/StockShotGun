@@ -3,14 +3,21 @@ Base infrastructure for broker integrations.
 
 This module contains shared utilities, session management, and configuration
 used across all broker implementations.
+
+Free-threaded Python 3.14 Compatibility:
+- All shared state is protected by threading.Lock for thread-safety
+- Asyncio primitives remain for async coordination
 """
 
 import httpx
 import asyncio
 import time
+import logging
 import traceback
+import threading
 from typing import Dict, Optional, Any, ClassVar
 from dotenv import load_dotenv
+from cli_runtime import CliRuntimeError, ExitCode
 
 load_dotenv("./.env")
 
@@ -18,7 +25,7 @@ load_dotenv("./.env")
 http_client = httpx.AsyncClient(
     timeout=30.0,
     limits=httpx.Limits(max_keepalive_connections=20, max_connections=100),
-    http2=True
+    http2=True,
 )
 
 # Retry configuration
@@ -31,26 +38,31 @@ RATE_LIMIT_WINDOW = 1.0  # 1 second window for rate limiting
 
 
 class RateLimiter:
-    """Rate limiter for broker API calls with per-broker limits."""
+    """Rate limiter for broker API calls with per-broker limits.
+
+    Thread-safe for Free-threaded Python 3.14 (no-GIL).
+    """
 
     # Per-broker rate limits (requests per second)
     BROKER_LIMITS = {
-        "Robinhood": 5,      # Conservative limit
-        "Tradier": 2,        # 120 per minute = 2 per second
-        "TastyTrade": 10,    # Reasonable default
-        "Public": 20,        # Higher limit
-        "Firstrade": 5,      # Conservative
-        "Fennel": 10,        # Reasonable default
-        "Schwab": 5,         # Conservative
-        "BBAE": 5,           # Conservative
-        "DSPAC": 5,          # Conservative
-        "SoFi": 5,           # Conservative
-        "Webull": 5,         # Conservative
-        "WellsFargo": 5,     # Conservative
+        "Robinhood": 5,  # Conservative limit
+        "Tradier": 2,  # 120 per minute = 2 per second
+        "TastyTrade": 10,  # Reasonable default
+        "Public": 20,  # Higher limit
+        "Firstrade": 5,  # Conservative
+        "Fennel": 10,  # Reasonable default
+        "Schwab": 5,  # Conservative
+        "BBAE": 5,  # Conservative
+        "DSPAC": 5,  # Conservative
+        "SoFi": 5,  # Conservative
+        "Webull": 5,  # Conservative
+        "WellsFargo": 5,  # Conservative
+        "Chase": 5,  # Conservative (browser automation)
     }
 
     def __init__(self):
         self.last_call_time = {}
+        self._lock = threading.Lock()
 
     async def wait_if_needed(self, broker_name: str):
         """Wait if necessary to respect per-broker rate limits."""
@@ -58,57 +70,89 @@ class RateLimiter:
         calls_per_second = self.BROKER_LIMITS.get(broker_name, 10)
         min_interval = 1.0 / calls_per_second
 
-        current_time = time.time()
-        last_call = self.last_call_time.get(broker_name, 0)
+        with self._lock:
+            current_time = time.time()
+            last_call = self.last_call_time.get(broker_name, 0)
+            time_since_last = current_time - last_call
 
-        time_since_last = current_time - last_call
-        if time_since_last < min_interval:
-            wait_time = min_interval - time_since_last
+            if time_since_last < min_interval:
+                wait_time = min_interval - time_since_last
+            else:
+                wait_time = 0
+
+            # Update the last call time before releasing lock
+            self.last_call_time[broker_name] = current_time + wait_time
+
+        if wait_time > 0:
             await asyncio.sleep(wait_time)
-
-        self.last_call_time[broker_name] = time.time()
 
 
 # Global rate limiter
 rate_limiter = RateLimiter()
 
 
+def broker_event(
+    message: str,
+    *,
+    level: str = "info",
+    logger: logging.Logger | None = None,
+    exc: BaseException | None = None,
+) -> None:
+    """Emit broker messages to both logs and stdout."""
+    active_logger = logger or logging.getLogger(__name__)
+    log_fn = getattr(active_logger, level, active_logger.info)
+    if exc is not None:
+        log_fn(message, exc_info=exc)
+    else:
+        log_fn(message)
+    print(message)
+
+
 class APICache:
-    """Simple in-memory cache for API responses."""
+    """Simple in-memory cache for API responses.
+
+    Thread-safe for Free-threaded Python 3.14 (no-GIL).
+    """
 
     def __init__(self, max_size=1000, ttl=300):  # 5 minutes TTL
         self.max_size = max_size
         self.ttl = ttl
         self._cache = {}
         self._timestamps = {}
+        self._lock = threading.Lock()
 
     def get(self, key: str) -> Optional[Any]:
         """Get cached value if not expired."""
-        if key in self._cache:
-            if time.time() - self._timestamps[key] < self.ttl:
-                return self._cache[key]
-            else:
-                # Expired, remove
-                del self._cache[key]
-                del self._timestamps[key]
-        return None
+        with self._lock:
+            if key in self._cache:
+                if time.time() - self._timestamps[key] < self.ttl:
+                    return self._cache[key]
+                else:
+                    # Expired, remove
+                    del self._cache[key]
+                    del self._timestamps[key]
+            return None
 
     def set(self, key: str, value: Any):
         """Set cached value with timestamp."""
-        # Simple LRU eviction
-        if len(self._cache) >= self.max_size:
-            # Remove oldest entry
-            oldest_key = min(self._timestamps.keys(), key=lambda k: self._timestamps[k])
-            del self._cache[oldest_key]
-            del self._timestamps[oldest_key]
+        with self._lock:
+            # Simple LRU eviction
+            if len(self._cache) >= self.max_size:
+                # Remove oldest entry
+                oldest_key = min(
+                    self._timestamps.keys(), key=lambda k: self._timestamps[k]
+                )
+                del self._cache[oldest_key]
+                del self._timestamps[oldest_key]
 
-        self._cache[key] = value
-        self._timestamps[key] = time.time()
+            self._cache[key] = value
+            self._timestamps[key] = time.time()
 
     def clear(self):
         """Clear all cached data."""
-        self._cache.clear()
-        self._timestamps.clear()
+        with self._lock:
+            self._cache.clear()
+            self._timestamps.clear()
 
 
 # Global API cache
@@ -123,74 +167,95 @@ class BrokerConfig:
             "session_key": "robinhood",
             "env_vars": ["ROBINHOOD_USER", "ROBINHOOD_PASS", "ROBINHOOD_MFA"],
             "requires_mfa": True,
-            "enabled": True
+            "enabled": True,
         },
         "Tradier": {
             "session_key": "tradier",
             "env_vars": ["TRADIER_ACCESS_TOKEN"],
             "requires_mfa": False,
-            "enabled": True
+            "enabled": True,
         },
         "TastyTrade": {
             "session_key": "tastytrade",
-            "env_vars": ["TASTY_USER", "TASTY_PASS"],
+            "env_vars": [
+                "TASTY_CLIENT_ID",
+                "TASTY_CLIENT_SECRET",
+                "TASTY_REFRESH_TOKEN",
+            ],
             "requires_mfa": False,
-            "enabled": True
+            "enabled": True,
         },
         "Public": {
             "session_key": "public",
             "env_vars": ["PUBLIC_API_SECRET"],
             "requires_mfa": False,
-            "enabled": True
+            "enabled": True,
         },
         "Firstrade": {
             "session_key": "firstrade",
             "env_vars": ["FIRSTRADE_USER", "FIRSTRADE_PASS", "FIRSTRADE_MFA"],
             "requires_mfa": True,
-            "enabled": True
+            "enabled": True,
         },
         "Fennel": {
             "session_key": "fennel",
             "env_vars": ["FENNEL_ACCESS_TOKEN"],
             "requires_mfa": False,
-            "enabled": True
+            "enabled": True,
         },
         "Schwab": {
             "session_key": "schwab",
-            "env_vars": ["SCHWAB_API_KEY", "SCHWAB_API_SECRET", "SCHWAB_CALLBACK_URL", "SCHWAB_TOKEN_PATH"],
+            "env_vars": [
+                "SCHWAB_API_KEY",
+                "SCHWAB_API_SECRET",
+                "SCHWAB_CALLBACK_URL",
+                "SCHWAB_TOKEN_PATH",
+            ],
             "requires_mfa": False,
-            "enabled": True
+            "enabled": True,
         },
         "BBAE": {
             "session_key": "bbae",
             "env_vars": ["BBAE_USER", "BBAE_PASS"],
             "requires_mfa": False,
-            "enabled": True
+            "enabled": True,
         },
         "DSPAC": {
             "session_key": "dspac",
             "env_vars": ["DSPAC_USER", "DSPAC_PASS"],
             "requires_mfa": False,
-            "enabled": True
+            "enabled": True,
         },
         "SoFi": {
             "session_key": "sofi",
             "env_vars": ["SOFI_USER", "SOFI_PASS"],
             "requires_mfa": False,
-            "enabled": True
+            "enabled": True,
         },
         "Webull": {
             "session_key": "webull",
-            "env_vars": ["WEBULL_ACCESS_TOKEN", "WEBULL_REFRESH_TOKEN", "WEBULL_UUID", "WEBULL_ACCOUNT_ID","WEBULL_DID"],
+            "env_vars": [
+                "WEBULL_ACCESS_TOKEN",
+                "WEBULL_REFRESH_TOKEN",
+                "WEBULL_UUID",
+                "WEBULL_ACCOUNT_ID",
+                "WEBULL_DID",
+            ],
             "requires_mfa": False,
-            "enabled": True
+            "enabled": True,
         },
         "WellsFargo": {
             "session_key": "wellsfargo",
             "env_vars": ["WELLSFARGO_USER", "WELLSFARGO_PASS"],
             "requires_mfa": False,
-            "enabled": True
-        }
+            "enabled": True,
+        },
+        "Chase": {
+            "session_key": "chase",
+            "env_vars": ["CHASE_USER", "CHASE_PASS"],
+            "requires_mfa": False,
+            "enabled": True,
+        },
     }
 
     @classmethod
@@ -218,6 +283,7 @@ class BrokerConfig:
 
 class RetryableError(Exception):
     """Custom exception for retryable operations."""
+
     pass
 
 
@@ -231,7 +297,7 @@ async def retry_operation(operation, max_attempts=RETRY_ATTEMPTS, delay=RETRY_DE
         except Exception as e:
             last_exception = e
             if attempt < max_attempts - 1:
-                await asyncio.sleep(delay * (2 ** attempt))  # Exponential backoff
+                await asyncio.sleep(delay * (2**attempt))  # Exponential backoff
             continue
 
     if last_exception:
@@ -263,13 +329,20 @@ async def _login_broker(broker_api, broker_name):
             otp_code = input(f"Enter {broker_name} security code: ")
             login_ticket = broker_api.generate_login_ticket_email(otp_code)
 
-        login_response = broker_api.login_with_ticket(login_ticket.get("Data").get("ticket"))
+        login_response = broker_api.login_with_ticket(
+            login_ticket.get("Data").get("ticket")
+        )
         if login_response.get("Outcome") != "Success":
             raise Exception(f"Login failed. Response: {login_response}")
 
         return True
 
     except Exception as e:
+        if (
+            isinstance(e, CliRuntimeError)
+            and e.exit_code == ExitCode.NON_INTERACTIVE_INPUT_REQUIRED
+        ):
+            raise
         print(f"Error logging into {broker_name}: {e}")
         return False
 
@@ -281,7 +354,9 @@ async def _get_broker_holdings(broker_api, broker_name, ticker=None):
         holdings_response = broker_api.get_account_holdings()
 
         if holdings_response.get("Outcome") != "Success":
-            raise Exception(f"Failed to get holdings: {holdings_response.get('Message')}")
+            raise Exception(
+                f"Failed to get holdings: {holdings_response.get('Message')}"
+            )
 
         positions = holdings_response.get("Data", [])
 
@@ -296,7 +371,8 @@ async def _get_broker_holdings(broker_api, broker_name, ticker=None):
                 "symbol": pos.get("Symbol", "Unknown"),
                 "quantity": float(pos.get("CurrentAmount", 0)),
                 "cost_basis": float(pos.get("CostPrice", 0)),
-                "current_value": float(pos.get("Last", 0)) * float(pos.get("CurrentAmount", 0))
+                "current_value": float(pos.get("Last", 0))
+                * float(pos.get("CurrentAmount", 0)),
             }
             for pos in positions
             if float(pos.get("CurrentAmount", 0)) > 0
