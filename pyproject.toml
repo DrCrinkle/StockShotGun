@@ -3,13 +3,13 @@ name = "stockshotgun"
 version = "0.1.0"
 description = "Multi-broker trading application for reverse split arbitrage"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 dependencies = [
     "urwid==3.0.3",
     "python-dotenv==1.2.1",
     "pyotp==2.9.0",
     "httpx[http2]==0.28.1",
-    "tastytrade==10.3.0",
+    "tastytrade==12.0.1",
     "firstrade==0.0.34",
     "schwab-py==1.4.0",
     "robin-stocks==3.4.0",
