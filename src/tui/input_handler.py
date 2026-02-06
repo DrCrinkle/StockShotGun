@@ -2,9 +2,17 @@
 
 import urwid
 from tui.config import MODAL_WIDTH, MODAL_HEIGHT
+from cli_runtime import CliRuntimeError, ExitCode
 
 # Store original input function before any modifications
 original_input = input
+non_interactive_mode = False
+
+
+def set_non_interactive_mode(enabled=False):
+    """Enable/disable fail-fast input behavior for non-interactive CLI runs."""
+    global non_interactive_mode
+    non_interactive_mode = enabled
 
 
 class TUIInputHandler:
@@ -42,7 +50,11 @@ class TUIInputHandler:
         # - _run_once() processes pending events (keypresses, timers, etc.)
         # - This keeps urwid responsive while blocking the input() call
         # - DO NOT use time.sleep() or threading.Event.wait() - they freeze the loop!
-        event_loop = self.loop.event_loop._loop  # Get the asyncio event loop
+        loop = self.loop
+        if loop is None:
+            return ""
+
+        event_loop = loop.event_loop._loop  # Get the asyncio event loop
 
         while self.waiting_for_input:
             # Process ONE iteration of the event loop
@@ -50,12 +62,16 @@ class TUIInputHandler:
             event_loop._run_once()
 
             # Also redraw screen
-            self.loop.draw_screen()
+            loop.draw_screen()
 
         return self.input_result or ""
 
     def _show_input_modal(self, prompt_text):
         """Create and display the input modal dialog."""
+        loop = self.loop
+        if loop is None:
+            return
+
         # Create input widget
         self.input_edit = urwid.Edit("")
 
@@ -97,7 +113,7 @@ class TUIInputHandler:
         # Create overlay
         self.overlay = urwid.Overlay(
             dialog,
-            self.loop.widget,
+            loop.widget,
             align="center",
             width=MODAL_WIDTH,
             valign="middle",
@@ -105,17 +121,21 @@ class TUIInputHandler:
         )
 
         # Store original widget and show overlay
-        self.original_widget = self.loop.widget
-        self.loop.widget = self.overlay
+        self.original_widget = loop.widget
+        loop.widget = self.overlay
 
         # Override the unhandled input to handle our modal
-        self.original_unhandled_input = self.loop.unhandled_input
-        self.loop.unhandled_input = self._handle_modal_input
+        self.original_unhandled_input = loop.unhandled_input
+        loop.unhandled_input = self._handle_modal_input
 
-        self.loop.draw_screen()
+        loop.draw_screen()
 
     def _handle_modal_input(self, key):
         """Handle input events in the modal dialog."""
+        loop = self.loop
+        if loop is None:
+            return False
+
         if key == "enter":
             self._submit_input()
             return True
@@ -124,9 +144,9 @@ class TUIInputHandler:
             return True
         else:
             # Let the input widget handle other keys
-            size = self.loop.screen.get_cols_rows()
+            size = loop.screen.get_cols_rows()
             self.input_edit.keypress(size, key)
-            self.loop.draw_screen()
+            loop.draw_screen()
             return True
 
     def _submit_input(self):
@@ -141,11 +161,12 @@ class TUIInputHandler:
 
     def _close_modal(self):
         """Close the modal dialog and restore original widget."""
-        if hasattr(self, "original_widget"):
-            self.loop.widget = self.original_widget
-            self.loop.unhandled_input = self.original_unhandled_input
+        loop = self.loop
+        if loop and hasattr(self, "original_widget"):
+            loop.widget = self.original_widget
+            loop.unhandled_input = self.original_unhandled_input
             self.waiting_for_input = False
-            self.loop.draw_screen()
+            loop.draw_screen()
 
 
 # Global input handler
@@ -156,6 +177,13 @@ class TUICompatibleInput:
     """Custom input function that works with the TUI."""
 
     def __call__(self, prompt=""):
+        if non_interactive_mode:
+            raise CliRuntimeError(
+                "Interactive input required but --non-interactive mode is enabled",
+                ExitCode.NON_INTERACTIVE_INPUT_REQUIRED,
+                details={"prompt": prompt},
+            )
+
         if tui_input_handler.loop:
             return tui_input_handler.prompt_user(prompt)
         else:

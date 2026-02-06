@@ -14,6 +14,7 @@ from brokers import (
     sofiTrade,
     webullTrade,
     wellsfargoTrade,
+    chaseTrade,
     tradierGetHoldings,
     bbaeGetHoldings,
     dspacGetHoldings,
@@ -26,6 +27,16 @@ from brokers import (
     sofiGetHoldings,
     webullGetHoldings,
     wellsfargoGetHoldings,
+    chaseGetHoldings,
+    robinValidate,
+    tradierValidate,
+    tastyValidate,
+    firstradeValidate,
+    schwabValidate,
+    bbaeValidate,
+    dspacValidate,
+    sofiValidate,
+    webullValidate,
 )
 
 # Broker function mapping (references to actual trade/holdings functions)
@@ -34,14 +45,17 @@ BROKER_CONFIG = {
     "Robinhood": {
         "trade": robinTrade,
         "holdings": robinGetHoldings,
+        "validate": robinValidate,
     },
     "Tradier": {
         "trade": tradierTrade,
         "holdings": tradierGetHoldings,
+        "validate": tradierValidate,
     },
     "TastyTrade": {
         "trade": tastyTrade,
         "holdings": tastyGetHoldings,
+        "validate": tastyValidate,
     },
     "Public": {
         "trade": publicTrade,
@@ -50,6 +64,7 @@ BROKER_CONFIG = {
     "Firstrade": {
         "trade": firstradeTrade,
         "holdings": firstradeGetHoldings,
+        "validate": firstradeValidate,
     },
     "Fennel": {
         "trade": fennelTrade,
@@ -58,26 +73,35 @@ BROKER_CONFIG = {
     "Schwab": {
         "trade": schwabTrade,
         "holdings": schwabGetHoldings,
+        "validate": schwabValidate,
     },
     "BBAE": {
         "trade": bbaeTrade,
         "holdings": bbaeGetHoldings,
+        "validate": bbaeValidate,
     },
     "DSPAC": {
         "trade": dspacTrade,
         "holdings": dspacGetHoldings,
+        "validate": dspacValidate,
     },
     "SoFi": {
         "trade": sofiTrade,
         "holdings": sofiGetHoldings,
+        "validate": sofiValidate,
     },
     "Webull": {
         "trade": webullTrade,
         "holdings": webullGetHoldings,
+        "validate": webullValidate,
     },
     "WellsFargo": {
         "trade": wellsfargoTrade,
         "holdings": wellsfargoGetHoldings,
+    },
+    "Chase": {
+        "trade": chaseTrade,
+        "holdings": chaseGetHoldings,
     },
 }
 

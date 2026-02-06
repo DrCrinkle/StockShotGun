@@ -24,6 +24,7 @@ from tui.input_handler import (
     TUICompatibleInput,
     tui_input_handler,
     tui_compatible_input,
+    set_non_interactive_mode,
     setup_tui_input_interception,
     restore_original_input,
 )
@@ -66,6 +67,7 @@ __all__ = [
     "TUICompatibleInput",
     "tui_input_handler",
     "tui_compatible_input",
+    "set_non_interactive_mode",
     "setup_tui_input_interception",
     "restore_original_input",
     # Response handling

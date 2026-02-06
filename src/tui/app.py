@@ -4,6 +4,7 @@ import sys
 import urwid
 import asyncio
 import traceback
+from collections.abc import Hashable
 
 from tui.config import BROKERS
 from tui.widgets import EditWithCallback, ResponseBox
@@ -24,6 +25,9 @@ from robin_stocks.robinhood.helper import (
 
 def run_tui():
     orders = []
+    broker_statuses = {}
+    auth_spinner_index = 0
+    last_submitted_orders = []
     current_order = {
         "action": "buy",
         "quantity": None,
@@ -87,6 +91,14 @@ def run_tui():
             urwid.Button(
                 "Submit All Orders",
                 on_press=lambda button: asyncio.create_task(submit_all_orders(button)),
+            )
+        )
+        body.append(
+            urwid.Button(
+                "Retry Timed-Out Brokers",
+                on_press=lambda button: asyncio.create_task(
+                    retry_timed_out_brokers(button)
+                ),
             )
         )
         body.append(
@@ -183,17 +195,114 @@ def run_tui():
         )
         order_summary.set_text(summary)
 
+    def update_broker_status_text():
+        nonlocal auth_spinner_index
+        if not broker_statuses:
+            broker_status_text.set_text("Broker Status: idle")
+            return
+
+        by_status = {
+            "ready": [],
+            "authing": [],
+            "timed-out": [],
+            "failed": [],
+            "skipped": [],
+            "queued": [],
+        }
+
+        for broker, status in broker_statuses.items():
+            by_status.setdefault(status, [])
+            by_status[status].append(broker)
+
+        status_styles = {
+            "ready": "status_ready",
+            "authing": "status_authing",
+            "timed-out": "status_timeout",
+            "failed": "status_failed",
+            "skipped": "status_skipped",
+            "queued": "status_queued",
+        }
+
+        parts = []
+        ordered_statuses = [
+            "ready",
+            "authing",
+            "timed-out",
+            "failed",
+            "skipped",
+            "queued",
+        ]
+        for status in ordered_statuses:
+            if by_status.get(status):
+                brokers = ", ".join(sorted(by_status[status]))
+                style = status_styles.get(status, "status_label")
+                if status == "authing":
+                    spinner_frames = ["-", "\\", "|", "/"]
+                    spinner = spinner_frames[auth_spinner_index % len(spinner_frames)]
+                    parts.append((style, f"{status}{spinner}: {brokers}"))
+                else:
+                    parts.append((style, f"{status}: {brokers}"))
+
+        if parts:
+            ready_count = len(by_status["ready"])
+            authing_count = len(by_status["authing"])
+            timed_out_count = len(by_status["timed-out"])
+            failed_count = len(by_status["failed"])
+            skipped_count = len(by_status["skipped"])
+            queued_count = len(by_status["queued"])
+            markup: list[str | tuple[Hashable, str]] = [
+                (
+                    "status_label",
+                    (
+                        "Broker Status "
+                        f"(R:{ready_count} A:{authing_count} T:{timed_out_count} "
+                        f"F:{failed_count} S:{skipped_count} Q:{queued_count}) | "
+                    ),
+                )
+            ]
+            for index, part in enumerate(parts):
+                markup.append(part)
+                if index < len(parts) - 1:
+                    markup.append(("status_label", " | "))
+            broker_status_text.set_text(markup)
+        else:
+            broker_status_text.set_text("Broker Status: idle")
+
+    def on_broker_status_update(broker, status):
+        broker_statuses[broker] = status
+        update_broker_status_text()
+        loop.draw_screen()
+
     async def submit_all_orders(button):
+        nonlocal last_submitted_orders
         if not orders:
             response_box.add_response("No orders to submit!")
             return
 
+        response_box.add_separator("Submitting Orders")
         response_box.add_response(f"Submitting {len(orders)} orders...")
+        broker_statuses.clear()
+        for order in orders:
+            for broker in order.get("selected_brokers", []):
+                broker_statuses[broker] = "queued"
+        update_broker_status_text()
 
-        # Convert BROKER_CONFIG to simple {broker: trade_function} mapping for order_processor
+        # Convert BROKER_CONFIG to simple {broker: function} mappings for order_processor
         trade_functions = {
             broker: config["trade"] for broker, config in BROKER_CONFIG.items()
         }
+        validate_functions = {
+            broker: config["validate"]
+            for broker, config in BROKER_CONFIG.items()
+            if "validate" in config
+        }
+        last_submitted_orders = [
+            {
+                **order,
+                "selected_brokers": list(order.get("selected_brokers", [])),
+            }
+            for order in orders
+        ]
 
         try:
             # Use concurrent order processor
@@ -201,6 +310,8 @@ def run_tui():
                 orders,
                 trade_functions=trade_functions,
                 add_response_fn=response_box.add_response,
+                status_update_fn=on_broker_status_update,
+                validate_functions=validate_functions,
             )
 
             # Build summary with total broker counts across all orders
@@ -210,13 +321,91 @@ def run_tui():
             if results["skipped"] > 0:
                 summary_parts.append(f"⚠️ {results['skipped']} skipped")
 
-            response_box.add_response(f"\n🎯 Total Results: {', '.join(summary_parts)}")
+            response_box.add_separator()
+            response_box.add_response(f"🎯 Total Results: {', '.join(summary_parts)}")
         except Exception as e:
             response_box.add_response(f"✗ Error processing orders: {str(e)}")
             traceback.print_exc()
 
         orders.clear()
         update_order_summary()
+
+    def get_timed_out_brokers():
+        return sorted(
+            [
+                broker
+                for broker, status in broker_statuses.items()
+                if status == "timed-out"
+            ]
+        )
+
+    async def retry_timed_out_brokers(button):
+        timed_out_brokers = set(get_timed_out_brokers())
+        if not timed_out_brokers:
+            response_box.add_response("No timed-out brokers to retry.")
+            return
+
+        if not last_submitted_orders:
+            response_box.add_response("No previous submission found to retry.")
+            return
+
+        retry_orders = []
+        for order in last_submitted_orders:
+            selected = [
+                broker
+                for broker in order.get("selected_brokers", [])
+                if broker in timed_out_brokers
+            ]
+            if selected:
+                retry_orders.append(
+                    {
+                        **order,
+                        "selected_brokers": selected,
+                    }
+                )
+
+        if not retry_orders:
+            response_box.add_response(
+                "No matching timed-out brokers in last submission."
+            )
+            return
+
+        response_box.add_separator("Retrying Timed-Out Brokers")
+        response_box.add_response(
+            f"Retrying: {', '.join(sorted(timed_out_brokers))}"
+        )
+
+        for broker in timed_out_brokers:
+            broker_statuses[broker] = "queued"
+        update_broker_status_text()
+
+        trade_functions = {
+            broker: config["trade"] for broker, config in BROKER_CONFIG.items()
+        }
+        validate_functions = {
+            broker: config["validate"]
+            for broker, config in BROKER_CONFIG.items()
+            if "validate" in config
+        }
+
+        try:
+            results = await order_processor.process_orders(
+                retry_orders,
+                trade_functions=trade_functions,
+                add_response_fn=response_box.add_response,
+                status_update_fn=on_broker_status_update,
+                validate_functions=validate_functions,
+            )
+            response_box.add_response(
+                (
+                    f"Retry Results: ✅ {results['successful']} succeeded"
+                    f", ❌ {results['failed']} failed"
+                    f", ⚠️ {results['skipped']} skipped"
+                )
+            )
+        except Exception as e:
+            response_box.add_response(f"✗ Error retrying brokers: {str(e)}")
+            traceback.print_exc()
 
     async def show_holdings_screen(button):
         selected_brokers = current_order["selected_brokers"]
@@ -395,8 +584,17 @@ def run_tui():
         )
 
     def default_input_handler(key):
+        if response_box.in_focus_mode:
+            return response_box.focus_keypress(key)
         if key in ("q", "Q"):
             raise urwid.ExitMainLoop()
+        if key in ("v", "V"):
+            level = response_writer.cycle_verbosity()
+            response_box.add_response(f"Log verbosity set to: {level}")
+            return True
+        if key in ("l", "L"):
+            response_box.enter_focus_mode()
+            return True
         return False
 
     def show_main_screen(button=None):
@@ -408,7 +606,10 @@ def run_tui():
 
     # Initialize the UI
     response_box = ResponseBox(max_responses=100, height=15)
-    instruction_text = urwid.Text("Add orders and submit them all at once!")
+    instruction_text = urwid.Text(
+        "Add orders and submit them all at once! (V: log verbosity, L: focus log)"
+    )
+    broker_status_text = urwid.Text("Broker Status: idle")
     order_summary = urwid.Text("")
     main = create_main_menu()
 
@@ -419,6 +620,8 @@ def run_tui():
                 response_box,
                 urwid.Divider(),
                 urwid.Padding(instruction_text, left=2, right=2),
+                urwid.Divider(),
+                urwid.Padding(broker_status_text, left=2, right=2),
                 urwid.Divider(),
                 urwid.Padding(order_summary, left=2, right=2),
             ]
@@ -440,10 +643,37 @@ def run_tui():
 
     loop = urwid.MainLoop(
         frame,
-        palette=[("reversed", "standout", ""), ("editcp", "light gray", "dark blue")],
+        palette=[
+            ("reversed", "standout", ""),
+            ("editcp", "light gray", "dark blue"),
+            ("status_label", "light gray", ""),
+            ("status_ready", "light green", ""),
+            ("status_authing", "yellow", ""),
+            ("status_timeout", "light red", ""),
+            ("status_failed", "light red", ""),
+            ("status_skipped", "light cyan", ""),
+            ("status_queued", "light blue", ""),
+            ("log_timestamp", "dark gray", ""),
+            ("log_success", "light green", ""),
+            ("log_error", "light red", ""),
+            ("log_warning", "yellow", ""),
+            ("log_info", "light cyan", ""),
+            ("log_separator", "dark gray", ""),
+        ],
         event_loop=urwid.AsyncioEventLoop(loop=event_loop),
         unhandled_input=default_input_handler,
     )
+
+    async def auth_spinner_loop():
+        nonlocal auth_spinner_index
+        while True:
+            await asyncio.sleep(0.25)
+            if any(status == "authing" for status in broker_statuses.values()):
+                auth_spinner_index = (auth_spinner_index + 1) % 4
+                update_broker_status_text()
+                loop.draw_screen()
+
+    spinner_task = event_loop.create_task(auth_spinner_loop())
 
     # Set loop on response_box for real-time response display
     response_box.set_loop(loop)
@@ -455,6 +685,11 @@ def run_tui():
     try:
         loop.run()
     finally:
+        spinner_task.cancel()
+        try:
+            event_loop.run_until_complete(spinner_task)
+        except asyncio.CancelledError:
+            pass
         # Restore original input function
         restore_original_input()
 

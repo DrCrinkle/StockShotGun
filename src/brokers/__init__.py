@@ -37,6 +37,7 @@ from brokers.dspac import dspacTrade, dspacGetHoldings, dspacValidate
 from brokers.sofi import sofiTrade, sofiGetHoldings, sofiValidate
 from brokers.webull import webullTrade, webullGetHoldings, webullValidate
 from brokers.wellsfargo import wellsfargoTrade, wellsfargoGetHoldings
+from brokers.chase import chaseTrade, chaseGetHoldings
 
 __all__ = [
     # Base infrastructure
@@ -100,4 +101,7 @@ __all__ = [
     # WellsFargo
     "wellsfargoTrade",
     "wellsfargoGetHoldings",
+    # Chase
+    "chaseTrade",
+    "chaseGetHoldings",
 ]

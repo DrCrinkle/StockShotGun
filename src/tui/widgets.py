@@ -1,5 +1,6 @@
 """Custom urwid widgets for the TUI."""
 
+import subprocess
 import urwid
 from datetime import datetime
 
@@ -43,19 +44,50 @@ class ResponseBox(urwid.WidgetWrap):
         """Set the urwid main loop for triggering redraws."""
         self._loop = loop
 
+    def _detect_style(self, message):
+        """Detect message style from content."""
+        if not message:
+            return None
+        for marker in ("✅", "✓", "Success", "successfully", "Bought", "Sold"):
+            if marker in message:
+                return "log_success"
+        for marker in ("❌", "✗", "Failed", "Error", "error"):
+            if marker in message:
+                return "log_error"
+        for marker in ("⚠", "Skipped", "skipping", "Timed out", "⏱"):
+            if marker in message:
+                return "log_warning"
+        for marker in ("Submitting", "Fetching", "Order added", "🎯", "📊"):
+            if marker in message:
+                return "log_info"
+        return None
+
+    def add_separator(self, label=""):
+        """Add a visual separator line."""
+        sep = f"── {label} ──" if label else "─" * 40
+        text_widget = urwid.Text(("log_separator", sep))
+        self.walker.append(text_widget)
+        if len(self.walker) > self.max_responses:
+            self.walker.pop(0)
+
     def add_response(self, message, style=None, force_redraw=False):
         """Add a new response message with timestamp."""
         timestamp = datetime.now().strftime("%H:%M:%S")
 
-        # Create the message text with timestamp
-        formatted_msg = f"[{timestamp}] {message}"
+        if not style:
+            style = self._detect_style(message)
 
-        # Apply style if provided
-        text_widget = urwid.Text((style, formatted_msg)) if style else urwid.Text(formatted_msg)
+        # Build markup: dim timestamp + colored message
+        if style:
+            markup = [("log_timestamp", f"[{timestamp}] "), (style, message)]
+        else:
+            markup = [("log_timestamp", f"[{timestamp}] "), message]
+
+        text_widget = urwid.Text(markup)
 
         # Add to walker
         self.walker.append(text_widget)
-        self.responses.append(formatted_msg)
+        self.responses.append(f"[{timestamp}] {message}")
 
         # Keep only the last max_responses
         if len(self.walker) > self.max_responses:
@@ -75,6 +107,99 @@ class ResponseBox(urwid.WidgetWrap):
         self.walker.clear()
         self.responses.clear()
         self.add_response("Response log cleared.")
+
+    def _copy_to_clipboard(self, text):
+        """Copy text to system clipboard."""
+        for cmd in (["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "--clipboard", "--input"]):
+            try:
+                subprocess.run(cmd, input=text.encode(), check=True, timeout=2)
+                return True
+            except (FileNotFoundError, subprocess.SubprocessError):
+                continue
+        return False
+
+    def copy_line(self):
+        """Copy the currently focused line to clipboard."""
+        if not self.walker:
+            return False
+        try:
+            focus_widget, _ = self.listbox.get_focus()
+            if focus_widget:
+                text = focus_widget.get_text()[0]
+                if self._copy_to_clipboard(text):
+                    self.add_response("Copied line to clipboard.", style="log_info")
+                    return True
+        except (IndexError, AttributeError):
+            pass
+        return False
+
+    def copy_all(self):
+        """Copy entire log to clipboard."""
+        if not self.responses:
+            return False
+        text = "\n".join(self.responses)
+        if self._copy_to_clipboard(text):
+            self.add_response("Copied full log to clipboard.", style="log_info")
+            return True
+        return False
+
+    def enter_focus_mode(self):
+        """Enter scrollable focus mode with mouse tracking disabled."""
+        if self._loop:
+            self._loop.screen.set_mouse_tracking(False)
+        self._focus_mode = True
+        self.box.set_title("Response Log [FOCUS - ↑↓:scroll  y:copy line  Y:copy all  Esc/L:exit]")
+        if self._loop:
+            self._loop.draw_screen()
+
+    def exit_focus_mode(self):
+        """Exit focus mode, restore mouse tracking."""
+        if self._loop:
+            self._loop.screen.set_mouse_tracking(True)
+        self._focus_mode = False
+        self.box.set_title("Response Log")
+        # Re-scroll to bottom
+        if self.walker:
+            self.listbox.set_focus(len(self.walker) - 1)
+        if self._loop:
+            self._loop.draw_screen()
+
+    @property
+    def in_focus_mode(self):
+        return getattr(self, "_focus_mode", False)
+
+    def focus_keypress(self, key):
+        """Handle keys while in focus mode. Returns True if handled."""
+        if key in ("esc", "l", "L"):
+            self.exit_focus_mode()
+            return True
+        if key in ("up", "k"):
+            try:
+                pos = self.listbox.focus_position
+                if pos > 0:
+                    self.listbox.set_focus(pos - 1)
+                    if self._loop:
+                        self._loop.draw_screen()
+            except (IndexError, AttributeError):
+                pass
+            return True
+        if key in ("down", "j"):
+            try:
+                pos = self.listbox.focus_position
+                if pos < len(self.walker) - 1:
+                    self.listbox.set_focus(pos + 1)
+                    if self._loop:
+                        self._loop.draw_screen()
+            except (IndexError, AttributeError):
+                pass
+            return True
+        if key == "y":
+            self.copy_line()
+            return True
+        if key == "Y":
+            self.copy_all()
+            return True
+        return False
 
     def set_height(self, height):
         """Dynamically adjust the height of the response box."""
