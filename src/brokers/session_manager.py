@@ -1,8 +1,16 @@
-"""Session manager for broker authentication and session handling."""
+"""Session manager for broker authentication and session handling.
+
+Free-threaded Python 3.14 Compatibility:
+- All shared state is protected by threading.Lock for thread-safety
+- Asyncio primitives remain for async coordination
+"""
 
 import os
 import asyncio
+import logging
+import threading
 from brokers.base import BrokerConfig
+from cli_runtime import CliRuntimeError, ExitCode
 
 # Import broker modules dynamically
 import brokers.robinhood
@@ -17,6 +25,8 @@ import brokers.dspac
 import brokers.sofi
 import brokers.webull
 import brokers.wellsfargo
+
+logger = logging.getLogger(__name__)
 
 
 class BrokerSessionManager:
@@ -43,18 +53,21 @@ class BrokerSessionManager:
         self._initialized = set()
         self._env_cache = {}  # Cache environment variables
         self._session_locks = {}  # Prevent concurrent session creation for same broker
+        self._lock = threading.Lock()  # Thread-safe access to shared state
 
     def _get_env(self, key: str, default: str | None = None) -> str:
         """Get environment variable with caching."""
-        if key not in self._env_cache:
-            self._env_cache[key] = os.getenv(key, default)
-        return self._env_cache[key]
+        with self._lock:
+            if key not in self._env_cache:
+                self._env_cache[key] = os.getenv(key, default)
+            return self._env_cache[key]
 
     def _get_session_lock(self, broker_name: str) -> asyncio.Lock:
         """Get or create a lock for a specific broker to prevent concurrent initialization."""
-        if broker_name not in self._session_locks:
-            self._session_locks[broker_name] = asyncio.Lock()
-        return self._session_locks[broker_name]
+        with self._lock:
+            if broker_name not in self._session_locks:
+                self._session_locks[broker_name] = asyncio.Lock()
+            return self._session_locks[broker_name]
 
     async def get_session(self, broker_name: str):
         """
@@ -67,6 +80,7 @@ class BrokerSessionManager:
             Session object for the broker, or None if broker not found
         """
         if broker_name not in self.BROKER_MODULES:
+            logger.warning("Unknown broker requested", extra={"broker": broker_name})
             print(f"⚠️  Unknown broker: {broker_name}")
             return None
 
@@ -76,6 +90,10 @@ class BrokerSessionManager:
         # Get the session getter function from the module
         session_getter = getattr(module, func_name, None)
         if not session_getter:
+            logger.error(
+                "Session getter not found",
+                extra={"broker": broker_name, "getter": func_name},
+            )
             print(f"⚠️  Session getter not found for {broker_name}")
             return None
 
@@ -101,7 +119,13 @@ class BrokerSessionManager:
                 print(f"⚠️  Unknown broker: {broker_name}")
 
         if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            init_results = await asyncio.gather(*tasks, return_exceptions=True)
+            for result in init_results:
+                if (
+                    isinstance(result, CliRuntimeError)
+                    and result.exit_code == ExitCode.NON_INTERACTIVE_INPUT_REQUIRED
+                ):
+                    raise result
 
         # Report which sessions are now active
         active_sessions = []
@@ -142,8 +166,9 @@ class BrokerSessionManager:
     def cleanup(self):
         """Clean up broker sessions (safe to call multiple times)."""
         # Clear session references - http_client stays open for reuse
-        self.sessions.clear()
-        self._initialized.clear()
+        with self._lock:
+            self.sessions.clear()
+            self._initialized.clear()
 
     async def shutdown(self):
         """Shutdown and close HTTP client (call only on application exit)."""
@@ -152,6 +177,7 @@ class BrokerSessionManager:
         try:
             await http_client.aclose()
         except Exception as e:
+            logger.warning("Error closing shared HTTP client", exc_info=e)
             print(f"Warning: Error closing HTTP client: {e}")
 
         # Also clear sessions
