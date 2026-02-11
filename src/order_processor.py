@@ -349,7 +349,8 @@ class OrderBatchProcessor:
 
         if order_summary_parts:
             add_response_fn(
-                f"   📊 Order {idx} results: {', '.join(order_summary_parts)}"
+                f"   📊 Order {idx} results: {', '.join(order_summary_parts)}",
+                force_redraw=True,
             )
 
         if idx < total_orders:
