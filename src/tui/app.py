@@ -322,7 +322,7 @@ def run_tui():
                 summary_parts.append(f"⚠️ {results['skipped']} skipped")
 
             response_box.add_separator()
-            response_box.add_response(f"🎯 Total Results: {', '.join(summary_parts)}")
+            response_box.add_response(f"🎯 Total Results: {', '.join(summary_parts)}", force_redraw=True)
         except Exception as e:
             response_box.add_response(f"✗ Error processing orders: {str(e)}")
             traceback.print_exc()
@@ -681,6 +681,37 @@ def run_tui():
     # Set up input handler for the TUI
     tui_input_handler.set_loop(loop)
     setup_tui_input_interception()
+
+    # Override urwid's exception handler AFTER loop.run() installs it.
+    # urwid's default _exception_handler calls loop.stop() on ANY exception from
+    # ANY asyncio callback, which kills the TUI if a single broker task raises.
+    # For a multi-broker app with concurrent browser automation, we need to be
+    # more resilient: only stop on ExitMainLoop (intentional quit).
+    urwid_event_loop = loop.event_loop
+
+    def _resilient_exception_handler(aloop, context):
+        exc = context.get("exception")
+        if isinstance(exc, urwid.ExitMainLoop):
+            aloop.stop()
+            if urwid_event_loop._idle_asyncio_handle:
+                urwid_event_loop._idle_asyncio_handle.cancel()
+                urwid_event_loop._idle_asyncio_handle = None
+        elif exc:
+            # Log but don't stop - broker errors shouldn't crash the TUI
+            response_box.add_response(f"Background error: {exc}")
+        else:
+            aloop.default_exception_handler(context)
+
+    # Monkey-patch urwid's run to install our handler after urwid sets its own
+    def _run_with_handler():
+        event_loop.set_exception_handler(_resilient_exception_handler)
+        event_loop.run_forever()
+        if urwid_event_loop._exc:
+            exc = urwid_event_loop._exc
+            urwid_event_loop._exc = None
+            raise exc.with_traceback(exc.__traceback__)
+
+    urwid_event_loop.run = _run_with_handler
 
     try:
         loop.run()

@@ -1,5 +1,6 @@
 """Input handling and modal dialogs for the TUI."""
 
+import asyncio
 import urwid
 from tui.config import MODAL_WIDTH, MODAL_HEIGHT
 from cli_runtime import CliRuntimeError, ExitCode
@@ -20,51 +21,28 @@ class TUIInputHandler:
 
     def __init__(self):
         self.loop = None
-        self.input_result = None
-        self.waiting_for_input = False
+        self._pending_future = None
 
     def set_loop(self, loop):
         self.loop = loop
 
-    def prompt_user(self, prompt_text):
-        """Show modal input dialog and wait for user input (sync, works from async code).
+    async def async_prompt(self, prompt_text):
+        """Show modal input dialog and await user input (async, no event loop pumping).
 
-        This is a CRITICAL function that solves the sync/async impedance mismatch:
-        - Brokers call input() synchronously (from async tasks)
-        - But urwid needs the event loop to keep running to process keypresses
-        - Solution: Manually pump the event loop while blocking the caller
-
-        DO NOT MODIFY THIS WITHOUT UNDERSTANDING THE IMPLICATIONS!
+        This creates a Future, shows the modal, and awaits the Future.
+        The event loop continues running normally - no _run_once() re-entrancy.
+        When the user submits or cancels, the modal callback resolves the Future.
         """
         if not self.loop:
-            # Fallback to regular input if TUI not available
-            return original_input(prompt_text)
+            return await asyncio.to_thread(original_input, prompt_text)
 
-        self.input_result = None
-        self.waiting_for_input = True
+        future = asyncio.get_event_loop().create_future()
+        self._pending_future = future
 
-        # Show the input modal immediately
         self._show_input_modal(prompt_text)
 
-        # CRITICAL: Manually pump the event loop while waiting!
-        # - _run_once() processes pending events (keypresses, timers, etc.)
-        # - This keeps urwid responsive while blocking the input() call
-        # - DO NOT use time.sleep() or threading.Event.wait() - they freeze the loop!
-        loop = self.loop
-        if loop is None:
-            return ""
-
-        event_loop = loop.event_loop._loop  # Get the asyncio event loop
-
-        while self.waiting_for_input:
-            # Process ONE iteration of the event loop
-            # This allows keypresses to be processed!
-            event_loop._run_once()
-
-            # Also redraw screen
-            loop.draw_screen()
-
-        return self.input_result or ""
+        result = await future
+        return result
 
     def _show_input_modal(self, prompt_text):
         """Create and display the input modal dialog."""
@@ -77,7 +55,7 @@ class TUIInputHandler:
 
         # Create dialog content
         dialog_content = [
-            urwid.Text(("header", "📝 Input Required"), align="center"),
+            urwid.Text(("header", "Input Required"), align="center"),
             urwid.Divider(),
             urwid.Text(prompt_text.strip()),
             urwid.Divider(),
@@ -86,14 +64,12 @@ class TUIInputHandler:
             urwid.Columns(
                 [
                     (
-                        "weight",
                         1,
                         urwid.Button(
                             "Submit (Enter)", on_press=lambda btn: self._submit_input()
                         ),
                     ),
                     (
-                        "weight",
                         1,
                         urwid.Button(
                             "Cancel (Esc)", on_press=lambda btn: self._cancel_input()
@@ -150,14 +126,19 @@ class TUIInputHandler:
             return True
 
     def _submit_input(self):
-        """Handle input submission."""
-        self.input_result = self.input_edit.edit_text
+        """Handle input submission - resolves the pending future."""
+        result = self.input_edit.edit_text
         self._close_modal()
+        if self._pending_future and not self._pending_future.done():
+            self._pending_future.set_result(result)
+            self._pending_future = None
 
     def _cancel_input(self):
-        """Handle input cancellation."""
-        self.input_result = ""
+        """Handle input cancellation - resolves with empty string."""
         self._close_modal()
+        if self._pending_future and not self._pending_future.done():
+            self._pending_future.set_result("")
+            self._pending_future = None
 
     def _close_modal(self):
         """Close the modal dialog and restore original widget."""
@@ -165,7 +146,6 @@ class TUIInputHandler:
         if loop and hasattr(self, "original_widget"):
             loop.widget = self.original_widget
             loop.unhandled_input = self.original_unhandled_input
-            self.waiting_for_input = False
             loop.draw_screen()
 
 
@@ -173,8 +153,30 @@ class TUIInputHandler:
 tui_input_handler = TUIInputHandler()
 
 
+async def tui_async_input(prompt=""):
+    """Async input() replacement for use in broker code running in the TUI.
+
+    Use this instead of input() in async broker functions that may need
+    user input (2FA codes, etc.) while the TUI is running.
+    """
+    if non_interactive_mode:
+        raise CliRuntimeError(
+            "Interactive input required but --non-interactive mode is enabled",
+            ExitCode.NON_INTERACTIVE_INPUT_REQUIRED,
+            details={"prompt": prompt},
+        )
+
+    if tui_input_handler.loop:
+        return await tui_input_handler.async_prompt(prompt)
+    else:
+        return await asyncio.to_thread(original_input, prompt)
+
+
 class TUICompatibleInput:
-    """Custom input function that works with the TUI."""
+    """Custom input function that works with the TUI (sync fallback).
+
+    For async broker code, use tui_async_input() instead.
+    """
 
     def __call__(self, prompt=""):
         if non_interactive_mode:
@@ -184,10 +186,9 @@ class TUICompatibleInput:
                 details={"prompt": prompt},
             )
 
-        if tui_input_handler.loop:
-            return tui_input_handler.prompt_user(prompt)
-        else:
-            return original_input(prompt)
+        # In TUI mode, sync input() can't work with Python 3.14's strict
+        # re-entrancy checks. Fall back to original input (prints to redirected stdout).
+        return original_input(prompt)
 
 
 # Store original input function and create TUI-compatible version
