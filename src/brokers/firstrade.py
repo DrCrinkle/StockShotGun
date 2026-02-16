@@ -257,7 +257,8 @@ async def get_firstrade_session(session_manager):
             ft_ss = await retry_operation(_create_firstrade_session)
             need_code = await asyncio.to_thread(ft_ss.login)
             if need_code:
-                code = input("Please enter the pin sent to your email/phone: ")
+                from tui.input_handler import tui_async_input
+                code = await tui_async_input("Please enter the pin sent to your email/phone: ")
                 await asyncio.to_thread(ft_ss.login_two, code)
 
             session_manager.sessions["firstrade"] = ft_ss

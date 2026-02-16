@@ -4,7 +4,7 @@ import os
 import asyncio
 import pyotp
 import traceback
-from zendriver import Browser
+from brokers.browser_utils import create_browser, stop_browser, get_page_url, get_page_title, wait_for_ready_state
 from curl_cffi import requests as curl_requests
 from brokers.base import rate_limiter
 
@@ -38,21 +38,17 @@ async def _sofi_authenticate(session_info):
     browser = None
     try:
         # Start browser
-        browser_args = [
-            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
-        ]
         headless = os.getenv("HEADLESS", "true").lower() == "true"
-
-        browser = await Browser.create(browser_args=browser_args, headless=headless)
+        browser = await create_browser(headless=headless)
 
         # Try to load existing cookies
         try:
             await browser.cookies.load(cookies_path)
             page = await browser.get("https://www.sofi.com/wealth/app/overview")
-            await asyncio.sleep(3)
+            await wait_for_ready_state(page)
 
             # Check if we're logged in
-            current_url = await page.evaluate("window.location.href")
+            current_url = await get_page_url(page)
             if current_url and "overview" in current_url:
                 # Cookies are still valid
                 cookies = await browser.cookies.get_all()
@@ -63,7 +59,7 @@ async def _sofi_authenticate(session_info):
 
         # Perform fresh login
         page = await browser.get("https://www.sofi.com/wealth/app")
-        await asyncio.sleep(2)
+        await wait_for_ready_state(page)
 
         # Enter username
         username_input = await page.select("input[id=username]")
@@ -80,38 +76,32 @@ async def _sofi_authenticate(session_info):
         if login_button:
             await login_button.click()
 
-        await asyncio.sleep(3)
+        await wait_for_ready_state(page)
 
         # Handle 2FA only when the verification input is actually present
         twofa_input = None
-        current_url = await page.evaluate("window.location.href")
+        current_url = await get_page_url(page)
 
         if not (current_url and "overview" in current_url):
             try:
-                twofa_input = await asyncio.wait_for(
-                    page.select("input[id=code]"), timeout=3
-                )
-            except asyncio.TimeoutError:
+                twofa_input = await page.select("input[id=code]", timeout=3)
+            except (asyncio.TimeoutError, AttributeError):
                 twofa_input = None
 
             if not twofa_input:
                 # Allow a brief moment for redirect in case login succeeded without 2FA
                 await asyncio.sleep(2)
-                current_url = await page.evaluate("window.location.href")
+                current_url = await get_page_url(page)
 
                 if not (current_url and "overview" in current_url):
                     try:
-                        twofa_input = await asyncio.wait_for(
-                            page.select("input[id=code]"), timeout=2
-                        )
-                    except asyncio.TimeoutError:
+                        twofa_input = await page.select("input[id=code]", timeout=2)
+                    except (asyncio.TimeoutError, AttributeError):
                         twofa_input = None
 
         if twofa_input:
             try:
-                remember = await asyncio.wait_for(
-                    page.select("input[id=rememberBrowser]"), timeout=5
-                )
+                remember = await page.select("input[id=rememberBrowser]", timeout=5)
                 if remember:
                     await remember.click()
             except asyncio.TimeoutError:
@@ -123,14 +113,31 @@ async def _sofi_authenticate(session_info):
                 await twofa_input.send_keys(code)
             else:
                 print("SoFi 2FA required. Please check your device for the code.")
-                sms_code = input("Enter SoFi 2FA code: ")
+                from tui.input_handler import tui_async_input
+                sms_code = await tui_async_input("Enter SoFi 2FA code: ")
                 await twofa_input.send_keys(sms_code)
 
             verify_button = await page.find("Verify Code")
             if verify_button:
                 await verify_button.click()
 
-            await asyncio.sleep(3)
+            await wait_for_ready_state(page)
+
+        # Check if we landed on a second challenge page instead of overview
+        current_url = await get_page_url(page)
+        if current_url and "overview" not in current_url:
+            page_title = await get_page_title(page)
+            page_text = await page.evaluate("document.body?.innerText?.substring(0, 500)")
+            print(f"SoFi post-login page: {current_url}")
+            print(f"SoFi page title: {page_title}")
+            print(f"SoFi page content: {page_text}")
+
+            # Handle second challenge (e.g. /login/challenge with verification method selection)
+            if isinstance(current_url, str) and "challenge" in current_url.lower():
+                print("SoFi second challenge detected. Please complete it manually.")
+                from tui.input_handler import tui_async_input
+                await tui_async_input("Press Enter after completing the SoFi challenge...")
+                await asyncio.sleep(2)
 
         # Save cookies
         await browser.cookies.save(cookies_path)
@@ -142,11 +149,7 @@ async def _sofi_authenticate(session_info):
         return cookies_dict
 
     finally:
-        if browser:
-            try:
-                await browser.stop()
-            except Exception:
-                traceback.print_exc()
+        await stop_browser(browser)
 
 
 async def _sofi_get_cookies(session_info):
@@ -209,7 +212,12 @@ async def _sofi_get_funded_accounts(cookies):
 async def _sofi_place_order(
     symbol, quantity, limit_price, account_id, order_type, cookies, csrf_token
 ):
-    """Place a limit or market order on SoFi."""
+    """Place a limit or market order on SoFi.
+
+    Returns:
+        (True, None): Order placed successfully
+        (False, error_text): Order failed, error_text contains response body
+    """
     try:
         payload = {
             "operation": order_type,
@@ -236,13 +244,15 @@ async def _sofi_place_order(
 
         if response.status_code == 200:
             result = response.json()
-            return result.get("header") == "Your order is placed."
+            if result.get("header") == "Your order is placed.":
+                return (True, None)
 
-        print(f"Failed to place SoFi order for {symbol}: {response.text}")
-        return False
+        error_text = response.text
+        print(f"Failed to place SoFi order for {symbol}: {error_text}")
+        return (False, error_text)
     except Exception as e:
         print(f"Error placing SoFi order for {symbol}: {e}")
-        return False
+        return (False, str(e))
 
 
 async def sofiValidate(side, qty, ticker, price):
@@ -331,17 +341,22 @@ async def sofiTrade(side, qty, ticker, price):
                     continue
 
             # Place the order
-            success = await _sofi_place_order(
+            ok, error_text = await _sofi_place_order(
                 ticker, qty, price, account_id, order_type, cookies, csrf_token
             )
 
-            if success:
+            if ok:
                 action_str = "Bought" if side == "buy" else "Sold"
                 print(f"{action_str} {ticker} on SoFi {account_type} account")
                 success_count += 1
             else:
                 print(f"Failed to {side} {ticker} on SoFi {account_type} account")
                 failure_count += 1
+
+                # Security-level errors apply to all accounts — stop early
+                if error_text and "cannot be traded" in error_text:
+                    print(f"{ticker} cannot be traded on SoFi, skipping remaining accounts")
+                    break
 
         # Return True if at least one account succeeded
         return success_count > 0
