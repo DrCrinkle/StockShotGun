@@ -4,9 +4,8 @@ import os
 import re
 import asyncio
 import logging
-import traceback
 from bs4 import BeautifulSoup
-from zendriver import Browser
+from brokers.browser_utils import create_browser, stop_browser, get_page_url, get_page_title, navigate_and_wait, wait_for_ready_state, poll_for_condition
 from brokers.base import rate_limiter, broker_event
 
 logger = logging.getLogger(__name__)
@@ -14,6 +13,8 @@ logger = logging.getLogger(__name__)
 
 class WellsFargoClient:
     """Wells Fargo Advisors client with browser automation."""
+
+    COOKIES_PATH = "./tokens/wellsfargo_cookies.pkl"
 
     def __init__(
         self,
@@ -38,9 +39,7 @@ class WellsFargoClient:
         # State management
         self._browser = None
         self._page = None
-        self._accounts = None
         self._is_authenticated = False
-        self._x_param = ""
 
     async def __aenter__(self):
         """Async context manager entry. Browser created lazily on first operation."""
@@ -49,59 +48,84 @@ class WellsFargoClient:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit. Cleanup browser if exists."""
         if self._browser:
-            try:
-                await self._browser.stop()
-            except Exception as e:
-                broker_event(
-                    f"Error stopping browser: {e}",
-                    level="warning",
-                    logger=logger,
-                    exc=e,
-                )
-            finally:
-                self._browser = None
-                self._page = None
-                self._is_authenticated = False
+            await stop_browser(self._browser, log=logger)
+            self._browser = None
+            self._page = None
+            self._is_authenticated = False
 
     async def _ensure_authenticated(self):
         """Ensure browser is authenticated. Lazy authentication - only creates browser when needed."""
         if not self._is_authenticated or not self._browser:
             await self._authenticate()
 
+    async def _is_logged_in(self, page):
+        """Check if the current page indicates an authenticated session."""
+        url = (await get_page_url(page)).lower()
+        title = (await get_page_title(page)).lower()
+        return (
+            any(m in url for m in ("wellstrade", "brokoverview"))
+            and any(m in title for m in ("brokerage overview", "wellstrade"))
+        )
+
+    async def _try_restore_cookies(self):
+        """Try to restore a previous session from saved cookies.
+
+        Returns True if session was restored, False otherwise.
+        """
+        try:
+            await self._browser.cookies.load(self.COOKIES_PATH)
+            page = await self._browser.get(
+                "https://wfawellstrade.wellsfargo.com/BW/brokoverview.do"
+            )
+            await wait_for_ready_state(page)
+
+            if await self._is_logged_in(page):
+                broker_event("✓ Wells Fargo session restored from cookies", logger=logger)
+                self._page = page
+                self._is_authenticated = True
+                return True
+        except (ValueError, FileNotFoundError, OSError):
+            pass
+        except Exception as e:
+            logger.debug("Cookie restore failed: %s", e)
+        return False
+
+    async def _save_cookies(self):
+        """Save current browser cookies for future sessions."""
+        try:
+            await self._browser.cookies.save(self.COOKIES_PATH)
+            logger.debug("Saved Wells Fargo cookies")
+        except Exception as e:
+            logger.debug("Could not save cookies: %s", e)
+
     async def _authenticate(self):
         """Authenticate with Wells Fargo using browser automation."""
         try:
             # Start browser
-            browser_args = [
-                "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
-            ]
+            self._browser = await create_browser(headless=self._headless)
 
-            self._browser = await Browser.create(
-                browser_args=browser_args, headless=self._headless
-            )
+            # Try restoring previous session from cookies
+            if await self._try_restore_cookies():
+                return
 
             # Navigate to Wells Fargo Advisors login
             self._page = await self._browser.get("https://www.wellsfargoadvisors.com/")
             page = self._page
-            await asyncio.sleep(2)
+            await wait_for_ready_state(page)
 
-            # print(f"[DEBUG] Initial page loaded, URL: {page.url}")
-
-            # Enter username (exact selector from reference)
+            # Enter username
             username_input = await page.select("input[id=j_username]")
             await username_input.click()
             await username_input.clear_input()
             await username_input.send_keys(self._username)
 
-            # Enter password (exact selector from reference)
+            # Enter password
             password_input = await page.select("input[id=j_password]")
             await password_input.send_keys(self._password)
 
-            # Click sign on button using exact class selector from reference
+            # Click sign on button
             sign_on_button = await page.select(".button.button--login.button--signOn")
             await sign_on_button.click()
-
-            # print(f"[DEBUG] Sign on button clicked")
             broker_event("Waiting for login to process...", logger=logger)
 
             # Wait and check multiple times for navigation
@@ -118,25 +142,11 @@ class WellsFargoClient:
             ):  # Give the login a little longer before assuming puzzle
                 await asyncio.sleep(1)
 
-                try:
-                    current_url = await page.evaluate("window.location.href")
-                except (asyncio.TimeoutError, AttributeError, RuntimeError, TypeError):
-                    current_url = page.url
-
-                try:
-                    page_title = await page.evaluate("document.title")
-                except (asyncio.TimeoutError, AttributeError, RuntimeError, TypeError):
-                    page_title = ""
+                current_url = await get_page_url(page)
+                page_title = await get_page_title(page)
 
                 url_lower = (current_url or "").lower()
                 title_lower = page_title.lower()
-
-                # print(f"[DEBUG] Attempt {attempt + 1}/12 - URL: {current_url[:80]}... | Title: {page_title[:50]}...")
-
-                # Check for error in URL
-                if "error=yes" in url_lower:
-                    # print(f"[DEBUG] Login error detected in URL!")
-                    pass
 
                 if any(marker in url_lower for marker in success_url_markers) or any(
                     marker in title_lower for marker in success_title_markers
@@ -148,7 +158,6 @@ class WellsFargoClient:
 
                 if "interdiction" in url_lower:
                     needs_additional_verification = True
-                    # print(f"[DEBUG] 2FA required (interdiction detected)")
                     break
 
             if needs_additional_verification and not login_verified:
@@ -158,136 +167,44 @@ class WellsFargoClient:
                     logger=logger,
                 )
 
-            # Check if we got an error (anti-bot check)
+            # Check if we got an error (anti-bot check or CAPTCHA)
             if not login_verified and not needs_additional_verification:
-                # Check for anti-bot challenge
-                if "error=yes" in current_url.lower() or "login" in current_url.lower():
-                    broker_event(f"\n{'=' * 60}", logger=logger)
-                    broker_event(
-                        "⚠️  Anti-bot challenge detected!",
-                        level="warning",
-                        logger=logger,
-                    )
-                    broker_event(
-                        f"Current URL: {current_url}",
-                        level="warning",
-                        logger=logger,
-                    )
-                    broker_event(
-                        f"Page title: {page_title}",
-                        level="warning",
-                        logger=logger,
-                    )
-                    broker_event("\nPlease check the browser window:", logger=logger)
-                    broker_event(
-                        "  1. Solve any CAPTCHA/puzzle if shown", logger=logger
-                    )
-                    broker_event(
-                        "  2. Log in manually after solving the puzzle", logger=logger
-                    )
-                    broker_event("\nWaiting for login to complete...", logger=logger)
-                    broker_event(f"{'=' * 60}\n", logger=logger)
-                else:
-                    # Still haven't navigated - likely a puzzle or extra verification
-                    broker_event(f"Current URL: {current_url}", logger=logger)
-                    broker_event(f"Page title: {page_title}", logger=logger)
+                broker_event(
+                    "Login not completing - please check the browser window for CAPTCHA/puzzle and log in manually",
+                    level="warning",
+                    logger=logger,
+                )
 
-                    broker_event(f"\n{'=' * 60}", logger=logger)
-                    broker_event(
-                        "⚠️  Login not completing - likely a CAPTCHA/Puzzle!",
-                        level="warning",
-                        logger=logger,
+                async def _check_login():
+                    url = (await get_page_url(page)).lower()
+                    title = (await get_page_title(page)).lower()
+                    return ("wellstrade" in url or "brokoverview" in url) and (
+                        "brokerage overview" in title or "wellstrade" in title
                     )
-                    broker_event(
-                        "Please check the browser window and log in manually",
-                        level="warning",
-                        logger=logger,
-                    )
-                    broker_event("\nWaiting for login to complete...", logger=logger)
-                    broker_event(f"{'=' * 60}\n", logger=logger)
 
-                # Poll for successful login (up to 2 minutes)
-                broker_event("Polling for successful login...", logger=logger)
-                for poll_attempt in range(60):
-                    await asyncio.sleep(2)
-                    try:
-                        poll_url = await page.evaluate("window.location.href")
-                        poll_title = await page.evaluate("document.title")
-
-                        # Check if we successfully logged in
-                        if (
-                            "wellstrade" in poll_url.lower()
-                            or "brokoverview" in poll_url.lower()
-                        ) and any(
-                            keyword in poll_title.lower()
-                            for keyword in ["brokerage overview", "wellstrade"]
-                        ):
-                            broker_event("✓ Login successful!", logger=logger)
-                            login_verified = True
-                            break
-                    except Exception as exc:
-                        logger.debug(
-                            "Ignored transient error while polling Wells Fargo login state",
-                            exc_info=exc,
-                        )
+                if await poll_for_condition(_check_login, timeout=120, interval=2):
+                    broker_event("✓ Login successful!", logger=logger)
+                    login_verified = True
 
             # Handle 2FA if needed (check for INTERDICTION in URL as per reference)
-            try:
-                current_url = await page.evaluate("window.location.href")
-            except Exception as exc:
-                logger.debug(
-                    "Could not read Wells Fargo current URL via page.evaluate",
-                    exc_info=exc,
-                )
-                current_url = page.url
+            current_url = await get_page_url(page)
 
             if "dest=INTERDICTION" in current_url:
-                broker_event(f"\n{'=' * 60}", logger=logger)
                 broker_event(
-                    "⚠️  Wells Fargo 2FA required!", level="warning", logger=logger
+                    "Wells Fargo 2FA required - please complete verification in the browser window",
+                    level="warning",
+                    logger=logger,
                 )
-                broker_event(
-                    "Please complete 2FA in the browser window:", logger=logger
-                )
-                broker_event(
-                    "  - Select your 2FA method (SMS, email, etc.)", logger=logger
-                )
-                broker_event("  - Enter the code when prompted", logger=logger)
-                broker_event("  - Click submit", logger=logger)
-                broker_event("\nWaiting for 2FA to complete...", logger=logger)
-                broker_event(f"{'=' * 60}\n", logger=logger)
 
-                # Poll for 2FA completion (up to 120 seconds)
-                for attempt in range(60):
-                    await asyncio.sleep(2)
-                    try:
-                        current_url = await page.evaluate("window.location.href")
-                        page_title = await page.evaluate("document.title")
+                async def _check_2fa():
+                    url = (await get_page_url(page)).lower()
+                    return "interdiction" not in url
 
-                        # Check if we've moved past 2FA
-                        if "interdiction" not in current_url.lower():
-                            broker_event("✓ 2FA completed successfully", logger=logger)
-                            break
-                    except Exception as exc:
-                        logger.debug(
-                            "Ignored transient error while polling Wells Fargo 2FA state",
-                            exc_info=exc,
-                        )
+                if await poll_for_condition(_check_2fa, timeout=120, interval=2):
+                    broker_event("✓ 2FA completed successfully", logger=logger)
 
-            # Verify login was successful
-            # print(f"[DEBUG] Verifying login, login_verified={login_verified}")
-            try:
-                current_url = await page.evaluate("window.location.href")
-                page_title = await page.evaluate("document.title")
-            except Exception as exc:
-                logger.debug(
-                    "Could not read Wells Fargo URL/title during login verification",
-                    exc_info=exc,
-                )
-                current_url = page.url
-                page_title = ""
-
-            # print(f"[DEBUG] Final verification - URL: {current_url[:80]}... | Title: {page_title[:50]}...")
+            current_url = await get_page_url(page)
+            page_title = await get_page_title(page)
 
             # Check if we're already on the overview/accounts page
             already_on_overview = any(
@@ -298,20 +215,8 @@ class WellsFargoClient:
                 for keyword in ["brokerage overview", "wellstrade"]
             )
 
-            # print(f"[DEBUG] already_on_overview: {already_on_overview}")
-
             if "login" in current_url.lower() and not already_on_overview:
-                broker_event(
-                    "✗ Wells Fargo login failed - still on login page",
-                    level="error",
-                    logger=logger,
-                )
-                broker_event(
-                    f"Current URL: {current_url}",
-                    level="warning",
-                    logger=logger,
-                )
-                raise Exception("Wells Fargo login failed")
+                raise Exception(f"Wells Fargo login failed - still on login page: {current_url}")
 
             # Navigate to accounts overview page to enable account discovery
             # This ensures we have the accounts table available
@@ -320,13 +225,10 @@ class WellsFargoClient:
             )
 
             if not already_on_overview:
-                # print(f"[DEBUG] Navigating to brokoverview page...")
                 try:
-                    await page.get(
-                        "https://wfawellstrade.wellsfargo.com/BW/brokoverview.do"
+                    await navigate_and_wait(
+                        page, "https://wfawellstrade.wellsfargo.com/BW/brokoverview.do"
                     )
-                    await asyncio.sleep(3)
-                    # print(f"[DEBUG] After navigation, URL: {await page.evaluate('window.location.href') if page else 'unknown'}")
                 except Exception as e:
                     broker_event(
                         f"Warning: Could not navigate to overview page: {e}",
@@ -334,14 +236,10 @@ class WellsFargoClient:
                         logger=logger,
                         exc=e,
                     )
-            else:
-                # print(f"[DEBUG] Already on accounts overview page")
-                pass
-
             broker_event("✓ Wells Fargo authenticated successfully", logger=logger)
+            await self._save_cookies()
             self._page = page
             self._is_authenticated = True
-            # print(f"[DEBUG] self._page set: {self._page is not None}, self._is_authenticated: {self._is_authenticated}")
 
         except Exception as e:
             broker_event(
@@ -350,7 +248,6 @@ class WellsFargoClient:
                 logger=logger,
                 exc=e,
             )
-            traceback.print_exc()
             if self._browser:
                 await self._browser.stop()
                 self._browser = None
@@ -360,15 +257,7 @@ class WellsFargoClient:
     async def _extract_x_param(self):
         """Extract the dynamic _x parameter from current URL using regex."""
         try:
-            # Use JavaScript to get real URL since page.url may be stuck at about:blank
-            try:
-                current_url = await self._page.evaluate("window.location.href")
-            except Exception as exc:
-                logger.debug(
-                    "Could not read Wells Fargo URL while extracting _x parameter",
-                    exc_info=exc,
-                )
-                current_url = self._page.url
+            current_url = await get_page_url(self._page)
 
             match = re.search(r"_x=([^&]+)", current_url)
             if match:
@@ -390,21 +279,15 @@ class WellsFargoClient:
         """
         try:
             # Ensure we're on the accounts overview page; if not, navigate there and wait
-            try:
-                current_url = await self._page.evaluate("window.location.href")
-            except (asyncio.TimeoutError, AttributeError, RuntimeError, TypeError):
-                current_url = self._page.url
+            current_url = await get_page_url(self._page)
 
             if "brokoverview" not in (current_url or "").lower():
                 try:
-                    await self._page.get(
-                        "https://wfawellstrade.wellsfargo.com/BW/brokoverview.t.do"
+                    await navigate_and_wait(
+                        self._page, "https://wfawellstrade.wellsfargo.com/BW/brokoverview.t.do"
                     )
-                    await asyncio.sleep(3)
                 except Exception as nav_err:
-                    print(
-                        f"Warning: Unable to navigate to Wells Fargo accounts overview: {nav_err}"
-                    )
+                    logger.warning("Unable to navigate to accounts overview: %s", nav_err)
             else:
                 # Give the overview table a moment to populate after login
                 await asyncio.sleep(2)
@@ -442,25 +325,12 @@ class WellsFargoClient:
                 soup = BeautifulSoup(html, "html.parser")
                 account_rows = soup.select("tr[data-p_account]")
 
-            broker_event(
-                f"Found {len(account_rows)} account rows in HTML", logger=logger
-            )
-
-            # Debug: also check for any table rows
-            all_table_rows = soup.select("table tr")
-            broker_event(
-                f"Total table rows on page: {len(all_table_rows)}", logger=logger
-            )
-
             accounts = []
             account_index = 0  # Separate counter for non-"-1" accounts
             for idx, row in enumerate(account_rows):
                 # Skip "All Accounts" row (data-p_account="-1")
                 account_attr = row.get("data-p_account")
                 if account_attr == "-1":
-                    print(
-                        f"Skipping 'All Accounts' row (data-p_account={account_attr})"
-                    )
                     continue
 
                 try:
@@ -538,8 +408,7 @@ class WellsFargoClient:
             return accounts
 
         except Exception as e:
-            print(f"Error discovering accounts: {e}")
-            traceback.print_exc()
+            logger.error("Error discovering accounts: %s", e, exc_info=e)
             # Fallback to single account
             x_param = await self._extract_x_param() if self._page else ""
             return [
@@ -615,32 +484,10 @@ class WellsFargoClient:
                     )
 
             except (ValueError, IndexError, AttributeError) as e:
-                print(f"Error parsing holdings row: {e}")
+                logger.debug("Error parsing holdings row: %s", e)
                 continue
 
         return holdings
-
-    async def _current_url(self):
-        """Get current URL safely via JavaScript evaluation."""
-        try:
-            return await self._page.evaluate("window.location.href")
-        except Exception as exc:
-            logger.debug(
-                "Could not read Wells Fargo current URL via page.evaluate",
-                exc_info=exc,
-            )
-            return self._page.url
-
-    async def _page_title(self):
-        """Get page title safely via JavaScript evaluation."""
-        try:
-            return await self._page.evaluate("document.title")
-        except Exception as exc:
-            logger.debug(
-                "Could not read Wells Fargo page title via page.evaluate",
-                exc_info=exc,
-            )
-            return ""
 
     async def _goto_holdings(self, account_index, x_param):
         """Navigate to holdings page for the specified account."""
@@ -648,9 +495,8 @@ class WellsFargoClient:
         if x_param:
             holdings_url += f"&{x_param}"
 
-        print(f"  Navigating to: {holdings_url[:120]}...")
-        await self._page.get(holdings_url)
-        await asyncio.sleep(3)
+        logger.debug("Navigating to holdings: %s", holdings_url)
+        await navigate_and_wait(self._page, holdings_url)
 
     async def _goto_trade_form(self, account_param, ticker, side, x_param):
         """Navigate to trade form for the specified account and ticker."""
@@ -659,9 +505,8 @@ class WellsFargoClient:
         if x_param:
             trade_url += f"&{x_param}"
 
-        print(f"Navigating to trade URL: {trade_url}")
-        await self._page.get(trade_url)
-        await asyncio.sleep(3)
+        logger.debug("Navigating to trade: %s", trade_url)
+        await navigate_and_wait(self._page, trade_url)
 
     async def get_holdings(self, ticker=None):
         """Get holdings from all Wells Fargo accounts.
@@ -688,7 +533,7 @@ class WellsFargoClient:
             account_index = account["index"]
             x_param = account["x_param"]
 
-            print(f"\nFetching holdings for: {account_name}")
+            broker_event(f"Fetching holdings for: {account_name}", logger=logger)
 
             try:
                 # Navigate to holdings page for this account
@@ -708,7 +553,7 @@ class WellsFargoClient:
                 )
 
                 if any(marker in page_content_lower for marker in cloudflare_markers):
-                    print(f"  ⚠️ Error page detected for {account_name}")
+                    broker_event(f"Error page detected for {account_name}", level="warning", logger=logger)
                     continue
 
                 # Reuse previously fetched HTML
@@ -745,7 +590,7 @@ class WellsFargoClient:
                     logger=logger,
                     exc=e,
                 )
-                traceback.print_exc()
+
                 continue
 
         return all_holdings if all_holdings else None
@@ -767,10 +612,8 @@ class WellsFargoClient:
 
         await self._ensure_authenticated()
 
-        # Discover all accounts
-        print("Discovering Wells Fargo accounts...")
         accounts = await self._discover_accounts()
-        print(f"Found {len(accounts)} Wells Fargo account(s)")
+        broker_event(f"Found {len(accounts)} Wells Fargo account(s)", logger=logger)
 
         success_count = 0
 
@@ -784,23 +627,17 @@ class WellsFargoClient:
             # Reset price for this account (use per-account copy to avoid stale pricing)
             price_for_account = user_specified_price
 
-            print(f"\nTrading on: {account_name} (account param: {account_param})")
+            broker_event(f"Trading on: {account_name}", logger=logger)
 
             try:
                 # Navigate to trade page for this account WITH symbol pre-filled
                 await self._goto_trade_form(account_param, ticker, side, x_param)
 
-                # Debug: Check if we're on the right page
-                current_url = await self._current_url()
-                print(f"Current URL after navigation: {current_url}")
-
-                # Wait for the page body to be fully rendered
                 await self._page.wait_for("body", timeout=10)
 
-                # Set buy/sell action by directly manipulating form
-                print("Setting buy/sell action...")
+                # Set buy/sell action
+                action_text = "Buy" if side == "buy" else "Sell"
                 try:
-                    action_text = "Buy" if side == "buy" else "Sell"
                     result = await self._page.evaluate(f"""
                         (function() {{
                             const buySellInput = document.getElementById('BuySell');
@@ -815,31 +652,27 @@ class WellsFargoClient:
                         }})()
                     """)
                     if result:
-                        print(f"Set action to {action_text}")
+                        logger.debug("Set action to %s", action_text)
                         await asyncio.sleep(0.5)
                     else:
-                        print("Warning: Could not find BuySell elements")
+                        logger.warning("Could not find BuySell elements")
                 except Exception as e:
-                    print(f"Warning: Could not set BuySell: {e}")
+                    logger.warning("Could not set BuySell: %s", e)
 
-                # Verify quote loaded
-                print("Checking if quote loaded...")
+                # Wait for quote to load
+                await asyncio.sleep(2)
                 try:
-                    await asyncio.sleep(2)
                     quote_loaded = await self._page.evaluate(
                         "document.getElementById('last')?.value"
                     )
                     if quote_loaded and quote_loaded != "None" and quote_loaded.strip():
-                        print(f"Quote loaded: ${quote_loaded}")
+                        logger.debug("Quote loaded: $%s", quote_loaded)
                     else:
-                        print(
-                            f"Warning: Quote may not have loaded (value: '{quote_loaded}'), will use default pricing"
-                        )
+                        logger.debug("Quote may not have loaded (value: %r)", quote_loaded)
                 except Exception as e:
-                    print(f"Error checking quote: {e}")
+                    logger.debug("Error checking quote: %s", e)
 
                 # Enter quantity
-                print("Setting quantity...")
                 try:
                     result = await self._page.evaluate(f"""
                         (function() {{
@@ -854,13 +687,13 @@ class WellsFargoClient:
                         }})()
                     """)
                     if result:
-                        print(f"Quantity set to {result}")
+                        logger.debug("Quantity set to %s", result)
                         await asyncio.sleep(0.5)
                     else:
-                        print("Warning: Could not find OrderQuantity input field")
+                        logger.warning("Could not find OrderQuantity input field")
                         continue
                 except Exception as e:
-                    print(f"Error setting quantity: {e}")
+                    logger.warning("Error setting quantity: %s", e)
                     continue
 
                 # Get last price from page for limit orders
@@ -869,18 +702,14 @@ class WellsFargoClient:
                         last_price_str = await self._page.evaluate(
                             "document.getElementById('last')?.value"
                         )
-                        print(f"Retrieved last price: {last_price_str}")
-
                         if last_price_str and last_price_str.strip():
                             price_for_account = float(last_price_str.strip())
-                            print(f"Current stock price: ${price_for_account}")
+                            logger.debug("Current stock price: $%s", price_for_account)
                         else:
-                            print(
-                                "Could not get price from page, defaulting to $1 (will use limit order)"
-                            )
+                            logger.debug("Could not get price from page, defaulting to $1")
                             price_for_account = 1.00
                     except Exception as e:
-                        print(f"Error getting price: {e}")
+                        logger.debug("Error getting price: %s", e)
                         price_for_account = 1.00
 
                 # Determine order type
@@ -895,7 +724,7 @@ class WellsFargoClient:
                     limit_reason = "low-priced stock (Wells Fargo requirement)"
 
                 if use_limit_order:
-                    print(f"Setting order type to LIMIT ({limit_reason})...")
+                    logger.debug("Setting order type to LIMIT (%s)", limit_reason)
                     try:
                         result = await self._page.evaluate("""
                             (function() {
@@ -910,27 +739,23 @@ class WellsFargoClient:
                             })()
                         """)
                         if result:
-                            print("Set order type to Limit")
+                            logger.debug("Set order type to Limit")
                     except Exception as e:
-                        print(f"Warning setting order type: {e}")
+                        logger.warning("Could not set order type: %s", e)
 
                     await asyncio.sleep(0.5)
 
                     # Calculate limit price
                     if user_specified_price:
                         adjusted_price = round(user_specified_price, 2)
-                        print(f"Using user-specified price ${adjusted_price}")
+                        logger.debug("Using user-specified price $%s", adjusted_price)
                     else:
                         if side == "buy":
                             adjusted_price = round(price_for_account + 0.01, 2)
-                            print(
-                                f"Using last price ${price_for_account} + $0.01 for buy"
-                            )
+                            logger.debug("Using last price $%s + $0.01 for buy", price_for_account)
                         else:
                             adjusted_price = round(price_for_account - 0.01, 2)
-                            print(
-                                f"Using last price ${price_for_account} - $0.01 for sell"
-                            )
+                            logger.debug("Using last price $%s - $0.01 for sell", price_for_account)
 
                     if adjusted_price <= 0:
                         adjusted_price = 0.01
@@ -949,11 +774,11 @@ class WellsFargoClient:
                             }})()
                         """)
                         if result:
-                            print(f"Limit price set to ${adjusted_price}")
+                            logger.debug("Limit price set to $%s", adjusted_price)
                     except Exception as e:
-                        print(f"Warning setting limit price: {e}")
+                        logger.warning("Could not set limit price: %s", e)
                 else:
-                    print("Setting order type to MARKET...")
+                    logger.debug("Setting order type to MARKET")
                     try:
                         result = await self._page.evaluate("""
                             (function() {
@@ -968,13 +793,13 @@ class WellsFargoClient:
                             })()
                         """)
                         if result:
-                            print("Set order type to Market")
+                            logger.debug("Set order type to Market")
                             await asyncio.sleep(0.5)
                     except Exception as e:
-                        print(f"Warning setting order type: {e}")
+                        logger.warning("Could not set order type: %s", e)
 
                 # Set time in force to Day
-                print("Setting time in force to DAY...")
+                logger.debug("Setting time in force to DAY")
                 try:
                     result = await self._page.evaluate("""
                         (function() {
@@ -989,43 +814,28 @@ class WellsFargoClient:
                         })()
                     """)
                     if result:
-                        print("Set TIF to Day")
+                        logger.debug("Set TIF to Day")
                         await asyncio.sleep(0.5)
                 except Exception as e:
-                    print(f"Warning setting TIF: {e}")
+                    logger.warning("Could not set TIF: %s", e)
 
                 await asyncio.sleep(1)
 
                 # Click continue button
-                print("Clicking continue button...")
+                logger.debug("Clicking continue button")
                 continue_button = await self._page.select(
                     "button[id=actionbtnContinue]", timeout=5
                 )
                 if continue_button:
                     await continue_button.click()
-                    await asyncio.sleep(3)
+                    await wait_for_ready_state(self._page)
                 else:
-                    print("Warning: Could not find continue button")
+                    logger.warning("Could not find continue button for %s", account_name)
                     continue
 
-                # Check preview page
-                print("Checking order preview page...")
+                # Check for errors on preview page
                 try:
-                    page_title = await self._page_title()
-                    current_url = await self._current_url()
-                    print(f"Preview page title: {page_title}")
-                    print(f"Preview URL: {current_url}")
-                except Exception as exc:
-                    logger.debug(
-                        "Ignored transient error while reading Wells Fargo preview metadata",
-                        exc_info=exc,
-                    )
-
-                # Check for errors
-                try:
-                    error_texts = await self._page.evaluate("""
-                        Array.from(document.querySelectorAll('body')).map(el => el.textContent).join('\\n')
-                    """)
+                    error_texts = await self._page.evaluate("document.body.textContent || ''")
 
                     has_errors = False
                     error_messages = []
@@ -1040,14 +850,16 @@ class WellsFargoClient:
                                     break
 
                     if has_errors:
-                        print(f"Wells Fargo order errors for {account_name}:")
-                        for err in error_messages:
-                            print(f"  - {err}")
+                        broker_event(
+                            f"Order errors for {account_name}: {'; '.join(error_messages)}",
+                            level="error",
+                            logger=logger,
+                        )
                         continue
                     else:
-                        print("Order preview looks good (warnings are OK)")
+                        logger.debug("Order preview looks good")
                 except Exception as ex:
-                    print(f"Error checking for validation errors: {ex}")
+                    logger.debug("Error checking for validation errors: %s", ex)
 
                 # Find confirm button
                 confirm_button = None
@@ -1056,19 +868,16 @@ class WellsFargoClient:
                         ".btn-wfa-primary.btn-wfa-submit", timeout=5
                     )
                     if confirm_button:
-                        print("Found submit button (.btn-wfa-primary.btn-wfa-submit)")
+                        logger.debug("Found submit button (.btn-wfa-primary.btn-wfa-submit)")
                 except Exception as exc:
-                    logger.debug(
-                        "Could not find primary Wells Fargo submit button selector",
-                        exc_info=exc,
-                    )
+                    logger.debug("Primary submit selector not found, trying fallbacks", exc_info=exc)
                     for button_id in ["actionbtnContinue", "confirmBtn", "submitBtn"]:
                         try:
                             confirm_button = await self._page.select(
                                 f"button[id={button_id}]", timeout=2
                             )
                             if confirm_button:
-                                print(f"Found confirm button: {button_id}")
+                                logger.debug("Found confirm button: %s", button_id)
                                 break
                         except (
                             asyncio.TimeoutError,
@@ -1079,64 +888,45 @@ class WellsFargoClient:
                             continue
 
                 if not confirm_button:
-                    print(
-                        f"Wells Fargo order cannot be placed on {account_name} - no confirmation button found"
+                    broker_event(
+                        f"No confirmation button found for {account_name}",
+                        level="error",
+                        logger=logger,
                     )
-                    try:
-                        buttons = await self._page.evaluate("""
-                            Array.from(document.querySelectorAll('button')).map(btn => ({
-                                id: btn.id,
-                                class: btn.className,
-                                text: btn.textContent.trim().substring(0, 30)
-                            })).filter(b => b.id || b.text)
-                        """)
-                        print(f"Available buttons: {buttons[:5]}")
-                    except Exception as exc:
-                        logger.debug(
-                            "Ignored transient error while reading Wells Fargo submit button diagnostics",
-                            exc_info=exc,
-                        )
                     continue
 
                 # Check dry-run
                 dry_run = os.getenv("DRY_RUN", "false").lower() == "true"
                 if dry_run:
-                    print(
-                        f"[DRY RUN] Would {side} {qty} shares of {ticker} on {account_name}"
+                    broker_event(
+                        f"[DRY RUN] Would {side} {qty} shares of {ticker} on {account_name}",
+                        logger=logger,
                     )
                     success_count += 1
                     continue
 
                 # Submit order
-                print("Submitting order...")
+                logger.debug("Submitting order")
                 await confirm_button.click()
-                await asyncio.sleep(3)
+                await wait_for_ready_state(self._page)
 
                 # Check for success
                 try:
-                    final_title = await self._page_title()
-                    print(f"After submission - Title: {final_title}")
-
                     page_text = await self._page.evaluate("document.body.textContent")
 
                     success_patterns = [
                         "order has been placed",
                         "successfully",
-                        "Success",
                         "confirmed",
-                        "Confirmed",
-                        "Order Number",
                         "order number",
                         "has been received",
-                        "Acknowledgment",
+                        "acknowledgment",
                     ]
 
-                    is_success = any(
-                        pattern.lower() in page_text.lower()
-                        for pattern in success_patterns
-                    )
+                    page_text_lower = page_text.lower()
+                    is_success = any(p in page_text_lower for p in success_patterns)
 
-                    final_url = await self._current_url()
+                    final_url = await get_page_url(self._page)
                     if (
                         "confirmation" in final_url.lower()
                         or "orderack" in final_url.lower()
@@ -1145,15 +935,18 @@ class WellsFargoClient:
 
                     if is_success:
                         action_str = "Bought" if side == "buy" else "Sold"
-                        print(
-                            f"✓ {action_str} {qty} shares of {ticker} on {account_name}"
+                        broker_event(
+                            f"✓ {action_str} {qty} shares of {ticker} on {account_name}",
+                            logger=logger,
                         )
                         success_count += 1
                     else:
-                        print(
-                            f"Wells Fargo order may have failed on {account_name} - no clear success confirmation"
+                        broker_event(
+                            f"Order may have failed on {account_name} - no clear success confirmation",
+                            level="warning",
+                            logger=logger,
                         )
-                        print(f"Final URL: {final_url}")
+                        logger.debug("Final URL: %s", final_url)
 
                         errors_on_page = await self._page.evaluate("""
                             Array.from(document.querySelectorAll('.error, .error-message, [class*="error"], [class*="Error"]'))
@@ -1164,9 +957,9 @@ class WellsFargoClient:
                         if errors_on_page:
                             for error in errors_on_page:
                                 clean_error = " ".join(error.split())
-                                print(f"  ⚠ {clean_error}")
+                                broker_event(f"  ⚠ {clean_error}", level="warning", logger=logger)
                 except Exception as e:
-                    print(f"Could not verify order success: {e}")
+                    logger.warning("Could not verify order success: %s", e)
 
             except Exception as e:
                 broker_event(
@@ -1175,7 +968,7 @@ class WellsFargoClient:
                     logger=logger,
                     exc=e,
                 )
-                traceback.print_exc()
+
                 continue
 
         # Return True if at least one account succeeded, False if all failed
@@ -1215,7 +1008,7 @@ async def wellsfargoGetHoldings(ticker=None):
             logger=logger,
             exc=e,
         )
-        traceback.print_exc()
+
         return None
 
 
@@ -1258,7 +1051,7 @@ async def wellsfargoTrade(side, qty, ticker, price):
             logger=logger,
             exc=e,
         )
-        traceback.print_exc()
+
         return False
 
 
