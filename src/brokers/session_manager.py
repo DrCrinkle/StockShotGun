@@ -25,6 +25,7 @@ import brokers.dspac
 import brokers.sofi
 import brokers.webull
 import brokers.wellsfargo
+import brokers.chase
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ class BrokerSessionManager:
         "SoFi": (brokers.sofi, "get_sofi_session"),
         "Webull": (brokers.webull, "get_webull_session"),
         "WellsFargo": (brokers.wellsfargo, "get_wellsfargo_session"),
+        "Chase": (brokers.chase, "get_chase_session"),
     }
 
     def __init__(self):
