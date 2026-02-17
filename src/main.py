@@ -95,7 +95,7 @@ async def print_holdings(holdings):
                     if fallback_value is None and pos.get("price") is not None:
                         try:
                             fallback_value = float(pos["price"]) * float(quantity)
-                        except (TypeError, ValueError):
+                        except TypeError, ValueError:
                             fallback_value = None
                     current_value = fallback_value
 
@@ -364,7 +364,7 @@ def _sum_holdings_quantity(holdings: dict[str, Any] | None) -> int:
             quantity = pos.get("quantity", 0)
             try:
                 quantity_value = int(float(quantity))
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 quantity_value = 0
             total += max(0, quantity_value)
     return total
@@ -397,7 +397,8 @@ async def _run_batch_from_file(args, parser, context):
     validate_functions = {
         broker_name: BROKER_FUNCTIONS[broker_name]["validate"]
         for broker_name in brokers_to_use
-        if broker_name in BROKER_FUNCTIONS and "validate" in BROKER_FUNCTIONS.get(broker_name, {})
+        if broker_name in BROKER_FUNCTIONS
+        and "validate" in BROKER_FUNCTIONS.get(broker_name, {})
     }
 
     if context.mock_brokers:
@@ -470,7 +471,9 @@ async def _run_batch_from_file(args, parser, context):
             print(message)
 
     results = await order_processor.process_orders(
-        orders, trade_functions, cli_response_fn,
+        orders,
+        trade_functions,
+        cli_response_fn,
         validate_functions=validate_functions,
     )
 
@@ -589,7 +592,10 @@ async def _run_automate_from_recap(args, parser, context):
                 holdings_fn = BROKER_FUNCTIONS[broker_name]["holdings"]
                 try:
                     holdings = await holdings_fn(trigger["ticker"])
-                except Exception:
+                except Exception as exc:
+                    print(
+                        f"⚠ Holdings lookup failed for {trigger['ticker']} on {broker_name}: {exc}"
+                    )
                     holdings = None
                 quantity = _sum_holdings_quantity(holdings)
                 if quantity <= 0:
@@ -748,7 +754,9 @@ async def run_cli(args, parser, context) -> tuple[ExitCode, dict[str, Any]]:
         if context.output_format == "json":
             setup_out = io.StringIO()
             with contextlib.redirect_stdout(setup_out):
-                setup(non_interactive=context.non_interactive, broker_filter=args.broker)
+                setup(
+                    non_interactive=context.non_interactive, broker_filter=args.broker
+                )
             setup_logs = [
                 line for line in setup_out.getvalue().splitlines() if line.strip()
             ]
@@ -919,7 +927,8 @@ async def run_cli(args, parser, context) -> tuple[ExitCode, dict[str, Any]]:
     validate_functions = {
         broker_name: BROKER_FUNCTIONS[broker_name]["validate"]
         for broker_name in brokers_to_use
-        if broker_name in BROKER_FUNCTIONS and "validate" in BROKER_FUNCTIONS.get(broker_name, {})
+        if broker_name in BROKER_FUNCTIONS
+        and "validate" in BROKER_FUNCTIONS.get(broker_name, {})
     }
 
     # Create order for the processor

@@ -4,7 +4,13 @@ import os
 import asyncio
 import pyotp
 import traceback
-from brokers.browser_utils import create_browser, stop_browser, get_page_url, get_page_title, wait_for_ready_state
+from brokers.browser_utils import (
+    create_browser,
+    stop_browser,
+    get_page_url,
+    get_page_title,
+    wait_for_ready_state,
+)
 from curl_cffi import requests as curl_requests
 from brokers.base import rate_limiter
 
@@ -54,7 +60,7 @@ async def _sofi_authenticate(session_info):
                 cookies = await browser.cookies.get_all()
                 cookies_dict = {cookie.name: cookie.value for cookie in cookies}
                 return cookies_dict
-        except (ValueError, FileNotFoundError):
+        except ValueError, FileNotFoundError:
             pass
 
         # Perform fresh login
@@ -85,7 +91,7 @@ async def _sofi_authenticate(session_info):
         if not (current_url and "overview" in current_url):
             try:
                 twofa_input = await page.select("input[id=code]", timeout=3)
-            except (asyncio.TimeoutError, AttributeError):
+            except asyncio.TimeoutError, AttributeError:
                 twofa_input = None
 
             if not twofa_input:
@@ -96,7 +102,7 @@ async def _sofi_authenticate(session_info):
                 if not (current_url and "overview" in current_url):
                     try:
                         twofa_input = await page.select("input[id=code]", timeout=2)
-                    except (asyncio.TimeoutError, AttributeError):
+                    except asyncio.TimeoutError, AttributeError:
                         twofa_input = None
 
         if twofa_input:
@@ -114,6 +120,7 @@ async def _sofi_authenticate(session_info):
             else:
                 print("SoFi 2FA required. Please check your device for the code.")
                 from tui.input_handler import tui_async_input
+
                 sms_code = await tui_async_input("Enter SoFi 2FA code: ")
                 await twofa_input.send_keys(sms_code)
 
@@ -127,7 +134,9 @@ async def _sofi_authenticate(session_info):
         current_url = await get_page_url(page)
         if current_url and "overview" not in current_url:
             page_title = await get_page_title(page)
-            page_text = await page.evaluate("document.body?.innerText?.substring(0, 500)")
+            page_text = await page.evaluate(
+                "document.body?.innerText?.substring(0, 500)"
+            )
             print(f"SoFi post-login page: {current_url}")
             print(f"SoFi page title: {page_title}")
             print(f"SoFi page content: {page_text}")
@@ -136,7 +145,10 @@ async def _sofi_authenticate(session_info):
             if isinstance(current_url, str) and "challenge" in current_url.lower():
                 print("SoFi second challenge detected. Please complete it manually.")
                 from tui.input_handler import tui_async_input
-                await tui_async_input("Press Enter after completing the SoFi challenge...")
+
+                await tui_async_input(
+                    "Press Enter after completing the SoFi challenge..."
+                )
                 await asyncio.sleep(2)
 
         # Save cookies
@@ -263,6 +275,14 @@ async def sofiValidate(side, qty, ticker, price):
         (False, reason): Ticker not found
         (None, ""): No credentials
     """
+    await rate_limiter.wait_if_needed("SoFi")
+
+    from brokers.session_manager import session_manager
+
+    session = await session_manager.get_session("SoFi")
+    if not session:
+        return (None, "")
+
     try:
         stock_price = await _sofi_get_stock_price(ticker)
         if stock_price is None:
@@ -355,7 +375,9 @@ async def sofiTrade(side, qty, ticker, price):
 
                 # Security-level errors apply to all accounts — stop early
                 if error_text and "cannot be traded" in error_text:
-                    print(f"{ticker} cannot be traded on SoFi, skipping remaining accounts")
+                    print(
+                        f"{ticker} cannot be traded on SoFi, skipping remaining accounts"
+                    )
                     break
 
         # Return True if at least one account succeeded

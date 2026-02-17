@@ -53,7 +53,7 @@ async def _discover_accounts(
         account_id = None
         try:
             account_id = await asyncio.to_thread(wb.get_account_id, i)
-        except (IndexError, AttributeError, KeyError):
+        except IndexError, AttributeError, KeyError:
             # Expected: no more accounts at this index
             break
         except Exception as e:
@@ -392,9 +392,9 @@ async def get_webull_session(session_manager):
                     test_account = await asyncio.to_thread(wb.get_account_id, 0)
                 except (AttributeError, TypeError) as e:
                     print(f"⚠ Could not verify account ID (method error): {e}")
-                except Exception:
+                except Exception as e:
                     # Other unexpected errors - continue with provided account_id
-                    pass
+                    print(f"⚠ Could not verify account ID (unexpected error): {e}")
 
                 if test_account is None:
                     print(
