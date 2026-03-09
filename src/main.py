@@ -28,7 +28,7 @@ from automation_recap import AutomationRecapStore, parse_chat_recap
 
 
 def _json_requested_from_argv(argv):
-    return "--output" in argv and "json" in argv
+    return _extract_option_value(argv, "--output").lower() == "json"
 
 
 def _extract_option_value(argv, option_name):
@@ -353,6 +353,18 @@ def _today_mmdd(today_override: str) -> str:
     return datetime.now().strftime("%m/%d")
 
 
+def _resolve_today_date(reference_now: datetime, today_override: str):
+    if not today_override:
+        return reference_now.date()
+
+    try:
+        parsed_today = datetime.strptime(today_override, "%m/%d")
+    except ValueError as exc:
+        raise ValueError("today override must use MM/DD format") from exc
+
+    return reference_now.replace(month=parsed_today.month, day=parsed_today.day).date()
+
+
 def _sum_holdings_quantity(holdings: dict[str, Any] | None) -> int:
     if not holdings:
         return 0
@@ -516,10 +528,14 @@ async def _run_automate_from_recap(args, parser, context):
 
     try:
         now = datetime.now()
-        today_mmdd = _today_mmdd(args.today_mmdd)
+        try:
+            today_date = _resolve_today_date(now, args.today_mmdd)
+        except ValueError as exc:
+            _raise_parser_error(parser, str(exc), context)
+        today_mmdd = today_date.strftime("%m/%d")
         ingestion = store.record_recap(recap_text, upcoming, stock_back, now)
 
-        due_buys = store.get_due_buy_signals(today_mmdd)
+        due_buys = store.get_due_buy_signals(today_date)
         pending_sells = store.get_pending_sell_triggers()
         available_brokers = _default_brokers_for_trade()
 
@@ -534,7 +550,7 @@ async def _run_automate_from_recap(args, parser, context):
             buy_brokers = available_brokers
 
         orders = []
-        order_sources: list[tuple[str, int]] = []
+        order_sources: list[dict[str, Any]] = []
 
         for signal in due_buys:
             if not buy_brokers:
@@ -548,7 +564,13 @@ async def _run_automate_from_recap(args, parser, context):
                     "selected_brokers": buy_brokers,
                 }
             )
-            order_sources.append(("buy", int(signal["id"])))
+            order_sources.append(
+                {
+                    "type": "buy",
+                    "id": int(signal["id"]),
+                    "expected_brokers": list(buy_brokers),
+                }
+            )
 
         for trigger in pending_sells:
             trigger_brokers = json.loads(trigger["brokers_json"])
@@ -577,7 +599,13 @@ async def _run_automate_from_recap(args, parser, context):
                             "selected_brokers": [broker_name],
                         }
                     )
-                    order_sources.append(("sell", int(trigger["id"])))
+                    order_sources.append(
+                        {
+                            "type": "sell",
+                            "id": int(trigger["id"]),
+                            "expected_brokers": [broker_name],
+                        }
+                    )
                 continue
 
             try:
@@ -609,7 +637,13 @@ async def _run_automate_from_recap(args, parser, context):
                         "selected_brokers": [broker_name],
                     }
                 )
-                order_sources.append(("sell", int(trigger["id"])))
+                order_sources.append(
+                    {
+                        "type": "sell",
+                        "id": int(trigger["id"]),
+                        "expected_brokers": [broker_name],
+                    }
+                )
 
         if not orders:
             return ExitCode.SUCCESS, {
@@ -708,12 +742,28 @@ async def _run_automate_from_recap(args, parser, context):
 
         successful_buy_ids = set()
         successful_sell_ids = set()
+        completed_brokers_by_source: dict[tuple[str, int], set[str]] = {}
+        expected_brokers_by_source: dict[tuple[str, int], set[str]] = {}
         for idx, status in enumerate(results.get("statuses", [])):
             if idx >= len(order_sources):
                 continue
-            if not status.get("successful"):
+            source = order_sources[idx]
+            source_key = (source["type"], source["id"])
+            expected_brokers_by_source.setdefault(source_key, set()).update(
+                source["expected_brokers"]
+            )
+            completed_brokers_by_source.setdefault(source_key, set()).update(
+                status.get("successful", [])
+            )
+
+        for source_key, expected_brokers in expected_brokers_by_source.items():
+            if not expected_brokers:
                 continue
-            source_type, source_id = order_sources[idx]
+            completed_brokers = completed_brokers_by_source.get(source_key, set())
+            if completed_brokers != expected_brokers:
+                continue
+
+            source_type, source_id = source_key
             if source_type == "buy":
                 successful_buy_ids.add(source_id)
             if source_type == "sell":

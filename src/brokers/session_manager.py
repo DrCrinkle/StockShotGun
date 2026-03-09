@@ -33,6 +33,8 @@ logger = logging.getLogger(__name__)
 class BrokerSessionManager:
     """Manages authentication sessions for all brokers to avoid repeated logins."""
 
+    SELF_LOCKING_BROKERS = frozenset({"Robinhood"})
+
     # Mapping of broker names to their modules and session getter functions
     BROKER_MODULES = {
         "Robinhood": (brokers.robinhood, "get_robinhood_session"),
@@ -99,8 +101,13 @@ class BrokerSessionManager:
             print(f"⚠️  Session getter not found for {broker_name}")
             return None
 
-        # Call the session getter function with self as parameter
-        return await session_getter(self)
+        # Most broker getters mutate shared state without taking the session lock.
+        # Centralize that locking here to prevent duplicate initialization flows.
+        if broker_name in self.SELF_LOCKING_BROKERS:
+            return await session_getter(self)
+
+        async with self._get_session_lock(broker_name):
+            return await session_getter(self)
 
     async def initialize_selected_sessions(self, broker_names):
         """Initialize sessions only for the specified brokers."""

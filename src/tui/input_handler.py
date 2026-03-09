@@ -1,6 +1,7 @@
 """Input handling and modal dialogs for the TUI."""
 
 import asyncio
+from collections import deque
 import urwid
 from tui.config import MODAL_WIDTH, MODAL_HEIGHT
 from cli_runtime import CliRuntimeError, ExitCode
@@ -21,7 +22,10 @@ class TUIInputHandler:
 
     def __init__(self):
         self.loop = None
-        self._pending_future = None
+        self._pending_requests = deque()
+        self._active_request = None
+        self._modal_widget = None
+        self.input_edit = None
 
     def set_loop(self, loop):
         self.loop = loop
@@ -36,19 +40,20 @@ class TUIInputHandler:
         if not self.loop:
             return await asyncio.to_thread(original_input, prompt_text)
 
-        future = asyncio.get_event_loop().create_future()
-        self._pending_future = future
+        future = asyncio.get_running_loop().create_future()
+        self._pending_requests.append((prompt_text, future))
+        if self._active_request is None:
+            self._show_next_prompt()
+        return await future
 
-        self._show_input_modal(prompt_text)
-
-        result = await future
-        return result
-
-    def _show_input_modal(self, prompt_text):
+    def _show_next_prompt(self):
         """Create and display the input modal dialog."""
         loop = self.loop
-        if loop is None:
+        if loop is None or self._active_request is not None or not self._pending_requests:
             return
+
+        prompt_text, future = self._pending_requests.popleft()
+        self._active_request = (prompt_text, future)
 
         # Create input widget
         self.input_edit = urwid.Edit("")
@@ -87,7 +92,7 @@ class TUIInputHandler:
         )
 
         # Create overlay
-        self.overlay = urwid.Overlay(
+        self._modal_widget = urwid.Overlay(
             dialog,
             loop.widget,
             align="center",
@@ -98,7 +103,7 @@ class TUIInputHandler:
 
         # Store original widget and show overlay
         self.original_widget = loop.widget
-        loop.widget = self.overlay
+        loop.widget = self._modal_widget
 
         # Override the unhandled input to handle our modal
         self.original_unhandled_input = loop.unhandled_input
@@ -128,17 +133,24 @@ class TUIInputHandler:
     def _submit_input(self):
         """Handle input submission - resolves the pending future."""
         result = self.input_edit.edit_text
-        self._close_modal()
-        if self._pending_future and not self._pending_future.done():
-            self._pending_future.set_result(result)
-            self._pending_future = None
+        self._finish_active_request(result)
 
     def _cancel_input(self):
         """Handle input cancellation - resolves with empty string."""
+        self._finish_active_request("")
+
+    def _finish_active_request(self, result):
+        active_request = self._active_request
+        if active_request is None:
+            return
+
+        _, future = active_request
         self._close_modal()
-        if self._pending_future and not self._pending_future.done():
-            self._pending_future.set_result("")
-            self._pending_future = None
+        self._active_request = None
+        if not future.done():
+            future.set_result(result)
+        if self._pending_requests:
+            self._show_next_prompt()
 
     def _close_modal(self):
         """Close the modal dialog and restore original widget."""
@@ -147,6 +159,8 @@ class TUIInputHandler:
             loop.widget = self.original_widget
             loop.unhandled_input = self.original_unhandled_input
             loop.draw_screen()
+        self._modal_widget = None
+        self.input_edit = None
 
 
 # Global input handler
@@ -197,9 +211,13 @@ tui_compatible_input = TUICompatibleInput()
 
 def setup_tui_input_interception():
     """Setup input interception for the TUI."""
-    __builtins__["input"] = tui_compatible_input
+    import builtins
+
+    builtins.input = tui_compatible_input
 
 
 def restore_original_input():
     """Restore the original input function."""
-    __builtins__["input"] = original_input
+    import builtins
+
+    builtins.input = original_input

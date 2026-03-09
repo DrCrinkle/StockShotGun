@@ -15,11 +15,13 @@ import time
 import logging
 import traceback
 import threading
+from pathlib import Path
 from typing import Dict, Optional, Any, ClassVar
 from dotenv import load_dotenv
 from cli_runtime import CliRuntimeError, ExitCode
 
-load_dotenv("./.env")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(PROJECT_ROOT / ".env")
 
 # Global HTTP client with connection pooling
 http_client = httpx.AsyncClient(
@@ -309,28 +311,34 @@ async def retry_operation(operation, max_attempts=RETRY_ATTEMPTS, delay=RETRY_DE
 async def _login_broker(broker_api, broker_name):
     """Helper function to handle login flow for BBAE and DSPAC brokers"""
     try:
-        broker_api.make_initial_request()
-        login_ticket = broker_api.generate_login_ticket_email()
+        await asyncio.to_thread(broker_api.make_initial_request)
+        login_ticket = await asyncio.to_thread(broker_api.generate_login_ticket_email)
 
         if login_ticket.get("Data") is None:
             raise Exception("Invalid response from generating login ticket")
 
         if login_ticket.get("Data").get("needSmsVerifyCode", False):
+            from tui.input_handler import tui_async_input
             if login_ticket.get("Data").get("needCaptchaCode", False):
-                captcha_image = broker_api.request_captcha()
-                captcha_image.save(f"./{broker_name}captcha.png", format="PNG")
-                captcha_input = input(
-                    f"CAPTCHA image saved to ./{broker_name}captcha.png. Please open it and type in the code: "
+                captcha_image = await asyncio.to_thread(broker_api.request_captcha)
+                captcha_path = PROJECT_ROOT / f"{broker_name}captcha.png"
+                await asyncio.to_thread(captcha_image.save, captcha_path, format="PNG")
+                captcha_input = await tui_async_input(
+                    f"CAPTCHA image saved to {captcha_path}. Please open it and type in the code: "
                 )
-                broker_api.request_email_code(captcha_input=captcha_input)
+                await asyncio.to_thread(
+                    broker_api.request_email_code, captcha_input=captcha_input
+                )
             else:
-                broker_api.request_email_code()
+                await asyncio.to_thread(broker_api.request_email_code)
 
-            otp_code = input(f"Enter {broker_name} security code: ")
-            login_ticket = broker_api.generate_login_ticket_email(otp_code)
+            otp_code = await tui_async_input(f"Enter {broker_name} security code: ")
+            login_ticket = await asyncio.to_thread(
+                broker_api.generate_login_ticket_email, otp_code
+            )
 
-        login_response = broker_api.login_with_ticket(
-            login_ticket.get("Data").get("ticket")
+        login_response = await asyncio.to_thread(
+            broker_api.login_with_ticket, login_ticket.get("Data").get("ticket")
         )
         if login_response.get("Outcome") != "Success":
             raise Exception(f"Login failed. Response: {login_response}")
@@ -351,7 +359,7 @@ async def _get_broker_holdings(broker_api, broker_name, ticker=None):
     """Helper function to get holdings for BBAE and DSPAC brokers"""
     try:
         holdings_data = {}
-        holdings_response = broker_api.get_account_holdings()
+        holdings_response = await asyncio.to_thread(broker_api.get_account_holdings)
 
         if holdings_response.get("Outcome") != "Success":
             raise Exception(
@@ -363,7 +371,7 @@ async def _get_broker_holdings(broker_api, broker_name, ticker=None):
         if ticker:
             positions = [pos for pos in positions if pos.get("Symbol") == ticker]
 
-        account_info = broker_api.get_account_info()
+        account_info = await asyncio.to_thread(broker_api.get_account_info)
         account_number = account_info.get("Data").get("accountNumber")
 
         formatted_positions = [
