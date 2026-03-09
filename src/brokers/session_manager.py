@@ -140,11 +140,13 @@ class BrokerSessionManager:
         active_sessions = []
         for broker_name in broker_names:
             session_key = BrokerConfig.get_session_key(broker_name)
-            if (
-                session_key
-                and session_key in self.sessions
-                and self.sessions[session_key] is not None
-            ):
+            with self._lock:
+                has_session = (
+                    session_key
+                    and session_key in self.sessions
+                    and self.sessions[session_key] is not None
+                )
+            if has_session:
                 active_sessions.append(broker_name)
 
         if active_sessions:
@@ -165,9 +167,10 @@ class BrokerSessionManager:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
-        active_sessions = [
-            name for name, session in self.sessions.items() if session is not None
-        ]
+        with self._lock:
+            active_sessions = [
+                name for name, session in self.sessions.items() if session is not None
+            ]
         print(
             f"✅ Session initialization complete. Active sessions: {', '.join(active_sessions)}"
         )
@@ -180,8 +183,27 @@ class BrokerSessionManager:
             self._initialized.clear()
 
     async def shutdown(self):
-        """Shutdown and close HTTP client (call only on application exit)."""
-        from base import http_client
+        """Shutdown browser clients and close HTTP client (call only on application exit)."""
+        # Close any browser-based broker clients
+        with self._lock:
+            session_items = list(self.sessions.items())
+
+        for session_key, session in session_items:
+            if not isinstance(session, dict):
+                continue
+            client = session.get("client")
+            if client and hasattr(client, "__aexit__"):
+                try:
+                    await client.__aexit__(None, None, None)
+                    logger.info("Closed browser client", extra={"broker": session_key})
+                except Exception as e:
+                    logger.warning(
+                        "Error closing browser client",
+                        extra={"broker": session_key},
+                        exc_info=e,
+                    )
+
+        from brokers.base import http_client
 
         try:
             await http_client.aclose()
