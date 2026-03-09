@@ -64,6 +64,17 @@ def _parse_mmdd(value: str | None) -> tuple[int, int] | None:
     return month, day
 
 
+def _resolve_target_date(created_date: date, month: int, day: int) -> date | None:
+    for year in range(created_date.year, created_date.year + 8):
+        try:
+            candidate = date(year, month, day)
+        except ValueError:
+            continue
+        if candidate >= created_date:
+            return candidate
+    return None
+
+
 def _is_due_buy_signal(created_at: str, target_mmdd: str | None, today: date) -> bool:
     if not target_mmdd:
         return True
@@ -78,9 +89,9 @@ def _is_due_buy_signal(created_at: str, target_mmdd: str | None, today: date) ->
         return False
 
     month, day = parsed_target
-    target_date = date(created_date.year, month, day)
-    if target_date < created_date:
-        target_date = date(created_date.year + 1, month, day)
+    target_date = _resolve_target_date(created_date, month, day)
+    if target_date is None:
+        return False
 
     return target_date <= today
 
