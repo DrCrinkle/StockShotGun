@@ -36,18 +36,14 @@ async def dspacTrade(side, qty, ticker, price):
             return False
 
         if side == "buy":
-            response = await asyncio.to_thread(
-                dspac.execute_buy,
-                ticker,
-                qty,
-                account_number,
-                dry_run=False,
-            )
+            def _validate_and_buy():
+                v = dspac.validate_buy(ticker, qty, 1, account_number)
+                return dspac.execute_buy(ticker, qty, account_number,
+                    dry_run=False, validation_response=v)
+            response = await asyncio.to_thread(_validate_and_buy)
         elif side == "sell":
             holdings_response = await asyncio.to_thread(
-                dspac.check_stock_holdings,
-                ticker,
-                account_number,
+                dspac.check_stock_holdings, ticker, account_number
             )
             available_qty = holdings_response.get("Data").get("enableAmount", 0)
 
@@ -57,14 +53,10 @@ async def dspacTrade(side, qty, ticker, price):
                 )
                 return False
 
-            response = await asyncio.to_thread(
-                dspac.execute_sell,
-                ticker,
-                qty,
-                account_number,
-                price,
-                dry_run=False,
-            )
+            def _validate_and_sell():
+                dspac.validate_sell(ticker, qty, account_number)
+                return dspac.execute_sell(ticker, qty, account_number, price, dry_run=False)
+            response = await asyncio.to_thread(_validate_and_sell)
         else:
             print(f"Invalid trade side: {side}")
             return False
@@ -107,9 +99,11 @@ async def dspacValidate(side, qty, ticker, price):
             return (False, "No account found")
 
         if side == "buy":
-            response = await asyncio.to_thread(
-                dspac.execute_buy, ticker, qty, account_number, dry_run=True
-            )
+            def _validate_and_dry_run():
+                v = dspac.validate_buy(ticker, qty, 1, account_number)
+                return dspac.execute_buy(ticker, qty, account_number,
+                    dry_run=True, validation_response=v)
+            response = await asyncio.to_thread(_validate_and_dry_run)
         else:
             holdings_response = await asyncio.to_thread(
                 dspac.check_stock_holdings, ticker, account_number
@@ -117,9 +111,12 @@ async def dspacValidate(side, qty, ticker, price):
             available_qty = holdings_response.get("Data", {}).get("enableAmount", 0)
             if int(available_qty) < qty:
                 return (False, f"Insufficient shares ({available_qty} available)")
-            response = await asyncio.to_thread(
-                dspac.execute_sell, ticker, qty, account_number, price, dry_run=True
+            validation = await asyncio.to_thread(
+                dspac.validate_sell, ticker, qty, account_number
             )
+            if validation.get("Outcome") != "Success":
+                return (False, validation.get("Message", "Sell validation failed")[:100])
+            return (True, "")
 
         if response.get("Outcome") == "Success":
             return (True, "")
