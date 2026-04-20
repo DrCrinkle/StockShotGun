@@ -14,14 +14,14 @@ current_broker: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 
 
 class OrderBatchProcessor:
-    """Process orders in batches for better performance."""
 
     def __init__(self, batch_size=5, default_broker_timeout=25):
         self.batch_size = batch_size
         self.default_broker_timeout = default_broker_timeout
         self.broker_timeouts = {
-            "Chase": 45,
-            "WellsFargo": 45,
+            "Chase": 600,
+            "WellsFargo": 600,
+            "SoFi": 600,
         }
 
     def _get_broker_timeout(self, broker):

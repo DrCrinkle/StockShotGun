@@ -5,12 +5,30 @@ import json
 import asyncio
 import logging
 import traceback
+import uuid
 from brokers.browser_utils import create_browser, stop_browser, get_page_url, wait_for_ready_state, poll_for_condition
 from brokers.base import broker_event
 
-# Chase API endpoints
-POSITIONS_URL = "https://secure.chase.com/svc/wr/dwm/secure/gateway/investments/servicing/inquiry-maintenance/digital-investment-positions/v2/positions"
+# Chase API base
+_SVC = "https://secure.chase.com/svc/wr/dwm/secure/gateway/investments"
+
+# Holdings endpoints
+POSITIONS_URL = f"{_SVC}/servicing/inquiry-maintenance/digital-investment-positions/v2/positions"
 ACCOUNT_OPTIONS_URL = "https://secure.chase.com/svc/rr/accounts/secure/v2/portfolio/account/options/list2"
+
+# Trade API endpoints (captured via XHR interception 2026-02-25)
+QUOTE_URL = f"{_SVC}/servicing/inquiry-maintenance/digital-equity-quote/v1/quotes"
+CASH_VIOLATIONS_URL = f"{_SVC}/servicing/inquiry-maintenance/digital-equity-quote/v2/cash-trade-violations"
+BALANCE_SUMMARY_URL = f"{_SVC}/transactions/transaction-capture/digital-trade-order-entry/v1/account/balance/summaries"
+OPEN_ORDERS_URL = f"{_SVC}/servicing/inquiry-maintenance/digital-trade-orders/v1/summaries"
+BUY_VALIDATE_URL = f"{_SVC}/servicing/investor-servicing/digital-equity-trades/v1/buy-order-validations"
+BUY_ORDERS_URL = f"{_SVC}/servicing/investor-servicing/digital-equity-trades/v1/buy-orders"
+SELL_VALIDATE_URL = f"{_SVC}/servicing/investor-servicing/digital-equity-trades/v1/sell-order-validations"
+SELL_ORDERS_URL = f"{_SVC}/servicing/investor-servicing/digital-equity-trades/v1/sell-orders"
+ORDER_STATUS_URL = f"{_SVC}/servicing/inquiry-maintenance/digital-trade-orders/v1/statuses"
+
+# Trade UI entry point (still used to establish authenticated fetch context)
+TRADE_ENTRY_URL = "https://secure.chase.com/web/auth/dashboard#/dashboard/oi-trade/equity/entry"
 logger = logging.getLogger(__name__)
 
 
@@ -34,6 +52,7 @@ class ChaseClient:
         self._page = None
         self._accounts = None
         self._is_authenticated = False
+        self._trade_lock = asyncio.Lock()
 
     async def __aenter__(self):
         """Async context manager entry. Browser created lazily on first operation."""
@@ -469,7 +488,7 @@ class ChaseClient:
         Returns the parsed JSON response, or None on failure.
         """
         body_js = json.dumps(body) if body else "undefined"
-        stash_key = f"__chaseApi_{id(self)}"
+        stash_key = f"__chaseApi_{uuid.uuid4().hex[:8]}"
 
         # Fire the fetch and stash result on window
         fire_js = f"""
@@ -744,189 +763,269 @@ class ChaseClient:
 
         return all_holdings if all_holdings else None
 
+    async def _mds_click(self, selector):
+        """Dispatch click events on an MDS web component (shadow DOM compatible)."""
+        return await self._page.evaluate(f"""
+            (function() {{
+                const el = document.querySelector({json.dumps(selector)});
+                if (!el) return false;
+                ['mousedown', 'mouseup', 'click'].forEach(t =>
+                    el.dispatchEvent(new MouseEvent(t, {{ bubbles: true, cancelable: true }}))
+                );
+                return true;
+            }})()
+        """)
+
+    async def _mds_set_input(self, host_id, value):
+        """Set value on an MDS-TEXT-INPUT by writing into its shadow DOM input."""
+        return await self._page.evaluate(f"""
+            (function() {{
+                const host = document.querySelector({json.dumps(host_id)});
+                if (!host || !host.shadowRoot) return false;
+                const input = host.shadowRoot.querySelector('input');
+                if (!input) return false;
+                input.focus();
+                input.value = {json.dumps(str(value))};
+                input.dispatchEvent(new InputEvent('input', {{ bubbles: true, data: {json.dumps(str(value))}, inputType: 'insertText' }}));
+                input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                host.setAttribute('value', {json.dumps(str(value))});
+                return true;
+            }})()
+        """)
+
+    async def _mds_select_option(self, option_value):
+        """Select an MDS-SELECT-OPTION by value and notify the parent MDS-SELECT."""
+        return await self._page.evaluate(f"""
+            (function() {{
+                const opt = document.querySelector('[data-testid="selectedOption_{option_value}"]');
+                if (!opt) return false;
+                ['mousedown', 'mouseup', 'click'].forEach(t =>
+                    opt.dispatchEvent(new MouseEvent(t, {{ bubbles: true, cancelable: true }}))
+                );
+                opt.setAttribute('selected', 'true');
+                const select = document.querySelector('#orderTypeDropdown');
+                if (select) {{
+                    select.setAttribute('value', {json.dumps(option_value)});
+                    select.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    select.dispatchEvent(new CustomEvent('mds-select-change', {{ bubbles: true, detail: {{ value: {json.dumps(option_value)} }} }}));
+                }}
+                return true;
+            }})()
+        """)
+
+    async def _wait_for_hash(self, fragment, timeout=15):
+        """Poll until window.location.hash contains fragment."""
+        async def _check():
+            current = await self._page.evaluate("window.location.hash")
+            return fragment in (current or "")
+        return await poll_for_condition(_check, timeout=timeout, interval=0.5)
+
     async def trade(self, side, qty, ticker, price):
-        """Execute a trade on Chase.
+        """Execute a trade on Chase using the direct API flow.
+
+        Observed endpoints (captured via XHR interception 2026-02-25):
+          GET  .../digital-equity-quote/v1/quotes?security-symbol-code={TICKER}&...
+          POST .../digital-equity-trades/v1/{buy|sell}-order-validations  → FIX order ID
+          POST .../digital-equity-trades/v1/{buy|sell}-orders
+          GET  .../digital-trade-orders/v1/statuses?account-identifier=...&order-identifier=...
 
         Args:
             side: "buy" or "sell"
             qty: Number of shares
             ticker: Stock symbol
-            price: Optional limit price (None for market order)
+            price: Limit price (None = market order)
 
         Returns:
-            True if trade successful, False otherwise
+            True if any account trade succeeded, False otherwise
         """
+        # Serialize trades — single browser can only do one at a time
+        # Acquire lock outside timeout so queued orders don't timeout while waiting
+        async with self._trade_lock:
+            return await asyncio.wait_for(
+                self._trade_impl(side, qty, ticker, price),
+                timeout=120,
+            )
+
+    async def _trade_impl(self, side, qty, ticker, price):
         await self._ensure_authenticated()
 
-        # Discover accounts
         account_ids = await self._get_account_ids()
         if not account_ids:
             broker_event("No Chase accounts found for trading", level="error", logger=logger)
             return False
 
-        # Build name map from account metadata
-        account_name_map = {}
-        if self._accounts:
-            for acct in self._accounts:
-                account_name_map[acct["id"]] = acct.get("name") or acct["id"]
+        account_map = {acct["id"]: acct for acct in (self._accounts or [])}
+        order_type = "LIMIT" if price else "MARKET"
+        validate_url = BUY_VALIDATE_URL if side == "buy" else SELL_VALIDATE_URL
+        submit_url = BUY_ORDERS_URL if side == "buy" else SELL_ORDERS_URL
+
+        # Navigate to trade page to establish authenticated API context
+        await self._page.get(TRADE_ENTRY_URL)
+        await asyncio.sleep(3)
+
+        # ── Step 1: Get quote (market price + eligibility flags) ─────────────
+        quote_url = (
+            f"{QUOTE_URL}?security-symbol-code={ticker.upper()}"
+            f"&security-validate-indicator=true&dollar-based-trading-include-indicator=true"
+        )
+        quote = await self._call_chase_api(quote_url, method="GET")
+        if not quote or "error" in quote:
+            broker_event(f"Quote fetch failed for {ticker}: {quote}", level="error", logger=logger)
+            return False
+
+        market_price = quote.get("askPriceAmount") if side == "buy" else quote.get("bidPriceAmount")
+        dollar_based = quote.get("dollarBasedTradingEligibleIndicator", False)
+        actual_price = price if price else market_price
+
+        broker_event(
+            f"Quote {ticker}: ask={quote.get('askPriceAmount')} bid={quote.get('bidPriceAmount')} "
+            f"→ using {order_type} @ {actual_price}",
+            logger=logger,
+        )
 
         success_count = 0
 
         for account_id in account_ids:
-            account_name = account_name_map.get(account_id) or account_id
-            broker_event(f"Trading on: {account_name}", logger=logger)
+            acct_meta = account_map.get(account_id, {})
+            account_name = acct_meta.get("name") or account_id
+            broker_event(f"Trading on: {account_name} ({account_id})", logger=logger)
 
             try:
-                # Navigate to trade page
-                await self._page.get(
-                    "https://secure.chase.com/web/auth/dashboard#/dashboard/investments/youInvest/trade"
-                )
-                await asyncio.sleep(3)
-
-                # Enter symbol
-                broker_event(f"Entering symbol: {ticker}", logger=logger)
-                symbol_input = await self._page.select(
-                    "input[id=symbol-search], input[name=symbol]", timeout=10
-                )
-                await symbol_input.click()
-                await symbol_input.clear_input()
-                await symbol_input.send_keys(ticker)
-                await asyncio.sleep(1)
-
-                # Press enter to load quote
-                await symbol_input.send_keys("\n")
-                await asyncio.sleep(2)
-
-                # Select action (Buy/Sell)
-                action_text = "buy" if side == "buy" else "sell"
-                broker_event(f"Setting action to {action_text.upper()}", logger=logger)
-
-                # Click buy or sell button
-                action_selector = f"button[data-action={action_text}], button:contains('{action_text.capitalize()}')"
-                try:
-                    action_button = await self._page.select(action_selector, timeout=5)
-                    await action_button.click()
-                    await asyncio.sleep(1)
-                except (asyncio.TimeoutError, AttributeError, RuntimeError, TypeError):
-                    logger.debug("Could not find %s button with selector %s", action_text, action_selector)
-                    # Try JavaScript click
-                    await self._page.evaluate(f"""
-                        Array.from(document.querySelectorAll('button')).find(btn => 
-                            btn.textContent.toLowerCase().includes('{action_text}')
-                        )?.click()
-                    """)
-                    await asyncio.sleep(1)
-
-                # Enter quantity
-                broker_event(f"Setting quantity to {qty}", logger=logger)
-                qty_input = await self._page.select(
-                    "input[id=quantity], input[name=quantity]", timeout=5
-                )
-                await qty_input.click()
-                await qty_input.clear_input()
-                await qty_input.send_keys(str(qty))
-                await asyncio.sleep(1)
-
-                # Set order type (Market or Limit)
-                if price:
-                    broker_event(f"Setting limit price to ${price}", logger=logger)
-                    # Select limit order
-                    limit_button = await self._page.select(
-                        "button[data-order-type=limit], input[value=LIMIT]", timeout=5
-                    )
-                    await limit_button.click()
-                    await asyncio.sleep(1)
-
-                    # Enter limit price
-                    price_input = await self._page.select(
-                        "input[id=limit-price], input[name=limitPrice]", timeout=5
-                    )
-                    await price_input.click()
-                    await price_input.clear_input()
-                    await price_input.send_keys(str(price))
-                    await asyncio.sleep(1)
-                else:
-                    broker_event("Using market order", logger=logger)
-                    market_button = await self._page.select(
-                        "button[data-order-type=market], input[value=MARKET]", timeout=5
-                    )
-                    await market_button.click()
-                    await asyncio.sleep(1)
-
-                # Check for dry run
                 dry_run = os.getenv("DRY_RUN", "false").lower() == "true"
                 if dry_run:
                     broker_event(
-                        f"[DRY RUN] Would {side} {qty} shares of {ticker} on {account_name}",
+                        f"[DRY RUN] Would {side} {qty} shares of {ticker} ({order_type}) on {account_name}",
                         logger=logger,
                     )
                     success_count += 1
                     continue
 
-                # Click preview order button
-                broker_event("Clicking preview/review order...", logger=logger)
-                preview_button = await self._find_button(
-                    ["button[id=preview-order]", "button[id=review-order]",
-                     "button:contains('Preview')", "button:contains('Review')"],
-                    ["preview", "review"],
-                )
+                # ── Step 2a: Prerequisite calls (establish server-side session) ─
+                violations_url = f"{CASH_VIOLATIONS_URL}?digital-account-identifier={account_id}"
+                await self._call_chase_api(violations_url, method="GET")
 
-                if preview_button:
-                    await preview_button.click()
-                    await asyncio.sleep(3)
-                else:
-                    broker_event("Could not find preview button", level="warning", logger=logger)
-                    continue
+                balance_url = f"{BALANCE_SUMMARY_URL}?account-identifier={account_id}"
+                await self._call_chase_api(balance_url, method="GET")
 
-                # Check for errors on preview page
-                page_text = await self._page.evaluate("document.body.textContent")
-                if "error" in page_text.lower() and "warning" not in page_text.lower():
-                    broker_event(f"Error on preview page for {account_name}", level="warning", logger=logger)
-                    continue
+                open_orders_body = json.dumps({
+                    "selectorIdentifier": int(account_id),
+                    "selectorCode": "ACCOUNT",
+                    "securityDescriptionRequiredIndicator": True,
+                    "onlyOpenOrdersRequiredIndicator": True,
+                    "securitySymbolCode": ticker.upper(),
+                    "financialProductTypeCode": ["EQUITY"],
+                })
+                await self._call_chase_api(OPEN_ORDERS_URL, body=open_orders_body)
 
-                # Click submit/place order button
-                broker_event("Placing order...", logger=logger)
-                submit_button = await self._find_button(
-                    ["button[id=submit-order]", "button[id=place-order]",
-                     "button:contains('Submit')", "button:contains('Place Order')"],
-                    ["submit", "place order"],
-                )
+                # ── Step 2b: Validate order (get FIX order ID) ───────────────
+                validate_body = json.dumps({
+                    "accountIdentifier": int(account_id),
+                    "marketPriceAmount": actual_price,
+                    "orderQuantity": int(qty),
+                    "accountTypeCode": "CASH",
+                    "timeInForceCode": "DAY",
+                    "securitySymbolCode": ticker.upper(),
+                    "orderTypeCode": order_type,
+                    "tradeChannelName": "DESKTOP",
+                    "dollarBasedTradingEligibleIndicator": dollar_based,
+                })
 
-                if submit_button:
-                    await submit_button.click()
-                    await asyncio.sleep(3)
-                else:
-                    broker_event("Could not find submit button", level="warning", logger=logger)
-                    continue
+                validation = await self._call_chase_api(validate_url, body=validate_body)
+                logger.debug("Validation response: %s", validation)
 
-                # Check for success
-                page_text = await self._page.evaluate("document.body.textContent")
-                success_patterns = [
-                    "order received",
-                    "successfully",
-                    "confirmation",
-                    "order number",
-                    "has been placed",
-                    "submitted",
-                ]
-
-                is_success = any(
-                    pattern in page_text.lower() for pattern in success_patterns
-                )
-
-                if is_success:
-                    action_str = "Bought" if side == "buy" else "Sold"
+                if not validation or "error" in validation:
                     broker_event(
-                        f"✓ {action_str} {qty} shares of {ticker} on {account_name}",
+                        f"Validation failed for {account_name}: {validation}",
+                        level="error",
                         logger=logger,
                     )
-                    success_count += 1
-                else:
+                    continue
+
+                # Check for trade errors in validation response
+                val_errors = validation.get("tradeErrorMessages", [])
+                if val_errors:
                     broker_event(
-                        f"Chase order may have failed on {account_name}",
-                        level="warning",
+                        f"Validation errors for {account_name}: {'; '.join(val_errors)}",
+                        level="error",
                         logger=logger,
                     )
+                    break
+
+                fix_id = validation.get("financialInformationExchangeSystemOrderIdentifier")
+                warnings = validation.get("tradeWarningMessages", [])
+                if warnings:
+                    broker_event(f"Warnings: {'; '.join(warnings)}", level="warning", logger=logger)
+                broker_event(f"Validated (FIX: {(fix_id or '')[:8]}...)", logger=logger)
+
+                # ── Step 3: Submit order ──────────────────────────────────────
+                submit_body_dict = {
+                    "accountIdentifier": int(account_id),
+                    "orderQuantity": int(qty),
+                    "marketPriceAmount": actual_price,
+                    "orderTypeCode": order_type,
+                    "securitySymbolCode": ticker.upper(),
+                    "timeInForceCode": "DAY",
+                    "tradeChannelName": "DESKTOP",
+                    "accountTypeCode": "CASH",
+                    "dollarBasedTradingEligibleIndicator": dollar_based,
+                    "financialInformationExchangeSystemOrderIdentifier": fix_id,
+                }
+                if order_type == "LIMIT":
+                    submit_body_dict["limitPriceAmount"] = price
+
+                order_result = await self._call_chase_api(submit_url, body=json.dumps(submit_body_dict))
+                logger.debug("Submit response: %s", order_result)
+
+                if not order_result or "error" in order_result:
+                    broker_event(
+                        f"Order submission failed for {account_name}: {order_result}",
+                        level="error",
+                        logger=logger,
+                    )
+                    continue
+
+                # Check for trade errors in submit response
+                submit_errors = order_result.get("tradeErrorMessages", [])
+                if submit_errors:
+                    broker_event(
+                        f"Order rejected for {account_name}: {'; '.join(submit_errors)}",
+                        level="error",
+                        logger=logger,
+                    )
+                    break
+
+                order_id = order_result.get("orderIdentifier")
+                if not order_id:
+                    broker_event(
+                        f"No orderIdentifier in response for {account_name}: {order_result}",
+                        level="error",
+                        logger=logger,
+                    )
+                    continue
+
+                broker_event(f"Order submitted: {order_id}", logger=logger)
+
+                # ── Step 4: Poll status ───────────────────────────────────────
+                status_url = (
+                    f"{ORDER_STATUS_URL}"
+                    f"?account-identifier={account_id}&order-identifier={order_id}"
+                )
+                terminal_statuses = {"FULLY_EXECUTED", "OPEN", "PARTIALLY_EXECUTED", "CANCELLED"}
+
+                async def _check_status():
+                    st = await self._call_chase_api(status_url, method="GET")
+                    return bool(st and "error" not in st and st.get("orderStatusCode") in terminal_statuses)
+
+                await poll_for_condition(_check_status, timeout=30, interval=2)
+                final_status = await self._call_chase_api(status_url, method="GET")
+                status_code = (final_status or {}).get("orderStatusCode", "UNKNOWN")
+
+                action_str = "Bought" if side == "buy" else "Sold"
+                broker_event(
+                    f"✓ {action_str} {qty} × {ticker} on {account_name} — {status_code}",
+                    logger=logger,
+                )
+                success_count += 1
 
             except Exception as e:
                 broker_event(
@@ -958,14 +1057,17 @@ async def chaseGetHoldings(ticker=None):
         )
         return None
 
-    headless = os.getenv("HEADLESS", "false").lower() == "true"
+    client = session.get("client")
+    if not client:
+        broker_event(
+            "Chase client not initialized",
+            level="error",
+            logger=logger,
+        )
+        return None
+
     try:
-        async with ChaseClient(
-            username=session["username"],
-            password=session["password"],
-            headless=headless,
-        ) as client:
-            return await client.get_holdings(ticker)
+        return await client.get_holdings(ticker)
     except Exception as e:
         broker_event(
             f"Error getting Chase holdings: {e}",
@@ -1000,14 +1102,17 @@ async def chaseTrade(side, qty, ticker, price):
         )
         return None
 
-    headless = os.getenv("HEADLESS", "false").lower() == "true"
+    client = session.get("client")
+    if not client:
+        broker_event(
+            "Chase client not initialized",
+            level="error",
+            logger=logger,
+        )
+        return False
+
     try:
-        async with ChaseClient(
-            username=session["username"],
-            password=session["password"],
-            headless=headless,
-        ) as client:
-            return await client.trade(side, qty, ticker, price)
+        return await client.trade(side, qty, ticker, price)
     except Exception as e:
         broker_event(
             f"Error during Chase trade: {e}",
@@ -1020,7 +1125,7 @@ async def chaseTrade(side, qty, ticker, price):
 
 
 async def get_chase_session(session_manager):
-    """Get or create Chase session."""
+    """Get or create Chase session with persistent browser client."""
     if "chase" not in session_manager._initialized:
         CHASE_USER = os.getenv("CHASE_USER")
         CHASE_PASS = os.getenv("CHASE_PASS")
@@ -1030,9 +1135,17 @@ async def get_chase_session(session_manager):
             session_manager._initialized.add("chase")
             return None
 
+        headless = os.getenv("HEADLESS", "false").lower() == "true"
+        client = ChaseClient(
+            username=CHASE_USER,
+            password=CHASE_PASS,
+            headless=headless,
+        )
+
         session_manager.sessions["chase"] = {
             "username": CHASE_USER,
             "password": CHASE_PASS,
+            "client": client,
         }
         broker_event("✓ Chase credentials loaded", logger=logger)
         session_manager._initialized.add("chase")

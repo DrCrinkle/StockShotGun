@@ -4,9 +4,20 @@ import os
 import re
 import asyncio
 import logging
-from bs4 import BeautifulSoup
-from brokers.browser_utils import create_browser, stop_browser, get_page_url, get_page_title, navigate_and_wait, wait_for_ready_state, poll_for_condition
-from brokers.base import rate_limiter, broker_event
+from collections.abc import Awaitable
+from typing import cast
+
+from selectolax.lexbor import LexborHTMLParser as HTMLParser
+from .browser_utils import (
+    create_browser,
+    stop_browser,
+    get_page_url,
+    get_page_title,
+    navigate_and_wait,
+    wait_for_ready_state,
+    poll_for_condition,
+)
+from .base import rate_limiter, broker_event
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +51,8 @@ class WellsFargoClient:
         self._browser = None
         self._page = None
         self._is_authenticated = False
+        self._trade_lock = asyncio.Lock()
+        self._cached_accounts = None  # Cache accounts across orders
 
     async def __aenter__(self):
         """Async context manager entry. Browser created lazily on first operation."""
@@ -60,8 +73,8 @@ class WellsFargoClient:
 
     async def _is_logged_in(self, page):
         """Check if the current page indicates an authenticated session."""
-        url = (await get_page_url(page)).lower()
-        title = (await get_page_title(page)).lower()
+        url = (await cast(Awaitable[str], get_page_url(page))).lower()
+        title = (await cast(Awaitable[str], get_page_title(page))).lower()
         return (
             any(m in url for m in ("wellstrade", "brokoverview"))
             and any(m in title for m in ("brokerage overview", "wellstrade"))
@@ -72,8 +85,11 @@ class WellsFargoClient:
 
         Returns True if session was restored, False otherwise.
         """
+        assert self._browser is not None
         try:
-            await self._browser.cookies.load(self.COOKIES_PATH)
+            await asyncio.wait_for(
+                self._browser.cookies.load(self.COOKIES_PATH), timeout=5
+            )
             page = await self._browser.get(
                 "https://wfawellstrade.wellsfargo.com/BW/brokoverview.do"
             )
@@ -91,9 +107,12 @@ class WellsFargoClient:
         return False
 
     async def _save_cookies(self):
-        """Save current browser cookies for future sessions."""
+        """Save current browser cookies for future sessions (best-effort)."""
+        assert self._browser is not None
         try:
-            await self._browser.cookies.save(self.COOKIES_PATH)
+            await asyncio.wait_for(
+                self._browser.cookies.save(self.COOKIES_PATH), timeout=5
+            )
             logger.debug("Saved Wells Fargo cookies")
         except Exception as e:
             logger.debug("Could not save cookies: %s", e)
@@ -142,8 +161,8 @@ class WellsFargoClient:
             ):  # Give the login a little longer before assuming puzzle
                 await asyncio.sleep(1)
 
-                current_url = await get_page_url(page)
-                page_title = await get_page_title(page)
+                current_url = await cast(Awaitable[str], get_page_url(page))
+                page_title = await cast(Awaitable[str], get_page_title(page))
 
                 url_lower = (current_url or "").lower()
                 title_lower = page_title.lower()
@@ -176,8 +195,8 @@ class WellsFargoClient:
                 )
 
                 async def _check_login():
-                    url = (await get_page_url(page)).lower()
-                    title = (await get_page_title(page)).lower()
+                    url = (await cast(Awaitable[str], get_page_url(page))).lower()
+                    title = (await cast(Awaitable[str], get_page_title(page))).lower()
                     return ("wellstrade" in url or "brokoverview" in url) and (
                         "brokerage overview" in title or "wellstrade" in title
                     )
@@ -197,14 +216,14 @@ class WellsFargoClient:
                 )
 
                 async def _check_2fa():
-                    url = (await get_page_url(page)).lower()
+                    url = (await cast(Awaitable[str], get_page_url(page))).lower()
                     return "interdiction" not in url
 
                 if await poll_for_condition(_check_2fa, timeout=120, interval=2):
                     broker_event("✓ 2FA completed successfully", logger=logger)
 
-            current_url = await get_page_url(page)
-            page_title = await get_page_title(page)
+            current_url = await cast(Awaitable[str], get_page_url(page))
+            page_title = await cast(Awaitable[str], get_page_title(page))
 
             # Check if we're already on the overview/accounts page
             already_on_overview = any(
@@ -256,6 +275,7 @@ class WellsFargoClient:
 
     async def _extract_x_param(self):
         """Extract the dynamic _x parameter from current URL using regex."""
+        assert self._page is not None
         try:
             current_url = await get_page_url(self._page)
 
@@ -277,6 +297,7 @@ class WellsFargoClient:
         Discover all Wells Fargo accounts by parsing the accounts page.
         Returns list of dicts with account info: {index, name, number, balance, x_param}
         """
+        assert self._page is not None
         try:
             # Ensure we're on the accounts overview page; if not, navigate there and wait
             current_url = await get_page_url(self._page)
@@ -293,20 +314,17 @@ class WellsFargoClient:
                 await asyncio.sleep(2)
 
             # Poll for the accounts table to populate before parsing to capture all accounts
-            soup = BeautifulSoup("", "html.parser")
             account_rows = []
             for attempt in range(6):
-                try:
-                    row_count = await self._page.evaluate(
-                        "document.querySelectorAll('tr[data-p_account]').length"
-                    )
-                except (asyncio.TimeoutError, AttributeError, RuntimeError, TypeError):
-                    row_count = 0
+                raw_count = await self._page.evaluate(
+                    "document.querySelectorAll('tr[data-p_account]').length"
+                )
+                row_count = raw_count if isinstance(raw_count, int) else 0
 
                 if row_count > 0:
                     html = await self._page.get_content()
-                    soup = BeautifulSoup(html, "html.parser")
-                    account_rows = soup.select("tr[data-p_account]")
+                    tree = HTMLParser(html)
+                    account_rows = tree.css("tr[data-p_account]")
                     if account_rows:
                         break
 
@@ -322,39 +340,39 @@ class WellsFargoClient:
             # If still no rows found, fall back to parsing whatever content is available
             if not account_rows:
                 html = await self._page.get_content()
-                soup = BeautifulSoup(html, "html.parser")
-                account_rows = soup.select("tr[data-p_account]")
+                tree = HTMLParser(html)
+                account_rows = tree.css("tr[data-p_account]")
 
             accounts = []
             account_index = 0  # Separate counter for non-"-1" accounts
             for idx, row in enumerate(account_rows):
                 # Skip "All Accounts" row (data-p_account="-1")
-                account_attr = row.get("data-p_account")
+                account_attr = row.attributes.get("data-p_account")
                 if account_attr == "-1":
                     continue
 
                 try:
                     # Get account name from rowheader
-                    name_elem = row.select_one('[role="rowheader"] .ellipsis')
+                    name_elem = row.css_first('[role="rowheader"] .ellipsis')
                     account_name = (
-                        name_elem.get_text(strip=True)
+                        name_elem.text(strip=True)
                         if name_elem
                         else f"Account {account_index}"
                     )
 
                     # Get account number
-                    number_elem = row.select_one("div:not(.ellipsis-container)")
+                    number_elem = row.css_first("div:not(.ellipsis-container)")
                     account_number = ""
                     if number_elem:
-                        account_number = number_elem.get_text(strip=True).replace(
+                        account_number = number_elem.text(strip=True).replace(
                             "*", ""
                         )
 
                     # Get balance from last td with data-sort-value
-                    balance_cells = row.select("td[data-sort-value]")
+                    balance_cells = row.css("td[data-sort-value]")
                     balance = 0.0
                     if balance_cells:
-                        balance_text = balance_cells[-1].get_text(strip=True)
+                        balance_text = balance_cells[-1].text(strip=True)
                         # Remove currency symbols and commas
                         balance_text = balance_text.replace("$", "").replace(",", "")
                         try:
@@ -423,20 +441,20 @@ class WellsFargoClient:
 
     async def _parse_holdings_table(self, html):
         """Parse Wells Fargo holdings table HTML using exact selectors."""
-        soup = BeautifulSoup(html, "html.parser")
+        tree = HTMLParser(html)
         holdings = []
 
         # Find holdings rows using exact selector: tbody > tr.level1
-        rows = soup.select("tbody > tr.level1")
+        rows = tree.css("tbody > tr.level1")
 
         for row in rows:
             try:
                 # Symbol: a.navlink.quickquote (remove ",popup" suffix as per reference)
-                symbol_elem = row.select_one("a.navlink.quickquote")
+                symbol_elem = row.css_first("a.navlink.quickquote")
                 if not symbol_elem:
                     continue
 
-                symbol_text = symbol_elem.get_text(strip=True)
+                symbol_text = symbol_elem.text(strip=True)
                 symbol = symbol_text.split(",")[0].strip()
 
                 if not symbol or symbol.lower() == "popup":
@@ -444,27 +462,27 @@ class WellsFargoClient:
                     continue
 
                 # Name: td[role="rowheader"] .data-content > div:last-child
-                name_elem = row.select_one(
+                name_elem = row.css_first(
                     'td[role="rowheader"] .data-content > div:last-child'
                 )
-                name = name_elem.get_text(strip=True) if name_elem else "N/A"
+                name = name_elem.text(strip=True) if name_elem else "N/A"
 
                 # Quantity and Price: td.datanumeric cells
-                data_cells = row.select("td.datanumeric")
+                data_cells = row.css("td.datanumeric")
                 if len(data_cells) < 3:
                     continue
 
                 # Quantity is index [1], price is index [2]
                 quantity_cell = data_cells[1]
-                quantity_div = quantity_cell.select_one("div:first-child")
+                quantity_div = quantity_cell.css_first("div:first-child")
                 quantity_text = (
-                    quantity_div.get_text(strip=True) if quantity_div else "0"
+                    quantity_div.text(strip=True) if quantity_div else "0"
                 )
                 quantity = float(quantity_text.replace(",", ""))
 
                 price_cell = data_cells[2]
-                price_div = price_cell.select_one("div:first-child")
-                price_text = price_div.get_text(strip=True) if price_div else "0"
+                price_div = price_cell.css_first("div:first-child")
+                price_text = price_div.text(strip=True) if price_div else "0"
                 price = float(price_text.replace("$", "").replace(",", ""))
 
                 current_value = quantity * price
@@ -518,11 +536,17 @@ class WellsFargoClient:
             Dictionary of account holdings or None if error
         """
         await self._ensure_authenticated()
+        assert self._page is not None
 
-        # Discover all accounts
-        broker_event("Discovering Wells Fargo accounts...", logger=logger)
-        accounts = await self._discover_accounts()
-        broker_event(f"Found {len(accounts)} Wells Fargo account(s)", logger=logger)
+        # Use cached accounts or discover them
+        if self._cached_accounts:
+            accounts = self._cached_accounts
+            broker_event(f"Using {len(accounts)} cached Wells Fargo account(s)", logger=logger)
+        else:
+            broker_event("Discovering Wells Fargo accounts...", logger=logger)
+            accounts = await self._discover_accounts()
+            self._cached_accounts = accounts
+            broker_event(f"Found {len(accounts)} Wells Fargo account(s)", logger=logger)
 
         all_holdings = {}
 
@@ -607,13 +631,29 @@ class WellsFargoClient:
         Returns:
             Number of successful trades or None if error
         """
+        # Serialize trades — single browser can only do one at a time
+        # Acquire lock outside timeout so queued orders don't timeout while waiting
+        async with self._trade_lock:
+            return await asyncio.wait_for(
+                self._trade_impl(side, qty, ticker, price),
+                timeout=120,
+            )
+
+    async def _trade_impl(self, side, qty, ticker, price):
         # Save original price parameter (user-specified price, if any)
         user_specified_price = price
 
         await self._ensure_authenticated()
+        assert self._page is not None
 
-        accounts = await self._discover_accounts()
-        broker_event(f"Found {len(accounts)} Wells Fargo account(s)", logger=logger)
+        # Use cached accounts to avoid navigating back to overview between orders
+        if self._cached_accounts:
+            accounts = self._cached_accounts
+            broker_event(f"Using {len(accounts)} cached Wells Fargo account(s)", logger=logger)
+        else:
+            accounts = await self._discover_accounts()
+            self._cached_accounts = accounts
+            broker_event(f"Found {len(accounts)} Wells Fargo account(s)", logger=logger)
 
         success_count = 0
 
@@ -635,10 +675,40 @@ class WellsFargoClient:
 
                 await self._page.wait_for("body", timeout=10)
 
+                # Check for error banner on the trade form (e.g. "not eligible for online trading")
+                try:
+                    _raw_banner = await self._page.evaluate("""
+                        (function() {
+                            var el = document.querySelector('.alert-danger, .error-message, [class*="alert"][class*="error"]');
+                            if (el) return el.textContent ? el.textContent.trim().substring(0, 300) : null;
+                            var body = (document.body && document.body.textContent) || '';
+                            var match = body.match(/Error:[^\\n]*/);
+                            return match ? match[0].substring(0, 300) : null;
+                        })()
+                    """)
+                    error_banner = _raw_banner if isinstance(_raw_banner, str) else None
+                    if error_banner:
+                        broker_event(
+                            f"Trade form error for {account_name}: {error_banner}",
+                            level="error",
+                            logger=logger,
+                        )
+                        # Stock-level errors apply to all accounts — stop trying
+                        if "not currently eligible" in error_banner.lower():
+                            broker_event(
+                                f"{ticker} is not eligible on Wells Fargo, skipping remaining accounts",
+                                level="warning",
+                                logger=logger,
+                            )
+                            break
+                        continue
+                except Exception:
+                    pass
+
                 # Set buy/sell action
                 action_text = "Buy" if side == "buy" else "Sell"
                 try:
-                    result = await self._page.evaluate(f"""
+                    _raw = await self._page.evaluate(f"""
                         (function() {{
                             const buySellInput = document.getElementById('BuySell');
                             const buySellBtn = document.getElementById('BuySellBtn');
@@ -651,20 +721,23 @@ class WellsFargoClient:
                             return false;
                         }})()
                     """)
+                    result = _raw is True
                     if result:
                         logger.debug("Set action to %s", action_text)
                         await asyncio.sleep(0.5)
                     else:
-                        logger.warning("Could not find BuySell elements")
+                        logger.warning("Could not find BuySell elements for %s", account_name)
+                        continue
                 except Exception as e:
                     logger.warning("Could not set BuySell: %s", e)
 
                 # Wait for quote to load
                 await asyncio.sleep(2)
                 try:
-                    quote_loaded = await self._page.evaluate(
+                    _raw_quote = await self._page.evaluate(
                         "document.getElementById('last')?.value"
                     )
+                    quote_loaded = _raw_quote if isinstance(_raw_quote, str) else None
                     if quote_loaded and quote_loaded != "None" and quote_loaded.strip():
                         logger.debug("Quote loaded: $%s", quote_loaded)
                     else:
@@ -674,7 +747,7 @@ class WellsFargoClient:
 
                 # Enter quantity
                 try:
-                    result = await self._page.evaluate(f"""
+                    _raw_qty = await self._page.evaluate(f"""
                         (function() {{
                             const qtyInput = document.getElementById('OrderQuantity');
                             if (qtyInput) {{
@@ -686,6 +759,7 @@ class WellsFargoClient:
                             return null;
                         }})()
                     """)
+                    result = _raw_qty if isinstance(_raw_qty, str) else None
                     if result:
                         logger.debug("Quantity set to %s", result)
                         await asyncio.sleep(0.5)
@@ -699,9 +773,10 @@ class WellsFargoClient:
                 # Get last price from page for limit orders
                 if not price_for_account:
                     try:
-                        last_price_str = await self._page.evaluate(
+                        _raw_price = await self._page.evaluate(
                             "document.getElementById('last')?.value"
                         )
+                        last_price_str = _raw_price if isinstance(_raw_price, str) else None
                         if last_price_str and last_price_str.strip():
                             price_for_account = float(last_price_str.strip())
                             logger.debug("Current stock price: $%s", price_for_account)
@@ -726,7 +801,7 @@ class WellsFargoClient:
                 if use_limit_order:
                     logger.debug("Setting order type to LIMIT (%s)", limit_reason)
                     try:
-                        result = await self._page.evaluate("""
+                        _raw = await self._page.evaluate("""
                             (function() {
                                 const priceQualInput = document.getElementById('PriceQualifier');
                                 const orderTypeBtn = document.getElementById('OrderTypeBtn');
@@ -738,7 +813,7 @@ class WellsFargoClient:
                                 return false;
                             })()
                         """)
-                        if result:
+                        if _raw is True:
                             logger.debug("Set order type to Limit")
                     except Exception as e:
                         logger.warning("Could not set order type: %s", e)
@@ -761,7 +836,7 @@ class WellsFargoClient:
                         adjusted_price = 0.01
 
                     try:
-                        result = await self._page.evaluate(f"""
+                        _raw = await self._page.evaluate(f"""
                             (function() {{
                                 const priceInput = document.getElementById('Price');
                                 if (priceInput) {{
@@ -773,14 +848,14 @@ class WellsFargoClient:
                                 return false;
                             }})()
                         """)
-                        if result:
+                        if _raw is True:
                             logger.debug("Limit price set to $%s", adjusted_price)
                     except Exception as e:
                         logger.warning("Could not set limit price: %s", e)
                 else:
                     logger.debug("Setting order type to MARKET")
                     try:
-                        result = await self._page.evaluate("""
+                        _raw = await self._page.evaluate("""
                             (function() {
                                 const priceQualInput = document.getElementById('PriceQualifier');
                                 const orderTypeBtn = document.getElementById('OrderTypeBtn');
@@ -792,7 +867,7 @@ class WellsFargoClient:
                                 return false;
                             })()
                         """)
-                        if result:
+                        if _raw is True:
                             logger.debug("Set order type to Market")
                             await asyncio.sleep(0.5)
                     except Exception as e:
@@ -801,7 +876,7 @@ class WellsFargoClient:
                 # Set time in force to Day
                 logger.debug("Setting time in force to DAY")
                 try:
-                    result = await self._page.evaluate("""
+                    _raw = await self._page.evaluate("""
                         (function() {
                             const tifInput = document.getElementById('TIF');
                             const tifBtn = document.getElementById('TIFBtn');
@@ -813,7 +888,7 @@ class WellsFargoClient:
                             return false;
                         })()
                     """)
-                    if result:
+                    if _raw is True:
                         logger.debug("Set TIF to Day")
                         await asyncio.sleep(0.5)
                 except Exception as e:
@@ -835,7 +910,8 @@ class WellsFargoClient:
 
                 # Check for errors on preview page
                 try:
-                    error_texts = await self._page.evaluate("document.body.textContent || ''")
+                    _raw_texts = await self._page.evaluate("document.body.textContent || ''")
+                    error_texts = _raw_texts if isinstance(_raw_texts, str) else ""
 
                     has_errors = False
                     error_messages = []
@@ -912,7 +988,8 @@ class WellsFargoClient:
 
                 # Check for success
                 try:
-                    page_text = await self._page.evaluate("document.body.textContent")
+                    _raw_page = await self._page.evaluate("(document.body && document.body.textContent) || ''")
+                    page_text = _raw_page if isinstance(_raw_page, str) else ""
 
                     success_patterns = [
                         "order has been placed",
@@ -921,17 +998,33 @@ class WellsFargoClient:
                         "order number",
                         "has been received",
                         "acknowledgment",
+                        "acknowledgement",
+                        "order received",
+                        "order submitted",
+                        "order accepted",
+                        "order status",
+                        "order detail",
+                        "trade confirmation",
                     ]
 
-                    page_text_lower = page_text.lower()
+                    page_text_lower = (page_text or "").lower()
                     is_success = any(p in page_text_lower for p in success_patterns)
 
                     final_url = await get_page_url(self._page)
-                    if (
-                        "confirmation" in final_url.lower()
-                        or "orderack" in final_url.lower()
-                    ):
+                    url_lower = final_url.lower()
+                    if any(m in url_lower for m in (
+                        "confirmation", "orderack", "orderstatus",
+                        "orderdetail", "ackreceipt",
+                    )):
                         is_success = True
+
+                    # Log for debugging what's on the page
+                    logger.debug(
+                        "Success check for %s: url=%s, text_snippet=%s, is_success=%s",
+                        account_name, final_url,
+                        page_text_lower[:200] if page_text_lower else "(empty)",
+                        is_success,
+                    )
 
                     if is_success:
                         action_str = "Bought" if side == "buy" else "Sold"
@@ -946,18 +1039,35 @@ class WellsFargoClient:
                             level="warning",
                             logger=logger,
                         )
-                        logger.debug("Final URL: %s", final_url)
+                        # Log URL and text snippet to help diagnose
+                        broker_event(f"  URL: {final_url}", level="warning", logger=logger)
+                        text_preview = page_text_lower[:300] if page_text_lower else "(empty)"
+                        broker_event(f"  Page text: {text_preview}", level="warning", logger=logger)
 
-                        errors_on_page = await self._page.evaluate("""
+                        _raw_errors = await self._page.evaluate("""
                             Array.from(document.querySelectorAll('.error, .error-message, [class*="error"], [class*="Error"]'))
-                            .map(el => el.textContent.trim())
-                            .filter(text => text.length > 0 && text.includes('Error'))
+                            .map(function(el) { return el.textContent ? el.textContent.trim() : ''; })
+                            .filter(function(text) { return text.length > 0 && text.indexOf('Error') !== -1; })
                             .slice(0, 2)
                         """)
+                        errors_on_page = [
+                            e for e in (_raw_errors if isinstance(_raw_errors, list) else [])
+                            if isinstance(e, str)
+                        ]
                         if errors_on_page:
+                            has_ineligible = False
                             for error in errors_on_page:
                                 clean_error = " ".join(error.split())
                                 broker_event(f"  ⚠ {clean_error}", level="warning", logger=logger)
+                                if "not currently eligible" in clean_error.lower():
+                                    has_ineligible = True
+                            if has_ineligible:
+                                broker_event(
+                                    f"{ticker} is not eligible on Wells Fargo, skipping remaining accounts",
+                                    level="warning",
+                                    logger=logger,
+                                )
+                                break
                 except Exception as e:
                     logger.warning("Could not verify order success: %s", e)
 
@@ -968,7 +1078,6 @@ class WellsFargoClient:
                     logger=logger,
                     exc=e,
                 )
-
                 continue
 
         # Return True if at least one account succeeded, False if all failed
@@ -979,7 +1088,7 @@ async def wellsfargoGetHoldings(ticker=None):
     """Get holdings from all Wells Fargo accounts."""
     await rate_limiter.wait_if_needed("WellsFargo")
 
-    from brokers.session_manager import session_manager
+    from .session_manager import session_manager
 
     session = await session_manager.get_session("WellsFargo")
     if not session:
@@ -990,17 +1099,17 @@ async def wellsfargoGetHoldings(ticker=None):
         )
         return None
 
-    # Create client and use it via async context manager
-    # Default to visible browser (headless=false) for Wells Fargo since CAPTCHAs are common
-    headless = os.getenv("HEADLESS", "false").lower() == "true"
+    client = session.get("client")
+    if not client:
+        broker_event(
+            "Wells Fargo client not initialized",
+            level="error",
+            logger=logger,
+        )
+        return None
+
     try:
-        async with WellsFargoClient(
-            username=session["username"],
-            password=session["password"],
-            phone_suffix=session.get("phone_suffix", ""),
-            headless=headless,
-        ) as client:
-            return await client.get_holdings(ticker)
+        return await client.get_holdings(ticker)
     except Exception as e:
         broker_event(
             f"Error getting Wells Fargo holdings: {e}",
@@ -1022,7 +1131,7 @@ async def wellsfargoTrade(side, qty, ticker, price):
     """
     await rate_limiter.wait_if_needed("WellsFargo")
 
-    from brokers.session_manager import session_manager
+    from .session_manager import session_manager
 
     session = await session_manager.get_session("WellsFargo")
     if not session:
@@ -1033,17 +1142,17 @@ async def wellsfargoTrade(side, qty, ticker, price):
         )
         return None
 
-    # Create client and use it via async context manager
-    # Default to visible browser (headless=false) for Wells Fargo since CAPTCHAs are common
-    headless = os.getenv("HEADLESS", "false").lower() == "true"
+    client = session.get("client")
+    if not client:
+        broker_event(
+            "Wells Fargo client not initialized",
+            level="error",
+            logger=logger,
+        )
+        return False
+
     try:
-        async with WellsFargoClient(
-            username=session["username"],
-            password=session["password"],
-            phone_suffix=session.get("phone_suffix", ""),
-            headless=headless,
-        ) as client:
-            return await client.trade(side, qty, ticker, price)
+        return await client.trade(side, qty, ticker, price)
     except Exception as e:
         broker_event(
             f"Error during Wells Fargo trade: {e}",
@@ -1070,11 +1179,19 @@ async def get_wellsfargo_session(session_manager):
             return None
 
         try:
-            # Store credentials for later use by trade/holdings functions
+            headless = os.getenv("HEADLESS", "false").lower() == "true"
+            client = WellsFargoClient(
+                username=WELLSFARGO_USER,
+                password=WELLSFARGO_PASS,
+                phone_suffix=WELLSFARGO_PHONE or "",
+                headless=headless,
+            )
+
             wellsfargo_session = {
                 "username": WELLSFARGO_USER,
                 "password": WELLSFARGO_PASS,
                 "phone_suffix": WELLSFARGO_PHONE,
+                "client": client,
             }
 
             session_manager.sessions["wellsfargo"] = wellsfargo_session

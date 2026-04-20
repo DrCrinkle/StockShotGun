@@ -58,22 +58,24 @@ async def stop_browser(browser, log=None):
             log.debug("Error stopping browser: %s", e, exc_info=e)
 
 
-async def get_page_url(page):
+async def get_page_url(page) -> str:
     """Get current page URL via JS evaluation with property fallback.
 
     Uses evaluate("window.location.href") for real-time accuracy since
     page.url can return stale cached target info.
     """
     try:
-        return await page.evaluate("window.location.href")
+        result = await page.evaluate("window.location.href")
+        return result if isinstance(result, str) else (getattr(page, "url", None) or "")
     except (asyncio.TimeoutError, AttributeError, RuntimeError, TypeError):
-        return page.url
+        return getattr(page, "url", None) or ""
 
 
-async def get_page_title(page):
+async def get_page_title(page) -> str:
     """Get current page title via JS evaluation with empty-string fallback."""
     try:
-        return await page.evaluate("document.title")
+        result = await page.evaluate("document.title")
+        return result if isinstance(result, str) else ""
     except (asyncio.TimeoutError, AttributeError, RuntimeError, TypeError):
         return ""
 
