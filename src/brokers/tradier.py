@@ -1,7 +1,7 @@
 """Tradier broker integration."""
 
 import os
-from brokers.base import http_client, rate_limiter, api_cache, retry_operation
+from .base import http_client, rate_limiter, api_cache, retry_operation
 
 
 async def tradierTrade(side, qty, ticker, price):
@@ -14,7 +14,7 @@ async def tradierTrade(side, qty, ticker, price):
     """
     await rate_limiter.wait_if_needed("Tradier")
 
-    from brokers.session_manager import session_manager
+    from .session_manager import session_manager
 
     session = await session_manager.get_session("Tradier")
     if not session:
@@ -83,7 +83,7 @@ async def tradierValidate(side, qty, ticker, price):
     """
     await rate_limiter.wait_if_needed("Tradier")
 
-    from brokers.session_manager import session_manager
+    from .session_manager import session_manager
 
     session = await session_manager.get_session("Tradier")
     if not session:
@@ -125,7 +125,7 @@ async def tradierGetHoldings(ticker=None):
     """Get holdings from Tradier."""
     await rate_limiter.wait_if_needed("Tradier")
 
-    from brokers.session_manager import session_manager
+    from .session_manager import session_manager
 
     session = await session_manager.get_session("Tradier")
     if not session:
@@ -187,8 +187,8 @@ async def tradierGetHoldings(ticker=None):
         if ticker:
             positions = [pos for pos in positions if pos.get("symbol") == ticker]
 
-        # Get current quotes for all symbols
-        symbols = [pos.get("symbol") for pos in positions]
+        # Get current quotes for all symbols (filter to non-None strings for join)
+        symbols = [s for pos in positions if isinstance(s := pos.get("symbol"), str)]
         if symbols:
             quotes_response = await http_client.get(
                 "https://api.tradier.com/v1/markets/quotes",

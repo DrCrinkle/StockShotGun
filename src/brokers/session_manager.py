@@ -9,23 +9,23 @@ import os
 import asyncio
 import logging
 import threading
-from brokers.base import BrokerConfig
-from cli_runtime import CliRuntimeError, ExitCode
+from .base import BrokerConfig
+from cli_runtime import CliRuntimeError, ExitCode  # type: ignore[import-untyped]
 
 # Import broker modules dynamically
-import brokers.robinhood
-import brokers.tradier
-import brokers.tastytrade
-import brokers.public
-import brokers.firstrade
-import brokers.fennel
-import brokers.schwab
-import brokers.bbae
-import brokers.dspac
-import brokers.sofi
-import brokers.webull
-import brokers.wellsfargo
-import brokers.chase
+from . import robinhood
+from . import tradier
+from . import tastytrade
+from . import public
+from . import firstrade
+from . import fennel
+from . import schwab
+from . import bbae
+from . import dspac
+from . import sofi
+from . import webull
+from . import wellsfargo
+from . import chase
 
 logger = logging.getLogger(__name__)
 
@@ -37,19 +37,19 @@ class BrokerSessionManager:
 
     # Mapping of broker names to their modules and session getter functions
     BROKER_MODULES = {
-        "Robinhood": (brokers.robinhood, "get_robinhood_session"),
-        "Tradier": (brokers.tradier, "get_tradier_session"),
-        "TastyTrade": (brokers.tastytrade, "get_tastytrade_session"),
-        "Public": (brokers.public, "get_public_session"),
-        "Firstrade": (brokers.firstrade, "get_firstrade_session"),
-        "Fennel": (brokers.fennel, "get_fennel_session"),
-        "Schwab": (brokers.schwab, "get_schwab_session"),
-        "BBAE": (brokers.bbae, "get_bbae_session"),
-        "DSPAC": (brokers.dspac, "get_dspac_session"),
-        "SoFi": (brokers.sofi, "get_sofi_session"),
-        "Webull": (brokers.webull, "get_webull_session"),
-        "WellsFargo": (brokers.wellsfargo, "get_wellsfargo_session"),
-        "Chase": (brokers.chase, "get_chase_session"),
+        "Robinhood": (robinhood, "get_robinhood_session"),
+        "Tradier": (tradier, "get_tradier_session"),
+        "TastyTrade": (tastytrade, "get_tastytrade_session"),
+        "Public": (public, "get_public_session"),
+        "Firstrade": (firstrade, "get_firstrade_session"),
+        "Fennel": (fennel, "get_fennel_session"),
+        "Schwab": (schwab, "get_schwab_session"),
+        "BBAE": (bbae, "get_bbae_session"),
+        "DSPAC": (dspac, "get_dspac_session"),
+        "SoFi": (sofi, "get_sofi_session"),
+        "Webull": (webull, "get_webull_session"),
+        "WellsFargo": (wellsfargo, "get_wellsfargo_session"),
+        "Chase": (chase, "get_chase_session"),
     }
 
     def __init__(self):
@@ -203,7 +203,7 @@ class BrokerSessionManager:
                         exc_info=e,
                     )
 
-        from brokers.base import http_client
+        from .base import http_client
 
         try:
             await http_client.aclose()

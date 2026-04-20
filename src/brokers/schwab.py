@@ -10,7 +10,7 @@ from schwab.orders.equities import (
     equity_sell_limit,
     equity_sell_market,
 )
-from brokers.base import retry_operation
+from .base import retry_operation
 
 
 async def schwabTrade(side, qty, ticker, price):
@@ -21,11 +21,11 @@ async def schwabTrade(side, qty, ticker, price):
         False: Trade failed on all accounts
         None: No credentials supplied
     """
-    from base import rate_limiter
+    from .base import rate_limiter
 
     await rate_limiter.wait_if_needed("Schwab")
 
-    from brokers.session_manager import session_manager
+    from .session_manager import session_manager
 
     c = await session_manager.get_session("Schwab")
     if not c:
@@ -53,14 +53,16 @@ async def schwabTrade(side, qty, ticker, price):
         for account in accounts.json():
             account_hash = account["hashValue"]
             try:
+                # Limit orders take (ticker, qty, price); market orders take (ticker, qty)
+                order_spec = (
+                    order_function(ticker, qty, price)  # type: ignore[call-arg]
+                    if price
+                    else order_function(ticker, qty)  # type: ignore[call-arg]
+                )
                 order = await asyncio.to_thread(
                     c.place_order,
                     account_hash,
-                    (
-                        order_function(ticker, qty, price)
-                        if price
-                        else order_function(ticker, qty)
-                    ),
+                    order_spec,
                 )
 
                 if order.status_code == 201:
@@ -94,11 +96,11 @@ async def schwabValidate(side, qty, ticker, price):
         (False, reason): Order would fail
         (None, ""): No credentials
     """
-    from base import rate_limiter
+    from .base import rate_limiter
 
     await rate_limiter.wait_if_needed("Schwab")
 
-    from brokers.session_manager import session_manager
+    from .session_manager import session_manager
 
     c = await session_manager.get_session("Schwab")
     if not c:
@@ -125,10 +127,11 @@ async def schwabValidate(side, qty, ticker, price):
         if not order_function:
             return (False, "Invalid side/price combination")
 
+        # Limit orders take (ticker, qty, price); market orders take (ticker, qty)
         order_spec = (
-            order_function(ticker, qty, price)
+            order_function(ticker, qty, price)  # type: ignore[call-arg]
             if price
-            else order_function(ticker, qty)
+            else order_function(ticker, qty)  # type: ignore[call-arg]
         )
 
         preview = await asyncio.to_thread(c.preview_order, account_hash, order_spec)
@@ -148,11 +151,11 @@ async def schwabValidate(side, qty, ticker, price):
 
 async def schwabGetHoldings(ticker=None):
     """Get holdings from Schwab."""
-    from base import rate_limiter
+    from .base import rate_limiter
 
     await rate_limiter.wait_if_needed("Schwab")
 
-    from brokers.session_manager import session_manager
+    from .session_manager import session_manager
 
     c = await session_manager.get_session("Schwab")
     if not c:
