@@ -27,20 +27,36 @@ class HoldingsView:
         account_id = self.get_current_account()
         positions = self.holdings_data[account_id]
 
-        text = f"{self.broker_name} Holdings - Account {account_id} ({self.current_index + 1}/{len(self.account_ids)}):\n\n"
+        profile_name = ""
+        display_account_id = str(account_id)
+        if ":" in display_account_id:
+            profile_name, display_account_id = display_account_id.split(":", 1)
+
+        if profile_name:
+            account_header = (
+                f"{self.broker_name} Holdings - Account {display_account_id} "
+                f"(Profile: {profile_name}) ({self.current_index + 1}/{len(self.account_ids)}):\n\n"
+            )
+        else:
+            account_header = (
+                f"{self.broker_name} Holdings - Account {display_account_id} "
+                f"({self.current_index + 1}/{len(self.account_ids)}):\n\n"
+            )
+
+        text = account_header
 
         if not positions:
             text += "No positions\n"
         else:
             for position in positions:
                 # Handle None values for cost_basis and current_value
-                cost_basis = position.get('cost_basis')
+                cost_basis = position.get("cost_basis")
                 if cost_basis is None:
                     cost_basis_display = "N/A"
                 else:
                     cost_basis_display = f"${float(cost_basis):.2f}"
 
-                current_value = position.get('current_value')
+                current_value = position.get("current_value")
                 if current_value is None:
                     current_value_display = "N/A"
                 else:

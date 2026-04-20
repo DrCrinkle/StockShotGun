@@ -109,6 +109,14 @@ def run_tui():
                 ),
             )
         )
+        body.append(
+            urwid.Button(
+                "Auth Browsers",
+                on_press=lambda button: asyncio.create_task(
+                    auth_browser_brokers(button)
+                ),
+            )
+        )
         body.append(urwid.Button("View Queued Orders", on_press=show_queued_orders))
         body.append(urwid.Button("Exit", on_press=exit_program))
 
@@ -449,6 +457,103 @@ def run_tui():
         except Exception as e:
             response_box.add_response(f"Error checking holdings: {str(e)}")
             loop.draw_screen()
+
+    async def auth_browser_brokers(button):
+        """Pre-authenticate selected browser-based brokers."""
+        from brokers.session_manager import session_manager
+
+        all_browser_brokers = ["Chase", "WellsFargo", "SoFi", "Webull"]
+        selected = current_order["selected_brokers"]
+        browser_brokers = [b for b in all_browser_brokers if b in selected]
+
+        if not browser_brokers:
+            response_box.add_response(
+                "No browser brokers selected. Select Chase, WellsFargo, SoFi, or Webull first.",
+                force_redraw=True,
+            )
+            return
+
+        authed = []
+        failed = []
+
+        for broker_name in browser_brokers:
+            session = await session_manager.get_session(broker_name)
+            if not session or not isinstance(session, dict):
+                continue
+
+            # Webull uses token-based auth (api_login / Zendriver capture)
+            if broker_name == "Webull":
+                profiles = session.get("profiles") or []
+                auth_ok = False
+                if profiles:
+                    # Test if existing session has a valid trade token
+                    wb_client = profiles[0].get("client")
+                    if wb_client:
+                        trade_token = str(getattr(wb_client, "_trade_token", "") or "").strip()
+                        if trade_token:
+                            auth_ok = True
+                if auth_ok:
+                    authed.append(broker_name)
+                else:
+                    response_box.add_response(f"Authenticating {broker_name} via browser...")
+                    loop.draw_screen()
+                    try:
+                        from brokers.webull import reauth_webull_session
+
+                        new_session = await reauth_webull_session(session_manager)
+                        if new_session:
+                            authed.append(broker_name)
+                        else:
+                            failed.append(broker_name)
+                    except Exception as e:
+                        response_box.add_response(f"{broker_name} auth failed: {e}")
+                        failed.append(broker_name)
+                continue
+
+            client = session.get("client")
+            if not client:
+                # SoFi uses cookie-based auth, trigger it now
+                if broker_name == "SoFi":
+                    response_box.add_response(f"Authenticating {broker_name}...")
+                    loop.draw_screen()
+                    try:
+                        from brokers.sofi import _sofi_get_cookies
+
+                        cookies = await _sofi_get_cookies(session)
+                        if cookies:
+                            authed.append(broker_name)
+                        else:
+                            failed.append(broker_name)
+                    except Exception as e:
+                        response_box.add_response(f"{broker_name} auth failed: {e}")
+                        failed.append(broker_name)
+                continue
+
+            if hasattr(client, "_is_authenticated") and client._is_authenticated:
+                authed.append(broker_name)
+                continue
+
+            response_box.add_response(f"Authenticating {broker_name}...")
+            loop.draw_screen()
+            try:
+                await client._ensure_authenticated()
+                authed.append(broker_name)
+            except Exception as e:
+                response_box.add_response(f"{broker_name} auth failed: {e}")
+                failed.append(broker_name)
+
+        if authed:
+            response_box.add_response(
+                f"Browser auth complete: {', '.join(authed)}", force_redraw=True
+            )
+        if failed:
+            response_box.add_response(
+                f"Browser auth failed: {', '.join(failed)}", force_redraw=True
+            )
+        if not authed and not failed:
+            response_box.add_response(
+                "No browser brokers configured.", force_redraw=True
+            )
 
     def show_queued_orders(button):
         """Display all queued orders."""

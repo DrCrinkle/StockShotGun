@@ -5,28 +5,29 @@ import io
 import json
 import os
 import sys
+import warnings
 from dataclasses import asdict
 from datetime import datetime
-from typing import Any
-from setup import setup
-from tui import run_tui
-from tui.input_handler import (
+from typing import Any, NoReturn, cast
+from setup import setup  # type: ignore[import-untyped]
+from tui import run_tui  # type: ignore[import-untyped]
+from tui.input_handler import (  # type: ignore[import-untyped]
     restore_original_input,
     set_non_interactive_mode,
     setup_tui_input_interception,
 )
-from brokers import session_manager, BrokerConfig
-from tui.broker_functions import BROKER_CONFIG as BROKER_FUNCTIONS
-from order_processor import order_processor
-from cli_runtime import (
+from brokers import session_manager, BrokerConfig  # type: ignore[import-untyped]
+from tui.broker_functions import BROKER_CONFIG as BROKER_FUNCTIONS  # type: ignore[import-untyped]
+from order_processor import order_processor  # type: ignore[import-untyped]
+from cli_runtime import (  # type: ignore[import-untyped]
     CliRuntimeError,
     ExecutionContext,
     ExitCode,
     build_response_envelope,
     compute_trade_exit_code,
 )
-from automation_recap import AutomationRecapStore, parse_chat_recap
-from sweep import (
+from automation_recap import AutomationRecapStore, parse_chat_recap  # type: ignore[import-untyped]
+from sweep import (  # type: ignore[import-untyped]
     SweepResult,
     SweepStatus,
     parse_ratio,
@@ -34,6 +35,12 @@ from sweep import (
     sweep_all_brokers,
 )
 
+# Suppress requests library warning about chardet version
+warnings.filterwarnings(
+    "ignore",
+    message="urllib3.*or chardet.*doesn't match a supported version",
+    category=UserWarning,
+)
 
 def _json_requested_from_argv(argv):
     return _extract_option_value(argv, "--output").lower() == "json"
@@ -84,7 +91,15 @@ async def print_holdings(holdings):
     """Print holdings in a formatted way."""
     if holdings:
         for account, positions in holdings.items():
-            print(f"\nAccount: {account}")
+            profile_name = ""
+            account_id = str(account)
+            if ":" in account_id:
+                profile_name, account_id = account_id.split(":", 1)
+
+            if profile_name:
+                print(f"\nAccount: {account_id} (Profile: {profile_name})")
+            else:
+                print(f"\nAccount: {account_id}")
             if not positions:
                 print("No positions found")
             for pos in positions:
@@ -120,7 +135,7 @@ async def print_holdings(holdings):
                 )
 
 
-def _raise_parser_error(parser, message, context):
+def _raise_parser_error(parser, message, context) -> NoReturn:
     if context.output_format != "json":
         parser.print_usage(sys.stderr)
     raise CliRuntimeError(
@@ -234,11 +249,12 @@ def _validate_batch_orders(file_path, parser):
             validation_errors.append(f"{prefix}: must be an object")
             continue
 
-        action = raw_order.get("action")
-        quantity = raw_order.get("quantity")
-        ticker = raw_order.get("ticker")
-        price = raw_order.get("price")
-        brokers = raw_order.get("brokers")
+        order = cast("dict[str, Any]", raw_order)
+        action = order.get("action")
+        quantity = order.get("quantity")
+        ticker = order.get("ticker")
+        price = order.get("price")
+        brokers = order.get("brokers")
 
         if action not in {"buy", "sell"}:
             validation_errors.append(f"{prefix}: action must be 'buy' or 'sell'")
@@ -304,8 +320,7 @@ def _build_dry_run_readiness(order, trade_functions):
     ready_brokers = []
     for broker_name in order["selected_brokers"]:
         has_trade_function = broker_name in trade_functions
-        required_env_vars = BrokerConfig.get_env_vars(broker_name)
-        credentials_present = all(os.getenv(var) for var in required_env_vars)
+        credentials_present = _credentials_present_for_broker(broker_name)
         session_key = BrokerConfig.get_session_key(broker_name)
         session_initialized = bool(
             session_key and session_manager.sessions.get(session_key) is not None
@@ -325,6 +340,102 @@ def _build_dry_run_readiness(order, trade_functions):
         )
 
     return readiness, ready_brokers
+
+
+def _credentials_present_for_broker(broker_name: str) -> bool:
+    if broker_name == "Webull":
+        webull_profiles = os.getenv("WEBULL_PROFILES")
+        if webull_profiles:
+            return True
+
+    required_env_vars = BrokerConfig.get_env_vars(broker_name)
+    return all(os.getenv(var) for var in required_env_vars)
+
+
+def _missing_env_vars_for_broker(broker_name: str) -> list[str]:
+    if broker_name == "Webull":
+        webull_profiles = os.getenv("WEBULL_PROFILES")
+        if webull_profiles:
+            return []
+
+    required_env_vars = BrokerConfig.get_env_vars(broker_name)
+    return [var for var in required_env_vars if not os.getenv(var)]
+
+
+async def _collect_webull_health_details(context: ExecutionContext) -> dict[str, Any]:
+    details: dict[str, Any] = {
+        "profiles_configured": 0,
+        "token_ready_profiles": 0,
+        "profiles_initialized": 0,
+        "accounts_discovered": 0,
+        "init_error": "",
+    }
+
+    raw_profiles = os.getenv("WEBULL_PROFILES", "").strip()
+    if raw_profiles:
+        try:
+            parsed = json.loads(raw_profiles)
+            if isinstance(parsed, dict):
+                parsed = parsed.get("profiles", [])
+            if isinstance(parsed, list):
+                details["profiles_configured"] = len(
+                    [p for p in parsed if isinstance(p, dict)]
+                )
+                token_ready = 0
+                for profile in parsed:
+                    if not isinstance(profile, dict):
+                        continue
+                    if all(
+                        [
+                            str(profile.get("access_token", "")).strip(),
+                            str(profile.get("refresh_token", "")).strip(),
+                            str(profile.get("uuid", "")).strip(),
+                        ]
+                    ):
+                        token_ready += 1
+                details["token_ready_profiles"] = token_ready
+        except (TypeError, ValueError, json.JSONDecodeError):
+            details["init_error"] = "WEBULL_PROFILES is not valid JSON"
+    else:
+        details["profiles_configured"] = (
+            1
+            if all(
+                [
+                    os.getenv("WEBULL_ACCESS_TOKEN", "").strip(),
+                    os.getenv("WEBULL_REFRESH_TOKEN", "").strip(),
+                    os.getenv("WEBULL_UUID", "").strip(),
+                ]
+            )
+            else 0
+        )
+        details["token_ready_profiles"] = details["profiles_configured"]
+
+    if context.mock_brokers:
+        return details
+
+    try:
+        if session_manager.sessions.get("webull") is None:
+            sink = io.StringIO()
+            with contextlib.redirect_stdout(sink):
+                await session_manager.initialize_selected_sessions(["Webull"])
+
+        webull_session = session_manager.sessions.get("webull")
+        if not webull_session:
+            if not details["init_error"]:
+                details["init_error"] = "Webull session not initialized"
+            return details
+
+        profiles = webull_session.get("profiles") or []
+        details["profiles_initialized"] = len(profiles)
+        details["accounts_discovered"] = sum(
+            len(profile.get("accounts", []))
+            for profile in profiles
+            if isinstance(profile, dict)
+        )
+    except Exception as exc:
+        details["init_error"] = str(exc)
+
+    return details
 
 
 def _mock_order_status(order):
@@ -1020,9 +1131,9 @@ async def run_cli(args, parser, context) -> tuple[ExitCode, dict[str, Any]]:
         broker_health = []
         ready_count = 0
         for broker_name in brokers_to_check:
-            required_env_vars = BrokerConfig.get_env_vars(broker_name)
-            missing_env_vars = [var for var in required_env_vars if not os.getenv(var)]
-            credentials_present = len(missing_env_vars) == 0
+            missing_env_vars = _missing_env_vars_for_broker(broker_name)
+            credentials_present = _credentials_present_for_broker(broker_name)
+            broker_details: dict[str, Any] = {}
 
             session_key = BrokerConfig.get_session_key(broker_name)
             session_initialized = bool(
@@ -1037,6 +1148,18 @@ async def run_cli(args, parser, context) -> tuple[ExitCode, dict[str, Any]]:
                 and "holdings" in BROKER_FUNCTIONS[broker_name]
             )
             ready = credentials_present and (has_trade or has_holdings)
+
+            if broker_name == "Webull" and credentials_present:
+                broker_details = await _collect_webull_health_details(context)
+                initialized_profiles = int(
+                    broker_details.get("profiles_initialized", 0) or 0
+                )
+                discovered_accounts = int(
+                    broker_details.get("accounts_discovered", 0) or 0
+                )
+                if initialized_profiles == 0 or discovered_accounts == 0:
+                    ready = False
+
             if context.mock_brokers:
                 missing_env_vars = []
                 credentials_present = True
@@ -1054,6 +1177,7 @@ async def run_cli(args, parser, context) -> tuple[ExitCode, dict[str, Any]]:
                     "session_initialized": session_initialized,
                     "has_trade": has_trade,
                     "has_holdings": has_holdings,
+                    "details": broker_details,
                 }
             )
 
@@ -1067,6 +1191,20 @@ async def run_cli(args, parser, context) -> tuple[ExitCode, dict[str, Any]]:
                     print(
                         f"  missing credentials: {', '.join(item['missing_env_vars'])}"
                     )
+                details = item.get("details") or {}
+                if item["broker"] == "Webull" and details:
+                    print(
+                        "  profiles: "
+                        f"configured={details.get('profiles_configured', 0)}, "
+                        f"token-ready={details.get('token_ready_profiles', 0)}, "
+                        f"initialized={details.get('profiles_initialized', 0)}"
+                    )
+                    print(
+                        f"  accounts discovered: {details.get('accounts_discovered', 0)}"
+                    )
+                    init_error = details.get("init_error")
+                    if init_error:
+                        print(f"  init error: {init_error}")
             print("=" * 60)
             print(f"Ready brokers: {ready_count}/{len(broker_health)}")
 
@@ -1191,29 +1329,9 @@ async def run_cli(args, parser, context) -> tuple[ExitCode, dict[str, Any]]:
         }
 
     if context.dry_run:
-        readiness = []
-        ready_brokers = []
-        for broker_name in brokers_to_use:
-            has_trade_function = broker_name in trade_functions
-            required_env_vars = BrokerConfig.get_env_vars(broker_name)
-            credentials_present = all(os.getenv(var) for var in required_env_vars)
-            session_key = BrokerConfig.get_session_key(broker_name)
-            session_initialized = bool(
-                session_key and session_manager.sessions.get(session_key) is not None
-            )
-            broker_ready = has_trade_function and credentials_present
-            if broker_ready:
-                ready_brokers.append(broker_name)
-
-            readiness.append(
-                {
-                    "broker": broker_name,
-                    "has_trade_function": has_trade_function,
-                    "credentials_present": credentials_present,
-                    "session_initialized": session_initialized,
-                    "ready": broker_ready,
-                }
-            )
+        readiness, ready_brokers = _build_dry_run_readiness(
+            {"selected_brokers": brokers_to_use}, trade_functions
+        )
 
         if context.output_format != "json":
             print(
@@ -1455,7 +1573,6 @@ def _build_parser():
 
 def main():
     parser = _build_parser()
-
     args = parser.parse_args()
 
     context = ExecutionContext(
@@ -1536,8 +1653,11 @@ def main():
         if context.non_interactive:
             set_non_interactive_mode(False)
             restore_original_input()
-        # Cleanup sessions (synchronous) - http_client stays open for reuse
-        session_manager.cleanup()
+        # Shutdown sessions and close shared HTTP client
+        try:
+            asyncio.run(session_manager.shutdown())
+        except Exception:
+            session_manager.cleanup()
 
 
 if __name__ == "__main__":
