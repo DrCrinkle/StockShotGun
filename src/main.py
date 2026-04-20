@@ -5,6 +5,7 @@ import io
 import json
 import os
 import sys
+from dataclasses import asdict
 from datetime import datetime
 from typing import Any
 from setup import setup
@@ -25,6 +26,13 @@ from cli_runtime import (
     compute_trade_exit_code,
 )
 from automation_recap import AutomationRecapStore, parse_chat_recap
+from sweep import (
+    SweepResult,
+    SweepStatus,
+    parse_ratio,
+    status_summary,
+    sweep_all_brokers,
+)
 
 
 def _json_requested_from_argv(argv):
@@ -41,7 +49,7 @@ def _extract_option_value(argv, option_name):
 
 
 def _extract_action_from_argv(argv):
-    known_actions = {"buy", "sell", "setup", "holdings", "health", "automate"}
+    known_actions = {"buy", "sell", "setup", "holdings", "health", "automate", "sweep"}
     for token in argv:
         if token in known_actions:
             return token
@@ -95,7 +103,7 @@ async def print_holdings(holdings):
                     if fallback_value is None and pos.get("price") is not None:
                         try:
                             fallback_value = float(pos["price"]) * float(quantity)
-                        except TypeError, ValueError:
+                        except (TypeError, ValueError):
                             fallback_value = None
                     current_value = fallback_value
 
@@ -376,17 +384,191 @@ def _sum_holdings_quantity(holdings: dict[str, Any] | None) -> int:
             quantity = pos.get("quantity", 0)
             try:
                 quantity_value = int(float(quantity))
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 quantity_value = 0
             total += max(0, quantity_value)
     return total
 
 
+def _mock_sweep_holdings_fn(broker_name: str, ticker: str):
+    async def mock_holdings(requested_ticker: str):
+        if requested_ticker.upper().endswith("D"):
+            return {}
+
+        symbol = ticker.upper()
+        samples: dict[str, Any] = {
+            "Robinhood": {"MOCK-RH": [{"symbol": symbol, "quantity": 0.04}]},
+            "TastyTrade": {"MOCK-TT": [{"symbol": symbol, "quantity": 0.04}]},
+            "BBAE": {"MOCK-BBAE": []},
+            "DSPAC": {"MOCK-DSPAC": []},
+            "Firstrade": {"MOCK-FT": []},
+            "Public": {"MOCK-PUBLIC": [{"symbol": symbol, "quantity": 1}]},
+            "SoFi": {"MOCK-SOFI": []},
+            "Webull": {"MOCK-WEBULL": []},
+            "Schwab": {"MOCK-SCHWAB": []},
+            "WellsFargo": {"MOCK-WF": []},
+            "Chase": {"MOCK-CHASE": []},
+            "Fennel": {"MOCK-FENNEL": [{"symbol": symbol, "quantity": 1}]},
+            "Tradier": None,
+        }
+        return samples.get(broker_name, {})
+
+    return mock_holdings
+
+
+def _sweep_result_to_dict(result: SweepResult) -> dict[str, Any]:
+    return {
+        "broker": result.broker,
+        "account_id": result.account_id,
+        "holdings_outcome": result.holdings_outcome.value,
+        "status": result.status.value,
+        "observed_qty": result.observed_qty,
+        "expected_post_qty": result.expected_post_qty,
+        "pre_split_qty": result.pre_split_qty,
+        "profile": asdict(result.profile),
+        "details": result.details,
+    }
+
+
+def _format_qty(quantity: float | None) -> str:
+    if quantity is None:
+        return "---"
+    if quantity.is_integer():
+        return str(int(quantity))
+    return f"{quantity:g}"
+
+
+def _print_sweep_results(
+    ticker: str,
+    ratio: str,
+    pre_split_qty: int,
+    results: list[SweepResult],
+    force: bool,
+) -> None:
+    print(
+        f"\nSweep results for {ticker.upper()} "
+        f"(ratio {ratio}, pre-split qty: {pre_split_qty}):\n"
+    )
+    for result in results:
+        status = result.status.name
+        if result.status == SweepStatus.AMBIGUOUS and force:
+            detail = "ambiguous; included by --force"
+        else:
+            detail = result.details.splitlines()[0]
+        print(
+            f"  {result.broker:<12} [{result.account_id:<16}] "
+            f"{status:<20} qty={_format_qty(result.observed_qty):<6} {detail}"
+        )
+
+    summary = status_summary(results)
+    print(
+        "\nSummary: "
+        f"{summary['share_arrived']} arrived, "
+        f"{summary['processing']} processing, "
+        f"{summary['fractional_pending']} fractional, "
+        f"{summary['awaiting_split']} awaiting split, "
+        f"{summary['ambiguous']} ambiguous, "
+        f"{summary['skipped']} skipped, "
+        f"{summary['error']} error"
+    )
+
+
+async def _run_sweep(args, parser, context):
+    try:
+        parse_ratio(args.ratio)
+    except ValueError as exc:
+        _raise_parser_error(parser, str(exc), context)
+
+    if args.pre_qty < 0:
+        _raise_parser_error(parser, "--pre-qty cannot be negative", context)
+
+    if args.broker:
+        selected_brokers = args.broker
+        for broker_name in selected_brokers:
+            if broker_name not in BROKER_FUNCTIONS:
+                _raise_parser_error(
+                    parser, f"Invalid broker specified: {broker_name}", context
+                )
+    else:
+        selected_brokers = [
+            broker_name
+            for broker_name in BrokerConfig.get_all_brokers()
+            if broker_name in BROKER_FUNCTIONS and "holdings" in BROKER_FUNCTIONS[broker_name]
+        ]
+
+    if not selected_brokers:
+        raise CliRuntimeError(
+            "No broker holdings functions configured",
+            ExitCode.CONFIG_CREDENTIAL_MISSING,
+        )
+
+    if context.mock_brokers:
+        broker_holdings = {
+            broker_name: _mock_sweep_holdings_fn(broker_name, args.ticker)
+            for broker_name in selected_brokers
+        }
+    else:
+        try:
+            await session_manager.initialize_selected_sessions(selected_brokers)
+        except Exception as exc:
+            raise CliRuntimeError(
+                f"Failed to initialize broker sessions: {exc}",
+                ExitCode.AUTH_SESSION_FAILURE,
+                details={"brokers": selected_brokers},
+            ) from exc
+
+        broker_holdings = {
+            broker_name: BROKER_FUNCTIONS[broker_name]["holdings"]
+            for broker_name in selected_brokers
+            if broker_name in BROKER_FUNCTIONS
+            and "holdings" in BROKER_FUNCTIONS[broker_name]
+        }
+
+    results = await sweep_all_brokers(
+        args.ticker.upper(),
+        args.ratio,
+        args.pre_qty,
+        broker_holdings,
+        selected_brokers,
+    )
+    summary = status_summary(results)
+
+    if context.output_format != "json":
+        _print_sweep_results(args.ticker, args.ratio, args.pre_qty, results, args.force)
+
+    sellable_statuses = {SweepStatus.SHARE_ARRIVED}
+    if args.force:
+        sellable_statuses.add(SweepStatus.AMBIGUOUS)
+    sellable_results = [
+        result for result in results if result.status in sellable_statuses
+    ]
+
+    all_skipped_or_error = results and all(
+        result.status in {SweepStatus.SKIPPED, SweepStatus.ERROR} for result in results
+    )
+    if all_skipped_or_error:
+        exit_code = ExitCode.CONFIG_CREDENTIAL_MISSING
+    else:
+        exit_code = ExitCode.SUCCESS
+
+    return exit_code, {
+        "mock": context.mock_brokers,
+        "ticker": args.ticker.upper(),
+        "ratio": args.ratio,
+        "pre_split_qty": args.pre_qty,
+        "force": args.force,
+        "selected_brokers": selected_brokers,
+        "results": [_sweep_result_to_dict(result) for result in results],
+        "summary": summary,
+        "sellable": [_sweep_result_to_dict(result) for result in sellable_results],
+    }
+
+
 async def _run_batch_from_file(args, parser, context):
-    if args.action in {"setup", "holdings"}:
+    if args.action in {"setup", "holdings", "health", "sweep"}:
         _raise_parser_error(
             parser,
-            "--from-file cannot be combined with setup/holdings actions",
+            "--from-file cannot be combined with setup/holdings/health/sweep actions",
             context,
         )
 
@@ -790,6 +972,9 @@ async def run_cli(args, parser, context) -> tuple[ExitCode, dict[str, Any]]:
     if args.action == "automate":
         return await _run_automate_from_recap(args, parser, context)
 
+    if args.action == "sweep":
+        return await _run_sweep(args, parser, context)
+
     if args.from_file:
         return await _run_batch_from_file(args, parser, context)
 
@@ -1114,89 +1299,163 @@ async def run_cli(args, parser, context) -> tuple[ExitCode, dict[str, Any]]:
     }
 
 
-def main():
-    parser = RuntimeArgumentParser(
-        description="A one click solution to submitting an order across multiple brokers"
-    )
-    parser.add_argument(
-        "action",
-        choices=["buy", "sell", "setup", "holdings", "health", "automate"],
-        nargs="?",
-        help="Action to perform",
-    )
-    parser.add_argument("quantity", type=int, nargs="?", help="Quantity to trade")
-    parser.add_argument("ticker", nargs="?", help="Ticker symbol")
-    parser.add_argument(
-        "price", nargs="?", type=float, help="Price for limit order (optional)"
-    )
+def _add_shared_cli_args(parser, suppress_defaults: bool = False):
+    default = argparse.SUPPRESS if suppress_defaults else None
+    text_default = argparse.SUPPRESS if suppress_defaults else "text"
+    false_default = argparse.SUPPRESS if suppress_defaults else False
+    empty_default = argparse.SUPPRESS if suppress_defaults else ""
+    default_qty_default = argparse.SUPPRESS if suppress_defaults else 1
+    db_default = argparse.SUPPRESS if suppress_defaults else "logs/automation.sqlite3"
+
     parser.add_argument(
         "--broker",
         action="append",
+        default=default,
         help="Broker(s) to use. Can be specified multiple times (e.g., --broker Public --broker Robinhood)",
     )
     parser.add_argument(
         "--output",
         choices=["text", "json"],
-        default="text",
+        default=text_default,
         help="Output format (reserved for agent-safe machine output)",
     )
     parser.add_argument(
         "--non-interactive",
         action="store_true",
+        default=false_default,
         help="Disable interactive input prompts (reserved for agent mode)",
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
+        default=false_default,
         help="Validate execution without placing orders (reserved for agent mode)",
     )
     parser.add_argument(
         "--mock-brokers",
         action="store_true",
+        default=false_default,
         help="Use deterministic mock broker responses instead of live broker calls",
     )
     parser.add_argument(
         "--log-format",
         choices=["text", "jsonl"],
-        default="text",
+        default=text_default,
         help="Log format (reserved for structured agent logging)",
     )
     parser.add_argument(
         "--request-id",
-        default="",
+        default=empty_default,
         help="Optional request correlation id",
     )
     parser.add_argument(
         "--log-file",
-        default="",
+        default=empty_default,
         help="Optional path for structured logs when --log-format jsonl is used",
     )
     parser.add_argument(
         "--from-file",
-        default="",
+        default=empty_default,
         help="Load and execute batch orders from a JSON file",
     )
     parser.add_argument(
         "--recap-file",
-        default="",
+        default=empty_default,
         help="Path to chat recap text file for automate action",
     )
     parser.add_argument(
         "--db-path",
-        default="logs/automation.sqlite3",
+        default=db_default,
         help="SQLite path for automation state and dedupe",
     )
     parser.add_argument(
         "--default-qty",
         type=int,
-        default=1,
+        default=default_qty_default,
         help="Default quantity used for generated buy/sell orders",
     )
     parser.add_argument(
         "--today-mmdd",
-        default="",
+        default=empty_default,
         help="Override current date in MM/DD for automation evaluation",
     )
+
+
+def _build_parser():
+    parser = RuntimeArgumentParser(
+        description="A one click solution to submitting an order across multiple brokers"
+    )
+    _add_shared_cli_args(parser)
+    parser.set_defaults(quantity=None, ticker=None, price=None, force=False)
+
+    shared_parent = argparse.ArgumentParser(add_help=False)
+    _add_shared_cli_args(shared_parent, suppress_defaults=True)
+
+    subparsers = parser.add_subparsers(dest="action", metavar="action")
+
+    for action in ("buy", "sell"):
+        trade_parser = subparsers.add_parser(
+            action,
+            parents=[shared_parent],
+            help=f"{action.capitalize()} across selected brokers",
+        )
+        trade_parser.add_argument("quantity", type=int, help="Quantity to trade")
+        trade_parser.add_argument("ticker", help="Ticker symbol")
+        trade_parser.add_argument(
+            "price", nargs="?", type=float, help="Price for limit order (optional)"
+        )
+
+    setup_parser = subparsers.add_parser(
+        "setup", parents=[shared_parent], help="Configure broker credentials"
+    )
+    setup_parser.set_defaults(quantity=None, ticker=None, price=None)
+
+    holdings_parser = subparsers.add_parser(
+        "holdings", parents=[shared_parent], help="Fetch holdings for one broker"
+    )
+    holdings_parser.add_argument("ticker", nargs="?", help="Ticker symbol")
+    holdings_parser.set_defaults(quantity=None, price=None)
+
+    health_parser = subparsers.add_parser(
+        "health", parents=[shared_parent], help="Check broker configuration health"
+    )
+    health_parser.set_defaults(quantity=None, ticker=None, price=None)
+
+    automate_parser = subparsers.add_parser(
+        "automate", parents=[shared_parent], help="Run automation from recap state"
+    )
+    automate_parser.set_defaults(quantity=None, ticker=None, price=None)
+
+    sweep_parser = subparsers.add_parser(
+        "sweep",
+        parents=[shared_parent],
+        help="Detect post-reverse-split shares across brokers",
+    )
+    sweep_parser.add_argument("ticker", help="Ticker symbol to sweep")
+    sweep_parser.add_argument(
+        "--ratio",
+        required=True,
+        help="Reverse split ratio in N:D format, for example 1:25",
+    )
+    sweep_parser.add_argument(
+        "--pre-qty",
+        type=int,
+        default=1,
+        help="Pre-split shares purchased per broker/account",
+    )
+    sweep_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Include ambiguous positions in the sellable result set",
+    )
+    sweep_parser.set_defaults(quantity=None, price=None)
+
+    return parser
+
+
+def main():
+    parser = _build_parser()
+
     args = parser.parse_args()
 
     context = ExecutionContext(
