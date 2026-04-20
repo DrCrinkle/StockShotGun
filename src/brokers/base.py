@@ -57,7 +57,7 @@ class RateLimiter:
         "BBAE": 5,  # Conservative
         "DSPAC": 5,  # Conservative
         "SoFi": 5,  # Conservative
-        "Webull": 5,  # Conservative
+        "Webull": 1,  # Official OpenAPI order limit is 1/s
         "WellsFargo": 5,  # Conservative
         "Chase": 5,  # Conservative (browser automation)
     }
@@ -240,8 +240,6 @@ class BrokerConfig:
                 "WEBULL_ACCESS_TOKEN",
                 "WEBULL_REFRESH_TOKEN",
                 "WEBULL_UUID",
-                "WEBULL_ACCOUNT_ID",
-                "WEBULL_DID",
             ],
             "requires_mfa": False,
             "enabled": True,
