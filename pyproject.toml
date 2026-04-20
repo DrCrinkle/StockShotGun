@@ -5,20 +5,21 @@ description = "Multi-broker trading application for reverse split arbitrage"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
-    "urwid==3.0.3",
+    "urwid==3.0.5",
     "python-dotenv==1.2.1",
     "pyotp==2.9.0",
     "httpx[http2]==0.28.1",
-    "tastytrade==12.0.1",
-    "firstrade==0.0.34",
-    "schwab-py==1.4.0",
+    "tastytrade==12.0.2",
+    "firstrade==0.0.38",
+    "schwab-py==1.5.1",
     "robin-stocks==3.4.0",
-    "bbae-invest-api==0.1.3",
-    "dspac-invest-api==0.1.3",
-    "zendriver==0.15.0",
-    "beautifulsoup4==4.14.2",
-    "curl-cffi==0.13.0",
-    "webull @ git+https://github.com/ImNotOssy/webull.git@587b3c7bea32a475f1596f3328cf515b4566f624",
+    "bbae-invest-api==0.1.5",
+    "dspac-invest-api==0.1.4",
+    "zendriver==0.15.2",
+    "selectolax>=0.4.7",
+    "chardet<6",
+    "curl-cffi==0.14.0",
+    "webull @ git+https://github.com/ImNotOssy/webull.git@67c195415ee34941314901e1461eca9790c45739",
 ]
 
 [tool.setuptools.package-dir]
