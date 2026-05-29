@@ -10,11 +10,14 @@ Root AGENTS.md conventions apply; this file only covers src-layer routing/runtim
 ## STRUCTURE
 ```
 src/
-├── main.py            # Primary dispatcher: argparse, CLI/TUI routing, automate + batch file flows
-├── order_processor.py # Concurrent execution engine with validation, timeout, and retry behavior
+├── main.py            # Dispatcher: argparse + run_cli routing; delegates handlers to cli/
+├── cli/               # Command handlers: trade, batch, automate, sweep + shared common
+├── order_processor.py # Retired fan-out; now only the current_broker context var
 ├── cli_runtime.py     # ExitCode, CliRuntimeError, ExecutionContext, JSON response envelopes
 ├── automation_recap.py# SQLite recap ingestion + due-buy/due-sell extraction helpers
 ├── setup.py           # Interactive credential wizard writing .env entries
+├── agentic/           # Router + per-broker MCP servers + cli_bridge (gate/execute path)
+├── enforcement/       # Order enforcement gate: limits, freeze, circuit breaker, audit
 ├── brokers/           # Broker adapter layer (see src/brokers/AGENTS.md)
 └── tui/               # urwid terminal interface (see src/tui/AGENTS.md)
 ```
@@ -22,19 +25,20 @@ src/
 ## WHERE TO LOOK
 | Task | Location | Notes |
 |------|----------|-------|
-| Add/change CLI action | `main.py` (`main`, `run_cli`) | Keep action routing + output envelope behavior aligned |
-| Batch order file flow | `main.py` (`_validate_batch_orders`, `_run_batch_from_file`) | Validates schema and broker selection before execution |
-| Automation from recap | `main.py` (`_run_automate_from_recap`) + `automation_recap.py` | Recap parsing + due-signal execution path |
+| Add/change CLI action | `main.py` (`run_cli` dispatch) + `cli/` handler | Keep action routing + output envelope behavior aligned |
+| Buy/sell flow | `cli/trade.py` (`run_trade`) | Pre-flight → gate → execute via Router |
+| Batch order file flow | `cli/batch.py` (`_validate_batch_orders`, `_run_batch_from_file`) | Validates schema and broker selection before execution |
+| Automation from recap | `cli/automate.py` (`_run_automate_from_recap`) + `automation_recap.py` | Recap parsing + due-signal execution path |
 | Runtime envelope/errors | `cli_runtime.py` | Source of truth for machine-readable CLI responses |
-| Concurrent order execution | `order_processor.py` | Broker-level timeout/validation/execution orchestration |
+| Order execution + gating | `agentic/cli_bridge.py` | `preflight_validate` → `apply_main_py_gate*` → `execute_via_router` |
 | Setup credentials | `setup.py` | Writes `.env`; not packaging/build setup |
 
 ## CONVENTIONS (SRC-SPECIFIC)
-- Keep `main.py` as dispatcher; push broker-specific behavior into broker modules.
+- Keep `main.py` as dispatcher; put command handlers in `cli/` and broker-specific behavior in broker modules.
 - Route all CLI JSON output through `build_response_envelope` helpers.
 - Respect `ExecutionContext`: request IDs, non-interactive mode, output mode, and log file path.
 - When non-interactive mode is set, raise `CliRuntimeError` instead of blocking for user input.
-- Use `OrderBatchProcessor` for multi-broker order execution; do not duplicate gather/timeout logic in actions.
+- Execute orders through the gate/Router path (`cli_bridge.preflight_validate` → `apply_main_py_gate*` → `execute_via_router`); the gate call MUST precede execution. Do not call broker SDKs directly from handlers.
 - Keep broker function lookup centralized through `tui/broker_functions.py` mappings.
 
 ## ANTI-PATTERNS (SRC LAYER)
