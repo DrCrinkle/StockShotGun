@@ -15,6 +15,7 @@ import time
 import logging
 import traceback
 import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Dict, Optional, Any, ClassVar
 from dotenv import load_dotenv
@@ -111,7 +112,11 @@ def broker_event(
 
 
 class APICache:
-    """Simple in-memory cache for API responses.
+    """Simple in-memory LRU cache for API responses with TTL expiry.
+
+    Backed by an OrderedDict so eviction is O(1) (pop the oldest entry)
+    instead of O(n) (scanning every timestamp for the minimum). Reads move
+    the key to the most-recently-used end, making eviction true LRU.
 
     Thread-safe for Free-threaded Python 3.14 (no-GIL).
     """
@@ -119,42 +124,37 @@ class APICache:
     def __init__(self, max_size=1000, ttl=300):  # 5 minutes TTL
         self.max_size = max_size
         self.ttl = ttl
-        self._cache = {}
-        self._timestamps = {}
+        # key -> (value, timestamp); ordered oldest-used -> newest-used
+        self._cache: "OrderedDict[str, tuple[Any, float]]" = OrderedDict()
         self._lock = threading.Lock()
 
     def get(self, key: str) -> Optional[Any]:
         """Get cached value if not expired."""
         with self._lock:
-            if key in self._cache:
-                if time.time() - self._timestamps[key] < self.ttl:
-                    return self._cache[key]
-                else:
-                    # Expired, remove
-                    del self._cache[key]
-                    del self._timestamps[key]
+            entry = self._cache.get(key)
+            if entry is None:
+                return None
+            value, timestamp = entry
+            if time.time() - timestamp < self.ttl:
+                self._cache.move_to_end(key)  # mark as most-recently-used
+                return value
+            # Expired, remove
+            del self._cache[key]
             return None
 
     def set(self, key: str, value: Any):
-        """Set cached value with timestamp."""
+        """Set cached value with timestamp, evicting the LRU entry if full."""
         with self._lock:
-            # Simple LRU eviction
-            if len(self._cache) >= self.max_size:
-                # Remove oldest entry
-                oldest_key = min(
-                    self._timestamps.keys(), key=lambda k: self._timestamps[k]
-                )
-                del self._cache[oldest_key]
-                del self._timestamps[oldest_key]
-
-            self._cache[key] = value
-            self._timestamps[key] = time.time()
+            if key in self._cache:
+                self._cache.move_to_end(key)
+            self._cache[key] = (value, time.time())
+            if len(self._cache) > self.max_size:
+                self._cache.popitem(last=False)  # evict least-recently-used
 
     def clear(self):
         """Clear all cached data."""
         with self._lock:
             self._cache.clear()
-            self._timestamps.clear()
 
 
 # Global API cache
