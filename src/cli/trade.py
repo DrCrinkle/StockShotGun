@@ -7,6 +7,7 @@ from agentic.cli_bridge import (
     apply_main_py_gate,
     execute_via_router,
     gate_error_to_exit_code,
+    preflight_validate,
     record_main_py_outcome,
 )
 from enforcement import GateError
@@ -121,6 +122,53 @@ async def run_trade(args, parser, context) -> tuple[ExitCode, dict[str, Any]]:
             details={"brokers": brokers_to_use},
         ) from exc
 
+    # Pre-flight: validate each broker can take the order BEFORE gating/fan-out,
+    # so an infeasible leg (e.g. insufficient shares) fails fast instead of
+    # being discovered mid-execution. Brokers that fail are dropped and reported
+    # as skipped; only survivors are gated and executed.
+    validate_functions = {
+        broker_name: BROKER_FUNCTIONS[broker_name]["validate"]
+        for broker_name in brokers_to_use
+        if broker_name in BROKER_FUNCTIONS
+        and "validate" in BROKER_FUNCTIONS.get(broker_name, {})
+    }
+    validated, validation_skipped = await preflight_validate(
+        selected_brokers=brokers_to_use,
+        action=args.action,
+        quantity=args.quantity,
+        ticker=args.ticker,
+        price=args.price,
+        validate_functions=validate_functions,
+        progress_fn=None if context.output_format == "json" else print,
+    )
+    if not validated:
+        if context.output_format != "json":
+            print("All brokers failed pre-flight validation; nothing to execute")
+        return ExitCode.CONFIG_CREDENTIAL_MISSING, {
+            "mock": context.mock_brokers,
+            "order": order,
+            "results": {
+                "successful": 0,
+                "failed": 0,
+                "skipped": len(validation_skipped),
+                "statuses": [
+                    {
+                        "ticker": args.ticker,
+                        "action": args.action,
+                        "successful": [],
+                        "failed": [],
+                        "skipped": [b for b, _ in validation_skipped],
+                    }
+                ],
+            },
+            "validation_skipped": [
+                {"broker": b, "reason": r} for b, r in validation_skipped
+            ],
+            "messages": [],
+        }
+    brokers_to_use = validated
+    order["selected_brokers"] = validated
+
     # F5 v0.2 — route through enforcement gate BEFORE order_processor fans out.
     # The gate runs: per-order limit (ISC-13), per-day limit (ISC-14), freeze
     # list (ISC-42), circuit breaker (ISC-43), and writes a propose audit entry
@@ -183,6 +231,13 @@ async def run_trade(args, parser, context) -> tuple[ExitCode, dict[str, Any]]:
         progress_fn=cli_response_fn,
     )
 
+    # Fold pre-flight skips into the reported results so the envelope reflects
+    # every broker the user selected (executed + validation-skipped).
+    for broker, _reason in validation_skipped:
+        results["skipped"] += 1
+        if results["statuses"]:
+            results["statuses"][0]["skipped"].append(broker)
+
     await record_main_py_outcome(
         proposal_id=gate_proposal["proposal_id"],
         action=args.action,
@@ -212,5 +267,8 @@ async def run_trade(args, parser, context) -> tuple[ExitCode, dict[str, Any]]:
             "selected_brokers": brokers_to_use,
         },
         "results": results,
+        "validation_skipped": [
+            {"broker": b, "reason": r} for b, r in validation_skipped
+        ],
         "messages": cli_messages,
     }

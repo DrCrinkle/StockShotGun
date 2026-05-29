@@ -8,6 +8,7 @@ from agentic.cli_bridge import (
     apply_main_py_gate_batch,
     execute_via_router,
     gate_error_to_exit_code,
+    preflight_validate,
     record_main_py_outcome_batch,
 )
 from enforcement import GateError
@@ -215,6 +216,52 @@ async def _run_batch_from_file(args, parser, context):
             details={"brokers": brokers_to_use},
         ) from exc
 
+    # Pre-flight each order's brokers BEFORE gating; drop legs that fail
+    # validation and drop any order left with no executable broker, so the
+    # batch fails fast on infeasible legs instead of mid-fan-out.
+    validation_skipped: list[tuple[str, str]] = []
+    executable_orders = []
+    for order in orders:
+        order_brokers = list(order.get("selected_brokers", []))
+        validate_functions = {
+            b: BROKER_FUNCTIONS[b]["validate"]
+            for b in order_brokers
+            if b in BROKER_FUNCTIONS and "validate" in BROKER_FUNCTIONS.get(b, {})
+        }
+        validated, skipped = await preflight_validate(
+            selected_brokers=order_brokers,
+            action=order["action"],
+            quantity=order["quantity"],
+            ticker=order["ticker"],
+            price=order.get("price"),
+            validate_functions=validate_functions,
+            progress_fn=None if context.output_format == "json" else print,
+        )
+        validation_skipped.extend(skipped)
+        if validated:
+            order["selected_brokers"] = validated
+            executable_orders.append(order)
+
+    if not executable_orders:
+        if context.output_format != "json":
+            print("All orders failed pre-flight validation; nothing to execute")
+        return ExitCode.CONFIG_CREDENTIAL_MISSING, {
+            "batch": True,
+            "order_count": len(orders),
+            "brokers": brokers_to_use,
+            "results": {
+                "successful": 0,
+                "failed": 0,
+                "skipped": len(validation_skipped),
+                "statuses": [],
+            },
+            "validation_skipped": [
+                {"broker": b, "reason": r} for b, r in validation_skipped
+            ],
+            "messages": [],
+        }
+    orders = executable_orders
+
     if context.output_format != "json":
         print(
             f"\nBATCH RUN: {len(orders)} order(s) across {len(brokers_to_use)} broker(s): {', '.join(brokers_to_use)}\n"
@@ -254,6 +301,10 @@ async def _run_batch_from_file(args, parser, context):
         progress_fn=cli_response_fn,
     )
 
+    # Fold pre-flight skips into the aggregate skip count.
+    if validation_skipped:
+        results["skipped"] += len(validation_skipped)
+
     await record_main_py_outcome_batch(
         proposals=batch_proposals,
         orders=orders,
@@ -274,5 +325,8 @@ async def _run_batch_from_file(args, parser, context):
         "order_count": len(orders),
         "brokers": brokers_to_use,
         "results": results,
+        "validation_skipped": [
+            {"broker": b, "reason": r} for b, r in validation_skipped
+        ],
         "messages": cli_messages,
     }

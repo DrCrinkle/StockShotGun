@@ -9,6 +9,7 @@ from agentic.cli_bridge import (
     apply_main_py_gate_batch,
     execute_via_router,
     gate_error_to_exit_code,
+    preflight_validate,
     record_main_py_outcome_batch,
 )
 from enforcement import GateError
@@ -239,6 +240,55 @@ async def _run_automate_from_recap(args, parser, context):
                 ExitCode.AUTH_SESSION_FAILURE,
             ) from exc
 
+        # Pre-flight each generated order BEFORE gating; drop legs that fail
+        # validation and any order left with no executable broker. Keep
+        # `orders` and `order_sources` index-aligned so the post-execution
+        # buy/sell attribution below stays correct.
+        validation_skipped: list[tuple[str, str]] = []
+        executable: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for order, source in zip(orders, order_sources):
+            order_brokers = list(order.get("selected_brokers", []))
+            validate_functions = {
+                b: BROKER_FUNCTIONS[b]["validate"]
+                for b in order_brokers
+                if b in BROKER_FUNCTIONS and "validate" in BROKER_FUNCTIONS.get(b, {})
+            }
+            validated, skipped = await preflight_validate(
+                selected_brokers=order_brokers,
+                action=order["action"],
+                quantity=order["quantity"],
+                ticker=order["ticker"],
+                price=order.get("price"),
+                validate_functions=validate_functions,
+                progress_fn=None if context.output_format == "json" else print,
+            )
+            validation_skipped.extend(skipped)
+            if validated:
+                order["selected_brokers"] = validated
+                executable.append((order, source))
+
+        if not executable:
+            return ExitCode.CONFIG_CREDENTIAL_MISSING, {
+                "automation": True,
+                "ingestion": ingestion,
+                "today_mmdd": today_mmdd,
+                "generated_orders": len(orders),
+                "executed_buy_signals": [],
+                "executed_sell_triggers": [],
+                "results": {
+                    "successful": 0,
+                    "failed": 0,
+                    "skipped": len(validation_skipped),
+                    "statuses": [],
+                },
+                "validation_skipped": [
+                    {"broker": b, "reason": r} for b, r in validation_skipped
+                ],
+                "messages": [],
+            }
+        orders = [o for o, _ in executable]
+        order_sources = [s for _, s in executable]
+
         automation_messages = []
 
         def automation_response_fn(message, force_redraw=False):
@@ -271,6 +321,10 @@ async def _run_automate_from_recap(args, parser, context):
             dry_run=False,
             progress_fn=automation_response_fn,
         )
+
+        # Fold pre-flight skips into the aggregate skip count.
+        if validation_skipped:
+            results["skipped"] += len(validation_skipped)
 
         await record_main_py_outcome_batch(
             proposals=automation_proposals,
@@ -318,6 +372,9 @@ async def _run_automate_from_recap(args, parser, context):
             "executed_buy_signals": sorted(successful_buy_ids),
             "executed_sell_triggers": sorted(successful_sell_ids),
             "results": results,
+            "validation_skipped": [
+                {"broker": b, "reason": r} for b, r in validation_skipped
+            ],
             "messages": automation_messages,
         }
     finally:

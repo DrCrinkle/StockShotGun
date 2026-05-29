@@ -16,10 +16,10 @@ from tui.input_handler import (
     setup_tui_input_interception,
     restore_original_input,
 )
-from order_processor import order_processor
 from agentic.cli_bridge import (
     apply_main_py_gate_batch,
     execute_via_router,
+    preflight_validate,
     record_main_py_outcome_batch,
 )
 from enforcement import GateError
@@ -301,10 +301,7 @@ def run_tui():
                 broker_statuses[broker] = "queued"
         update_broker_status_text()
 
-        # Convert BROKER_CONFIG to simple {broker: function} mappings for order_processor
-        trade_functions = {
-            broker: config["trade"] for broker, config in BROKER_CONFIG.items()
-        }
+        # Broker validate fns for pre-flight (trade fns are dispatched by the Router).
         validate_functions = {
             broker: config["validate"]
             for broker, config in BROKER_CONFIG.items()
@@ -319,6 +316,35 @@ def run_tui():
         ]
 
         try:
+            # Pre-flight each order before gating; drop legs that fail broker
+            # validation and any order left with no executable broker.
+            executable_orders = []
+            for order in orders:
+                validated, skipped = await preflight_validate(
+                    selected_brokers=list(order.get("selected_brokers", [])),
+                    action=order["action"],
+                    quantity=order["quantity"],
+                    ticker=order["ticker"],
+                    price=order.get("price"),
+                    validate_functions=validate_functions,
+                )
+                for broker, reason in skipped:
+                    broker_statuses[broker] = "skipped"
+                    response_box.add_response(f"   ⚠ {broker}: Skipped ({reason})")
+                if validated:
+                    order["selected_brokers"] = validated
+                    executable_orders.append(order)
+            update_broker_status_text()
+            if not executable_orders:
+                response_box.add_response(
+                    "All brokers failed pre-flight validation; nothing to execute",
+                    force_redraw=True,
+                )
+                orders.clear()
+                update_order_summary()
+                return
+            orders[:] = executable_orders
+
             # F5 v0.3 — gate every TUI-submitted order before fan-out.
             try:
                 tui_proposals = await apply_main_py_gate_batch(orders)
@@ -413,9 +439,6 @@ def run_tui():
             broker_statuses[broker] = "queued"
         update_broker_status_text()
 
-        trade_functions = {
-            broker: config["trade"] for broker, config in BROKER_CONFIG.items()
-        }
         validate_functions = {
             broker: config["validate"]
             for broker, config in BROKER_CONFIG.items()
@@ -423,6 +446,32 @@ def run_tui():
         }
 
         try:
+            # Pre-flight the retried orders before gating, same as submit.
+            executable_retry = []
+            for order in retry_orders:
+                validated, skipped = await preflight_validate(
+                    selected_brokers=list(order.get("selected_brokers", [])),
+                    action=order["action"],
+                    quantity=order["quantity"],
+                    ticker=order["ticker"],
+                    price=order.get("price"),
+                    validate_functions=validate_functions,
+                )
+                for broker, reason in skipped:
+                    broker_statuses[broker] = "skipped"
+                    response_box.add_response(f"   ⚠ {broker}: Skipped ({reason})")
+                if validated:
+                    order["selected_brokers"] = validated
+                    executable_retry.append(order)
+            update_broker_status_text()
+            if not executable_retry:
+                response_box.add_response(
+                    "All retried brokers failed pre-flight validation.",
+                    force_redraw=True,
+                )
+                return
+            retry_orders[:] = executable_retry
+
             # F5 v0.3 — gate the retried orders too.
             try:
                 retry_proposals = await apply_main_py_gate_batch(retry_orders)
