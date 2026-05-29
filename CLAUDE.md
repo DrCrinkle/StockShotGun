@@ -442,3 +442,17 @@ Broker-specific SDKs:
   - Implements class-based pattern with `WellsFargoClient` for state management
   - Automatically discovers multiple accounts (WELLSTRADE, IRAs) from single login
   - Browser session is cached within a single client instance for efficiency
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues (`DrCrinkle/StockShotGun`). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default label vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout — `CONTEXT.md` at root + `docs/adr/`. See `docs/agents/domain.md`.

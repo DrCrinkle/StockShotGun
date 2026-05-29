@@ -1,0 +1,500 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>StockShotGun — Status</title>
+<style>
+  :root {
+    --bg: #0e0e10;
+    --bg-elev: #16161a;
+    --bg-card: #1c1c21;
+    --border: #2a2a31;
+    --text: #e6e6ea;
+    --muted: #8a8a96;
+    --accent: #7dd3fc;
+    --accent-2: #c4b5fd;
+    --good: #6ee7b7;
+    --warn: #fcd34d;
+    --bad: #f87171;
+    --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box }
+  html, body { background: var(--bg); color: var(--text); margin: 0 }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+    line-height: 1.55;
+    padding: 48px 32px 96px;
+    max-width: 1080px;
+    margin: 0 auto;
+  }
+  h1, h2, h3 { letter-spacing: -0.01em; font-weight: 600 }
+  h1 { font-size: 2.2rem; margin: 0 0 4px }
+  h2 {
+    font-size: 1.3rem;
+    margin: 56px 0 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  h3 { font-size: 1rem; margin: 0 0 8px; color: var(--accent) }
+  p { margin: 0 0 12px }
+  code, pre { font-family: var(--mono); font-size: 0.88em }
+  pre {
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    overflow-x: auto;
+    color: #d4d4dc;
+  }
+  code:not(pre code) {
+    background: var(--bg-elev);
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: var(--accent);
+    font-size: 0.85em;
+  }
+  a { color: var(--accent); text-decoration: none }
+  a:hover { text-decoration: underline }
+
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin: 0 0 24px }
+  .badges { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 24px }
+  .badge {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    font-family: var(--mono);
+    border: 1px solid var(--border);
+    background: var(--bg-elev);
+    color: var(--muted);
+  }
+  .badge.good { color: var(--good); border-color: rgba(110, 231, 183, 0.3) }
+  .badge.accent { color: var(--accent); border-color: rgba(125, 211, 252, 0.3) }
+  .badge.warn { color: var(--warn); border-color: rgba(252, 211, 77, 0.3) }
+
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+    margin: 24px 0 32px;
+  }
+  .stat {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .stat .num {
+    font-family: var(--mono);
+    font-size: 1.8rem;
+    font-weight: 600;
+    color: var(--accent);
+    line-height: 1.1;
+  }
+  .stat .label {
+    color: var(--muted);
+    font-size: 0.82rem;
+    margin-top: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .grid-2 {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 16px;
+    margin: 16px 0;
+  }
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+  }
+  .card ul { margin: 8px 0 0; padding-left: 20px }
+  .card li { margin: 4px 0; color: #c5c5cf }
+
+  table { width: 100%; border-collapse: collapse; margin: 8px 0 }
+  th, td {
+    padding: 8px 12px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.92rem;
+  }
+  th {
+    color: var(--muted);
+    font-weight: 500;
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  td.mono { font-family: var(--mono); color: var(--accent) }
+  td.status-done { color: var(--good) }
+  td.status-partial { color: var(--warn) }
+  td.status-open { color: var(--muted) }
+
+  .progress-bar {
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    height: 10px;
+    border-radius: 999px;
+    overflow: hidden;
+    margin: 8px 0 4px;
+  }
+  .progress-fill {
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    height: 100%;
+  }
+
+  .arch-diagram {
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 24px;
+    margin: 16px 0;
+    overflow-x: auto;
+    color: #b8b8c1;
+    font-family: var(--mono);
+    font-size: 0.82rem;
+    line-height: 1.4;
+  }
+
+  .tag {
+    display: inline-block;
+    background: var(--bg-elev);
+    color: var(--accent);
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    padding: 2px 8px;
+    border-radius: 4px;
+    margin: 2px;
+  }
+  .tag.good { color: var(--good) }
+  .tag.warn { color: var(--warn) }
+
+  .footer {
+    margin-top: 80px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+</style>
+</head>
+<body>
+
+<h1>StockShotGun</h1>
+<p class="subtitle">
+  Multi-broker reverse-split arbitrage tool, agentic-first.
+  One MCP surface fans out across 13 brokerage integrations with per-leg-token-validated
+  safety enforcement.
+</p>
+
+<div class="badges">
+  <span class="badge good">135 tests passing</span>
+  <span class="badge accent">38/53 ISCs</span>
+  <span class="badge accent">8 MCP tools</span>
+  <span class="badge">13 brokers</span>
+  <span class="badge">Python 3.14, async-first</span>
+</div>
+
+<h2>What it does</h2>
+<p>
+  Submits the same order to many brokerage accounts simultaneously. Primary
+  use case is reverse-split arbitrage — buy across N brokers before the split,
+  wait, sweep to detect post-split share arrival per broker, propose sells when
+  legs are ready. Every order — buy and sell, gated CLI and legacy CLI — goes
+  through a two-step propose/execute flow with per-leg confirmation tokens
+  bound to a single-target intent hash. There is no single-call live order
+  path. Code enforces safety; prompts do not.
+</p>
+
+<h2>By the numbers</h2>
+<div class="stats">
+  <div class="stat"><div class="num">38/53</div><div class="label">ISCs locked</div></div>
+  <div class="stat"><div class="num">135</div><div class="label">tests, all green</div></div>
+  <div class="stat"><div class="num">13</div><div class="label">brokers integrated</div></div>
+  <div class="stat"><div class="num">8</div><div class="label">router MCP tools</div></div>
+  <div class="stat"><div class="num">~3,500</div><div class="label">LoC across agentic + enforcement</div></div>
+  <div class="stat"><div class="num">5</div><div class="label">execution surfaces (gated CLI, legacy CLI, TUI, MCP, subprocess)</div></div>
+</div>
+
+<div class="progress-bar"><div class="progress-fill" style="width: 71.7%"></div></div>
+<p style="color: var(--muted); font-size: 0.85rem; margin-top: 0">
+  ISC progress — 38 of 53 criteria verified
+</p>
+
+<h2>Architecture</h2>
+<p>
+  Three layers. The enforcement core is the gate. Per-broker MCPs are the
+  isolation boundary. The router is the agent's surface. CLI, TUI, gated CLI,
+  and MCP clients all route through the same gate.
+</p>
+
+<pre class="arch-diagram">
+  ┌──────────────────────────────────────────────────────────────┐
+  │  AGENT  ─────────────►  ROUTER MCP  (8 tools)                │
+  │   ▲                       │                                  │
+  │   │                       ▼                                  │
+  │   │           ┌───────────────────────┐                      │
+  │   │           │   ENFORCEMENT CORE    │                      │
+  │   │           │  • per-leg tokens     │                      │
+  │   │           │  • intent-hash bind   │                      │
+  │   │           │  • $ limits           │                      │
+  │   │           │  • freeze list        │                      │
+  │   │           │  • circuit breaker    │                      │
+  │   │           │  • audit log (hashed) │                      │
+  │   │           └───────────┬───────────┘                      │
+  │   │                       ▼                                  │
+  │   │      ┌─────────┬──────┴──────┬─────────┐                 │
+  │   │      ▼         ▼             ▼         ▼                 │
+  │   │  ┌──────┐ ┌────────┐ ... ┌──────┐ ┌────────┐             │
+  │   └──┤BrokerMCP   BrokerMCP    BrokerMCP   BrokerMCP│        │
+  │      │ Robin │ │Tradier │     │ Fennel│ │ Schwab │  ... ×13  │
+  │      └──┬───┘ └───┬────┘     └──┬───┘ └───┬────┘             │
+  │         ▼         ▼              ▼         ▼                 │
+  │      ┌─────────────────────────────────────────┐             │
+  │      │  brokers/ — existing SDK integrations   │             │
+  │      └─────────────────────────────────────────┘             │
+  │                                                              │
+  │  Also reaches enforcement: legacy CLI, TUI, gated CLI        │
+  └──────────────────────────────────────────────────────────────┘
+</pre>
+
+<h2>Components</h2>
+<div class="grid-2">
+
+  <div class="card">
+    <h3>Enforcement core <code>src/enforcement/</code></h3>
+    <p style="color: var(--muted); font-size: 0.88rem">
+      The gate. 10 modules. Every order path imports it; the build fails if
+      anyone bypasses.
+    </p>
+    <ul>
+      <li>Per-leg single-use tokens bound to single-target intent hash</li>
+      <li>Per-order + per-day USD limits (env-configurable)</li>
+      <li>Corporate-action freeze list</li>
+      <li>Per-broker circuit breaker (3 errors → open)</li>
+      <li>Settled-cash + PDT pre-check</li>
+      <li>Tamper-evident hash-chained audit log</li>
+      <li>SQLite-backed proposal store with F2c per-leg schema</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h3>Per-broker MCPs <code>src/agentic/brokers/</code></h3>
+    <p style="color: var(--muted); font-size: 0.88rem">
+      13 subpackages, one per broker. Each runs as <code>python -m
+      agentic.brokers.&lt;name&gt;</code> — its own MCP server process.
+    </p>
+    <ul>
+      <li>Robinhood, Tradier, TastyTrade, Public, Firstrade</li>
+      <li>Fennel, Schwab, BBAE, DSPAC, SoFi</li>
+      <li>Webull, Wells Fargo, Chase</li>
+      <li>Each owns its credentials, rate limiter, circuit-breaker state</li>
+      <li>4 tools per broker: <code>place_at_broker</code>,
+          <code>get_holdings_at_broker</code>, <code>list_accounts_at_broker</code>,
+          <code>health_check</code></li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h3>Router MCP <code>src/agentic/router/</code></h3>
+    <p style="color: var(--muted); font-size: 0.88rem">
+      The agent-facing fan-out surface. <code>python -m agentic.router</code>
+      starts the stdio MCP server.
+    </p>
+    <ul>
+      <li><code>list_brokers</code> — health + flags across all 13</li>
+      <li><code>get_holdings</code> — fan-out holdings query (sanitized)</li>
+      <li><code>propose_order</code>, <code>execute_order</code>, <code>place_order</code></li>
+      <li><code>get_rsa_trade</code>, <code>run_sweep</code> — RSA persistence + classification</li>
+      <li><code>sell_arrived</code> — one-shot propose-sells for ARRIVED legs</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h3>Gated CLI <code>src/agentic/cli.py</code></h3>
+    <p style="color: var(--muted); font-size: 0.88rem">
+      Operator surface that routes every order through the gate. Parallel
+      to legacy main.py, becomes the documented default for new tooling.
+    </p>
+    <ul>
+      <li><code>list-brokers</code>, <code>holdings</code>, <code>dry-run</code></li>
+      <li><code>propose</code>, <code>execute</code> (two-step required for live)</li>
+      <li><code>audit-verify</code> — walks the audit hash chain</li>
+      <li>Static check fails the build on direct broker SDK calls</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h3>Legacy CLI + TUI</h3>
+    <p style="color: var(--muted); font-size: 0.88rem">
+      <code>main.py</code> + <code>tui/app.py</code> rewired to route every
+      execution through the Router via <code>execute_via_router</code>.
+    </p>
+    <ul>
+      <li>All 5 sites gated: buy/sell, batch from-file, automate, TUI submit, TUI retry</li>
+      <li>Per-leg-token validation now active on the legacy path</li>
+      <li>Existing <code>--dry-run</code>, <code>--mock-brokers</code>, broker selection preserved</li>
+      <li>Backwards-compatible results shape for <code>compute_trade_exit_code</code></li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h3>Telemetry <code>src/agentic/_telemetry.py</code></h3>
+    <p style="color: var(--muted); font-size: 0.88rem">
+      Structured logging wraps every router + broker MCP method. Audit-log
+      is separate (and tamper-evident); telemetry is for ops.
+    </p>
+    <ul>
+      <li>Daily-rotated JSONL at <code>logs/mcp-YYYY-MM-DD.jsonl</code></li>
+      <li>Token prefixes only (8 chars + ellipsis)</li>
+      <li>Credential-shaped keys dropped before write</li>
+      <li>Explicit <code>dry_run</code> field — no arg-parsing needed</li>
+    </ul>
+  </div>
+
+</div>
+
+<h2>The two-step gate</h2>
+<pre>
+  $ python -m agentic.cli propose buy 10 TSLA --brokers Fennel,Tradier \
+      --price 5.0 --live
+  {
+    "proposal_id": "2834cc72…",
+    "estimated_usd": 100.0,
+    "leg_count": 2,
+    "valid_until_ts": 1779906615.7,
+    "skipped_brokers": []
+  }
+
+  $ python -m agentic.cli execute 2834cc72… --live
+  {
+    "success_count": 2,
+    "failure_count": 0,
+    "results": [
+      {"broker": "Fennel",  "ok": true, "idempotency_key": "45bd…"},
+      {"broker": "Tradier", "ok": true, "idempotency_key": "8a1c…"}
+    ]
+  }
+</pre>
+<p>
+  Live order placement requires both steps with explicit <code>--live</code>.
+  The agent never sees a single-call live order primitive — <code>place_order</code>
+  with <code>dry_run=False</code> and no <code>proposal_id</code> is rejected at the router (ISC-18).
+  Per-leg tokens are single-use and bound to a SHA-256 hash of the normalized
+  intent — a tampered or replayed token gets <code>intent_mismatch</code> at the
+  broker boundary.
+</p>
+
+<h2>Recent shipments</h2>
+<table>
+  <thead>
+    <tr><th>Feature</th><th>What landed</th><th>ISCs</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="mono">F0</td>
+      <td>EnforcementCore — 10 modules, gate primitive</td>
+      <td>13 incl. ISC-3.2, 9, 11–15, 39–45</td>
+    </tr>
+    <tr>
+      <td class="mono">F2a + F2b</td>
+      <td>13 per-broker MCPs + router with 5 then 8 fan-out tools</td>
+      <td>ISC-3, 3.1, 4–6, 9–10, 10.1, 10.2, 27</td>
+    </tr>
+    <tr>
+      <td class="mono">F2c</td>
+      <td>Per-leg-token refactor + subprocess broker isolation</td>
+      <td>Strengthens ISC-10.1; partial-failure first-class</td>
+    </tr>
+    <tr>
+      <td class="mono">F3 v0.1 → v0.3</td>
+      <td>get_rsa_trade, run_sweep (+writes), sell_arrived (qty-split)</td>
+      <td>ISC-7, 8, 20–24, 47</td>
+    </tr>
+    <tr>
+      <td class="mono">F5 v0.1 → v0.4</td>
+      <td>Gated CLI + legacy CLI gating + TUI + per-leg-token on legacy</td>
+      <td>ISC-46, 46.1</td>
+    </tr>
+    <tr>
+      <td class="mono">F6</td>
+      <td>Credential boundary + raw-SQL anti-tests (caught + fixed real leak)</td>
+      <td>ISC-16, 19</td>
+    </tr>
+    <tr>
+      <td class="mono">F10</td>
+      <td>Structured telemetry on every MCP tool invocation</td>
+      <td>ISC-30, 31, 32</td>
+    </tr>
+    <tr>
+      <td class="mono">v0.4 deferred</td>
+      <td>Multi-account discovery (Fennel canonical), hetero-qty split, pytest dev dep</td>
+      <td>Strengthens ISC-3.1; new tests</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>What's next</h2>
+<div class="grid-2">
+
+  <div class="card">
+    <h3>Group 2 — Docs (~1 turn)</h3>
+    <ul>
+      <li>README "Agentic mode" section (ISC-28)</li>
+      <li>ADR 0003 — per-broker MCPs + router + per-leg-tokens (ISC-29)</li>
+      <li>30-line copy-paste demo (ISC-37)</li>
+      <li>5-min fresh-clone-to-dry-run walkthrough (ISC-38)</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h3>Verification ratifications (~6 ISCs)</h3>
+    <ul>
+      <li>Brokers package import test (ISC-2)</li>
+      <li>Explicit anti-token tests (ISC-17, 18)</li>
+      <li>Legacy CLI/TUI smoke pins (ISC-25, 26)</li>
+      <li>Anti-broker-calls-in-tests check (ISC-33, 36)</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h3>Multi-account enrichment (broker-by-broker)</h3>
+    <ul>
+      <li>Verify session shape for: Robinhood, Schwab, Webull, Wells Fargo</li>
+      <li>Wire <code>list_accounts_fn</code> on each as credentials allow</li>
+      <li>Fennel is the canonical pattern; others follow incrementally</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h3>RSA workflow polish</h3>
+    <ul>
+      <li>F3 v0.5 — surface skipped/error legs in <code>sell_arrived</code> response</li>
+      <li>Sell-on-arrived integration test against legacy sweep state schema</li>
+      <li>Optional: confirmation-token TTL warning before expiry</li>
+    </ul>
+  </div>
+
+</div>
+
+<h2>The mission statement</h2>
+<p style="font-style: italic; color: var(--muted); border-left: 3px solid var(--accent); padding-left: 16px">
+  Code enforces safety; prompts do not. The agent decides which RSA opportunity
+  to enter, when to sweep, when a leg is ready to sell. The code decides
+  dollar limits, intent-hash binding, single-use tokens, the freeze list,
+  circuit breakers, audit-log integrity, and which actions require explicit
+  principal confirmation. The router is the agent's surface — one fan-out tool
+  across 13 brokers is strictly more useful than 13 separate broker MCPs.
+</p>
+
+<div class="footer">
+  Generated 2026-05-27 — see <code>ISA.md</code> for the live system-of-record artifact
+  and <code>docs/agentic/RSA_AGENT.md</code> for the agent workflow.
+</div>
+
+</body>
+</html>
