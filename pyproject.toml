@@ -20,10 +20,17 @@ dependencies = [
     "chardet<6",
     "curl-cffi==0.14.0",
     "webull @ git+https://github.com/ImNotOssy/webull.git@67c195415ee34941314901e1461eca9790c45739",
+    "mcp>=1.27.1",
 ]
 
 [tool.setuptools.package-dir]
 "" = "src"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "pytest-asyncio>=1.4.0",
+]
 
 [project.scripts]
 stockshotgun = "main:main"
