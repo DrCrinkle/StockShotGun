@@ -48,6 +48,47 @@ class StockBackItem:
     raw_line: str
 
 
+@dataclass(slots=True)
+class ResearchSignal:
+    """A ticker mentioned in the `RESEARCH POSTED` section — early signal.
+
+    Date is the day research was posted (or the announced split date if the
+    chat uses the same date for both). Not committed to a buy yet; the agent
+    monitors these and promotes to a buy signal when ratio + firm date arrive.
+    """
+
+    ticker: str
+    date_mmdd: str | None
+    notes: str
+    raw_line: str
+
+
+@dataclass(slots=True)
+class TBACandidate:
+    """A ticker under the `TBA` section — known event, ratio and/or date pending.
+
+    Common notes fields: `OTC`, `merger`, `ADR`, `delayed`, `round down`. The
+    agent treats these as a long watchlist; promotion to an upcoming buy
+    happens when the chat moves the ticker into `UPCOMING BUYS` with a
+    firm date + ratio.
+    """
+
+    ticker: str
+    ratio: str | None
+    notes: str
+    raw_line: str
+
+
+@dataclass(slots=True)
+class RecapParseResult:
+    """Full result of `parse_chat_recap_full` — all four signal tiers."""
+
+    upcoming: list[UpcomingBuy]
+    stock_back: list[StockBackItem]
+    research: list[ResearchSignal]
+    tba: list[TBACandidate]
+
+
 def _line_hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
@@ -97,10 +138,31 @@ def _is_due_buy_signal(created_at: str, target_mmdd: str | None, today: date) ->
 
 
 def parse_chat_recap(text: str) -> tuple[list[UpcomingBuy], list[StockBackItem]]:
+    """Legacy 2-tuple signature — used by main.py's automate path. Returns only
+    the actionable buy signals + stock-back state. For the full 4-tier parse
+    (upcoming + stock_back + research + tba), call `parse_chat_recap_full`.
+    """
+    result = parse_chat_recap_full(text)
+    return result.upcoming, result.stock_back
+
+
+def parse_chat_recap_full(text: str) -> RecapParseResult:
+    """Parse all four signal tiers from a chat recap.
+
+    Section grammar:
+      - Section headers: lines that are `-TEXT-` (uppercase, no slashes)
+      - Date subheaders: lines that are `-MM/DD-` — set the active date inside
+        a section that uses date grouping (UPCOMING BUYS, RESEARCH POSTED)
+      - Ticker lines: `TICKER - field - field - ...`, where a `N:D` part is
+        the ratio, `round N` is the round number, and everything else is notes
+      - Comment lines: start with `*` — skipped
+    """
     section = ""
     active_date: str | None = None
     upcoming: list[UpcomingBuy] = []
     stock_back: list[StockBackItem] = []
+    research: list[ResearchSignal] = []
+    tba: list[TBACandidate] = []
 
     for raw in text.splitlines():
         line = raw.strip()
@@ -166,7 +228,54 @@ def parse_chat_recap(text: str) -> tuple[list[UpcomingBuy], list[StockBackItem]]
                 )
             )
 
-    return upcoming, stock_back
+        if section == "research posted":
+            parts = [part.strip() for part in line.split(" - ")]
+            if not parts:
+                continue
+            ticker = parts[0].upper()
+            notes = " | ".join(parts[1:]) if len(parts) > 1 else ""
+            research.append(
+                ResearchSignal(
+                    ticker=ticker,
+                    date_mmdd=active_date,
+                    notes=notes,
+                    raw_line=line,
+                )
+            )
+
+        if section == "tba":
+            parts = [part.strip() for part in line.split(" - ")]
+            if not parts:
+                continue
+            ticker = parts[0].upper()
+            ratio: str | None = None
+            note_parts: list[str] = []
+            for part in parts[1:]:
+                # Find the ratio anywhere in the segment — TBA entries like
+                # "ENZN - OTC - 1:100 merger" carry the ratio embedded in notes.
+                ratio_match = re.search(r"\b(\d+:\d+)\b", part)
+                if ratio is None and ratio_match:
+                    ratio = ratio_match.group(1)
+                    remainder = part.replace(ratio_match.group(1), "").strip()
+                    if remainder:
+                        note_parts.append(remainder)
+                else:
+                    note_parts.append(part)
+            tba.append(
+                TBACandidate(
+                    ticker=ticker,
+                    ratio=ratio,
+                    notes=" | ".join(p for p in note_parts if p),
+                    raw_line=line,
+                )
+            )
+
+    return RecapParseResult(
+        upcoming=upcoming,
+        stock_back=stock_back,
+        research=research,
+        tba=tba,
+    )
 
 
 def _extract_brokers(detail: str) -> list[str]:
@@ -227,6 +336,28 @@ class AutomationRecapStore:
                 status TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 executed_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS research_signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                target_date TEXT,
+                notes TEXT,
+                signal_key TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                promoted_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS tba_candidates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                ratio TEXT,
+                notes TEXT,
+                signal_key TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                promoted_at TEXT
             );
             """
         )
@@ -325,6 +456,101 @@ class AutomationRecapStore:
 
         self.conn.commit()
         return {"new_buy_signals": new_buy, "new_sell_triggers": new_sell}
+
+    def record_recap_extended(
+        self,
+        raw_text: str,
+        result: RecapParseResult,
+        now: datetime,
+    ) -> dict[str, int]:
+        """Extended record_recap: also persists research signals + TBA candidates.
+
+        Returns a dict with `new_buy`, `new_research`, `new_tba` counts (plus
+        whatever `record_recap` returns from its existing logic).
+        """
+        base = self.record_recap(raw_text, result.upcoming, result.stock_back, now)
+        now_iso = now.isoformat()
+
+        new_research = 0
+        for sig in result.research:
+            key = _line_hash(
+                f"research|{sig.ticker}|{sig.date_mmdd}|{sig.raw_line}"
+            )
+            try:
+                self.conn.execute(
+                    """
+                    INSERT INTO research_signals(
+                        ticker, target_date, notes, signal_key, status, created_at
+                    ) VALUES (?, ?, ?, ?, 'active', ?)
+                    """,
+                    (sig.ticker, sig.date_mmdd, sig.notes, key, now_iso),
+                )
+                new_research += 1
+            except sqlite3.IntegrityError:
+                pass
+
+        new_tba = 0
+        for cand in result.tba:
+            key = _line_hash(
+                f"tba|{cand.ticker}|{cand.ratio}|{cand.raw_line}"
+            )
+            try:
+                self.conn.execute(
+                    """
+                    INSERT INTO tba_candidates(
+                        ticker, ratio, notes, signal_key, status, created_at
+                    ) VALUES (?, ?, ?, ?, 'active', ?)
+                    """,
+                    (cand.ticker, cand.ratio, cand.notes, key, now_iso),
+                )
+                new_tba += 1
+            except sqlite3.IntegrityError:
+                pass
+
+        self.conn.commit()
+        base["new_research"] = new_research
+        base["new_tba"] = new_tba
+        return base
+
+    def get_active_research_signals(self) -> list[sqlite3.Row]:
+        return list(
+            self.conn.execute(
+                "SELECT * FROM research_signals WHERE status = 'active' "
+                "ORDER BY target_date IS NULL, target_date, ticker"
+            ).fetchall()
+        )
+
+    def get_active_tba_candidates(self) -> list[sqlite3.Row]:
+        return list(
+            self.conn.execute(
+                "SELECT * FROM tba_candidates WHERE status = 'active' "
+                "ORDER BY ratio IS NULL, ticker"
+            ).fetchall()
+        )
+
+    def mark_research_promoted(self, signal_ids: list[int], now: datetime) -> None:
+        """Mark research signals as promoted (e.g., when they appear in
+        UPCOMING BUYS in a subsequent recap)."""
+        if not signal_ids:
+            return
+        placeholders = ",".join("?" * len(signal_ids))
+        self.conn.execute(
+            f"UPDATE research_signals SET status = 'promoted', "
+            f"promoted_at = ? WHERE id IN ({placeholders})",
+            [now.isoformat()] + signal_ids,
+        )
+        self.conn.commit()
+
+    def mark_tba_promoted(self, signal_ids: list[int], now: datetime) -> None:
+        if not signal_ids:
+            return
+        placeholders = ",".join("?" * len(signal_ids))
+        self.conn.execute(
+            f"UPDATE tba_candidates SET status = 'promoted', "
+            f"promoted_at = ? WHERE id IN ({placeholders})",
+            [now.isoformat()] + signal_ids,
+        )
+        self.conn.commit()
 
     def get_due_buy_signals(self, today: date) -> list[sqlite3.Row]:
         rows = self.conn.execute(

@@ -17,6 +17,12 @@ from tui.input_handler import (
     restore_original_input,
 )
 from order_processor import order_processor
+from agentic.cli_bridge import (
+    apply_main_py_gate_batch,
+    execute_via_router,
+    record_main_py_outcome_batch,
+)
+from enforcement import GateError
 from robin_stocks.robinhood.helper import (
     set_output as set_robinhood_output,
     get_output as get_robinhood_output,
@@ -313,13 +319,33 @@ def run_tui():
         ]
 
         try:
-            # Use concurrent order processor
-            results = await order_processor.process_orders(
-                orders,
-                trade_functions=trade_functions,
-                add_response_fn=response_box.add_response,
-                status_update_fn=on_broker_status_update,
-                validate_functions=validate_functions,
+            # F5 v0.3 — gate every TUI-submitted order before fan-out.
+            try:
+                tui_proposals = await apply_main_py_gate_batch(orders)
+            except GateError as gate_err:
+                response_box.add_response(
+                    f"✗ Order rejected by enforcement gate "
+                    f"({gate_err.reason}): {gate_err}",
+                    force_redraw=True,
+                )
+                orders.clear()
+                update_order_summary()
+                return
+
+            # F5 v0.4 — Router-driven per-leg-token execution for the TUI.
+            results = await execute_via_router(
+                proposals=tui_proposals,
+                orders=orders,
+                dry_run=False,
+                progress_fn=lambda msg, force_redraw=False: response_box.add_response(
+                    msg, force_redraw=force_redraw
+                ),
+            )
+
+            await record_main_py_outcome_batch(
+                proposals=tui_proposals,
+                orders=orders,
+                results=results,
             )
 
             # Build summary with total broker counts across all orders
@@ -397,13 +423,33 @@ def run_tui():
         }
 
         try:
-            results = await order_processor.process_orders(
-                retry_orders,
-                trade_functions=trade_functions,
-                add_response_fn=response_box.add_response,
-                status_update_fn=on_broker_status_update,
-                validate_functions=validate_functions,
+            # F5 v0.3 — gate the retried orders too.
+            try:
+                retry_proposals = await apply_main_py_gate_batch(retry_orders)
+            except GateError as gate_err:
+                response_box.add_response(
+                    f"✗ Retry rejected by enforcement gate "
+                    f"({gate_err.reason}): {gate_err}",
+                    force_redraw=True,
+                )
+                return
+
+            # F5 v0.4 — Router-driven retry path.
+            results = await execute_via_router(
+                proposals=retry_proposals,
+                orders=retry_orders,
+                dry_run=False,
+                progress_fn=lambda msg, force_redraw=False: response_box.add_response(
+                    msg, force_redraw=force_redraw
+                ),
             )
+
+            await record_main_py_outcome_batch(
+                proposals=retry_proposals,
+                orders=retry_orders,
+                results=results,
+            )
+
             response_box.add_response(
                 (
                     f"Retry Results: ✅ {results['successful']} succeeded"
