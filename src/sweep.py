@@ -6,6 +6,7 @@ import re
 import traceback
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import date, timedelta
 from enum import StrEnum
 from typing import Any
 
@@ -177,6 +178,22 @@ def status_summary(results: list[SweepResult]) -> dict[str, int]:
     return summary
 
 
+def resolve_ambiguous_with_date(
+    status: SweepStatus,
+    expected_split_date: str | None,
+    processing_window_days: int,
+    today: date,
+) -> SweepStatus:
+    if status != SweepStatus.AMBIGUOUS:
+        return status
+    if expected_split_date is None:
+        return SweepStatus.AMBIGUOUS
+    split_date = date.fromisoformat(expected_split_date)
+    if today > split_date + timedelta(days=processing_window_days):
+        return SweepStatus.SHARE_ARRIVED
+    return SweepStatus.AMBIGUOUS
+
+
 async def sweep_broker(
     broker_name: str,
     ticker: str,
@@ -264,6 +281,12 @@ async def sweep_all_brokers(
     selected_brokers: list[str] | None = None,
 ) -> list[SweepResult]:
     broker_names = selected_brokers or list(broker_holdings)
+    # Parse the ratio once up front (fails fast on bad input) instead of
+    # re-parsing per failed broker inside the aggregation loop below.
+    ratio_num, ratio_denom = parse_ratio(ratio_str)
+    expected_post_qty = calculate_expected_post_qty(
+        pre_split_qty, ratio_num, ratio_denom
+    )
     tasks = [
         sweep_broker(
             broker_name,
@@ -281,9 +304,10 @@ async def sweep_all_brokers(
     for broker_name, item in zip(broker_names, gathered, strict=False):
         profile = BROKER_PROFILES.get(broker_name, UNKNOWN_PROFILE)
         if isinstance(item, BaseException):
-            expected = calculate_expected_post_qty(pre_split_qty, *parse_ratio(ratio_str))
             results.append(
-                _query_error_result(broker_name, item, pre_split_qty, expected, profile)
+                _query_error_result(
+                    broker_name, item, pre_split_qty, expected_post_qty, profile
+                )
             )
             continue
         results.extend(item)

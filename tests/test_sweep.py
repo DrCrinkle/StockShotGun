@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import unittest
+from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -14,6 +15,7 @@ from sweep import (  # noqa: E402
     calculate_expected_post_qty,
     classify_holding,
     parse_ratio,
+    resolve_ambiguous_with_date,
     sweep_broker,
 )
 
@@ -85,6 +87,53 @@ class SweepBrokerTests(unittest.TestCase):
         )
         self.assertEqual(results[0].status, SweepStatus.SHARE_ARRIVED)
         self.assertIn("AREBD", results[0].details)
+
+
+class ResolveAmbiguousWithDateTests(unittest.TestCase):
+    def test_passes_through_non_ambiguous_status(self) -> None:
+        result = resolve_ambiguous_with_date(
+            SweepStatus.PROCESSING,
+            expected_split_date="2026-04-01",
+            processing_window_days=10,
+            today=date(2026, 5, 1),
+        )
+        self.assertEqual(result, SweepStatus.PROCESSING)
+
+    def test_returns_ambiguous_when_no_expected_date(self) -> None:
+        result = resolve_ambiguous_with_date(
+            SweepStatus.AMBIGUOUS,
+            expected_split_date=None,
+            processing_window_days=10,
+            today=date(2026, 5, 1),
+        )
+        self.assertEqual(result, SweepStatus.AMBIGUOUS)
+
+    def test_resolves_to_share_arrived_after_window(self) -> None:
+        result = resolve_ambiguous_with_date(
+            SweepStatus.AMBIGUOUS,
+            expected_split_date="2026-04-01",
+            processing_window_days=10,
+            today=date(2026, 4, 12),
+        )
+        self.assertEqual(result, SweepStatus.SHARE_ARRIVED)
+
+    def test_stays_ambiguous_at_window_boundary(self) -> None:
+        result = resolve_ambiguous_with_date(
+            SweepStatus.AMBIGUOUS,
+            expected_split_date="2026-04-01",
+            processing_window_days=10,
+            today=date(2026, 4, 11),
+        )
+        self.assertEqual(result, SweepStatus.AMBIGUOUS)
+
+    def test_stays_ambiguous_inside_window(self) -> None:
+        result = resolve_ambiguous_with_date(
+            SweepStatus.AMBIGUOUS,
+            expected_split_date="2026-04-01",
+            processing_window_days=10,
+            today=date(2026, 4, 5),
+        )
+        self.assertEqual(result, SweepStatus.AMBIGUOUS)
 
 
 if __name__ == "__main__":
