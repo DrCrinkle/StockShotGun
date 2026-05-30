@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from agentic._base import BrokerMCPServer, BrokerMCPSpec
+from agentic._base import BrokerMCPServer, BrokerMCPSpec, build_broker_mcp_spec
+from brokers import registry
 from enforcement import (
     AuditLog,
     BrokerAccount,
@@ -20,22 +20,6 @@ from enforcement import (
     idempotency_key,
 )
 from enforcement.circuit_breaker import CircuitBreaker
-
-BROKERS = [
-    "robinhood",
-    "tradier",
-    "tastytrade",
-    "public",
-    "firstrade",
-    "fennel",
-    "schwab",
-    "bbae",
-    "dspac",
-    "sofi",
-    "webull",
-    "wellsfargo",
-    "chase",
-]
 
 
 class FakeProvider:
@@ -59,14 +43,14 @@ def core(tmp_path: Path) -> EnforcementCore:
     )
 
 
-@pytest.mark.parametrize("broker_dir", BROKERS)
-def test_every_broker_module_exposes_a_spec(broker_dir: str):
-    mod = importlib.import_module(f"agentic.brokers.{broker_dir}")
-    assert hasattr(mod, "SPEC"), f"{broker_dir} missing SPEC"
-    assert isinstance(mod.SPEC, BrokerMCPSpec)
-    assert mod.SPEC.name
-    assert callable(mod.SPEC.trade_fn)
-    assert callable(mod.SPEC.holdings_fn)
+@pytest.mark.parametrize("broker_name", registry.all_names())
+def test_every_broker_builds_a_spec_from_registry(broker_name: str):
+    spec = build_broker_mcp_spec(registry.get(broker_name))
+    assert isinstance(spec, BrokerMCPSpec)
+    assert spec.name == broker_name
+    assert callable(spec.trade_fn)
+    assert callable(spec.holdings_fn)
+    assert spec.validate_fn is None or callable(spec.validate_fn)
 
 
 def _fake_spec(name: str = "FakeBroker") -> tuple[BrokerMCPSpec, list[Any]]:

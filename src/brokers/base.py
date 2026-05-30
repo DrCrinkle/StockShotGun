@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Dict, Optional, Any, ClassVar
 from dotenv import load_dotenv
 from cli_runtime import CliRuntimeError, ExitCode
+from brokers.registry import BROKERS as _REGISTRY
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(PROJECT_ROOT / ".env")
@@ -162,100 +163,23 @@ api_cache = APICache()
 
 
 class BrokerConfig:
-    """Centralized broker configuration to eliminate duplication."""
+    """Centralized broker configuration, derived from the broker registry.
+
+    ``BROKERS`` is no longer hand-maintained here — it is projected from
+    ``brokers.registry`` (the single source of truth; see ADR 0004). This view
+    preserves the historical dict shape so existing callers
+    (``get_broker_info`` / ``get_session_key`` / membership checks) are
+    unchanged. To add or change a broker, edit ``brokers/registry.py``.
+    """
 
     BROKERS: ClassVar[Dict[str, Dict[str, Any]]] = {
-        "Robinhood": {
-            "session_key": "robinhood",
-            "env_vars": ["ROBINHOOD_USER", "ROBINHOOD_PASS", "ROBINHOOD_MFA"],
-            "requires_mfa": True,
-            "enabled": True,
-        },
-        "Tradier": {
-            "session_key": "tradier",
-            "env_vars": ["TRADIER_ACCESS_TOKEN"],
-            "requires_mfa": False,
-            "enabled": True,
-        },
-        "TastyTrade": {
-            "session_key": "tastytrade",
-            "env_vars": [
-                "TASTY_CLIENT_ID",
-                "TASTY_CLIENT_SECRET",
-                "TASTY_REFRESH_TOKEN",
-            ],
-            "requires_mfa": False,
-            "enabled": True,
-        },
-        "Public": {
-            "session_key": "public",
-            "env_vars": ["PUBLIC_API_SECRET"],
-            "requires_mfa": False,
-            "enabled": True,
-        },
-        "Firstrade": {
-            "session_key": "firstrade",
-            "env_vars": ["FIRSTRADE_USER", "FIRSTRADE_PASS", "FIRSTRADE_MFA"],
-            "requires_mfa": True,
-            "enabled": True,
-        },
-        "Fennel": {
-            "session_key": "fennel",
-            "env_vars": ["FENNEL_ACCESS_TOKEN"],
-            "requires_mfa": False,
-            "enabled": True,
-        },
-        "Schwab": {
-            "session_key": "schwab",
-            "env_vars": [
-                "SCHWAB_API_KEY",
-                "SCHWAB_API_SECRET",
-                "SCHWAB_CALLBACK_URL",
-                "SCHWAB_TOKEN_PATH",
-            ],
-            "requires_mfa": False,
-            "enabled": True,
-        },
-        "BBAE": {
-            "session_key": "bbae",
-            "env_vars": ["BBAE_USER", "BBAE_PASS"],
-            "requires_mfa": False,
-            "enabled": True,
-        },
-        "DSPAC": {
-            "session_key": "dspac",
-            "env_vars": ["DSPAC_USER", "DSPAC_PASS"],
-            "requires_mfa": False,
-            "enabled": True,
-        },
-        "SoFi": {
-            "session_key": "sofi",
-            "env_vars": ["SOFI_USER", "SOFI_PASS"],
-            "requires_mfa": False,
-            "enabled": True,
-        },
-        "Webull": {
-            "session_key": "webull",
-            "env_vars": [
-                "WEBULL_ACCESS_TOKEN",
-                "WEBULL_REFRESH_TOKEN",
-                "WEBULL_UUID",
-            ],
-            "requires_mfa": False,
-            "enabled": True,
-        },
-        "WellsFargo": {
-            "session_key": "wellsfargo",
-            "env_vars": ["WELLSFARGO_USER", "WELLSFARGO_PASS"],
-            "requires_mfa": False,
-            "enabled": True,
-        },
-        "Chase": {
-            "session_key": "chase",
-            "env_vars": ["CHASE_USER", "CHASE_PASS"],
-            "requires_mfa": False,
-            "enabled": True,
-        },
+        spec.name: {
+            "session_key": spec.session_key,
+            "env_vars": list(spec.env_vars),
+            "requires_mfa": spec.requires_mfa,
+            "enabled": spec.enabled,
+        }
+        for spec in _REGISTRY.values()
     }
 
     @classmethod

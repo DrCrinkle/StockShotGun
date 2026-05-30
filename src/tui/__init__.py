@@ -43,10 +43,14 @@ from tui.holdings_view import (
     HoldingsView,
 )
 
-from tui.broker_functions import (
-    BROKER_CONFIG as BROKER_FUNC_CONFIG,
+from brokers.registry import (
+    broker_functions_map as _broker_functions_map,
     get_broker_function,
 )
+
+# Per-broker functions derived from the broker registry (ADR 0004; the old
+# tui.broker_functions module was removed).
+BROKER_FUNC_CONFIG = _broker_functions_map()
 
 # Import run_tui from app module
 from tui.app import run_tui

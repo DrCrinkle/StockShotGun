@@ -34,7 +34,6 @@ def test_subprocess_proxy_health_check():
     async def _check():
         proxy = SubprocessBrokerProxy(
             name="Fennel",
-            module="agentic.brokers.fennel",
             extra_env={"PYTHONPATH": "src", **os.environ},
         )
         async with proxy:

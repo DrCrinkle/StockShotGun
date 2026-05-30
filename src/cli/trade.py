@@ -17,7 +17,12 @@ from cli_runtime import (  # type: ignore[import-untyped]
     compute_trade_exit_code,
 )
 from brokers import session_manager, BrokerConfig  # type: ignore[import-untyped]
-from tui.broker_functions import BROKER_CONFIG as BROKER_FUNCTIONS  # type: ignore[import-untyped]
+from brokers.registry import broker_functions_map  # type: ignore[import-untyped]
+
+# Per-broker trade/holdings/validate functions, derived from the broker
+# registry (single source of truth; ADR 0004). Kept as a module-level name so
+# tests can monkeypatch it.
+BROKER_FUNCTIONS = broker_functions_map()
 
 from cli.common import (
     _build_dry_run_readiness,

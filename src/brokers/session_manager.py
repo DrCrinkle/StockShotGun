@@ -10,22 +10,8 @@ import asyncio
 import logging
 import threading
 from .base import BrokerConfig
+from brokers import registry
 from cli_runtime import CliRuntimeError, ExitCode  # type: ignore[import-untyped]
-
-# Import broker modules dynamically
-from . import robinhood
-from . import tradier
-from . import tastytrade
-from . import public
-from . import firstrade
-from . import fennel
-from . import schwab
-from . import bbae
-from . import dspac
-from . import sofi
-from . import webull
-from . import wellsfargo
-from . import chase
 
 logger = logging.getLogger(__name__)
 
@@ -35,22 +21,10 @@ class BrokerSessionManager:
 
     SELF_LOCKING_BROKERS = frozenset({"Robinhood"})
 
-    # Mapping of broker names to their modules and session getter functions
-    BROKER_MODULES = {
-        "Robinhood": (robinhood, "get_robinhood_session"),
-        "Tradier": (tradier, "get_tradier_session"),
-        "TastyTrade": (tastytrade, "get_tastytrade_session"),
-        "Public": (public, "get_public_session"),
-        "Firstrade": (firstrade, "get_firstrade_session"),
-        "Fennel": (fennel, "get_fennel_session"),
-        "Schwab": (schwab, "get_schwab_session"),
-        "BBAE": (bbae, "get_bbae_session"),
-        "DSPAC": (dspac, "get_dspac_session"),
-        "SoFi": (sofi, "get_sofi_session"),
-        "Webull": (webull, "get_webull_session"),
-        "WellsFargo": (wellsfargo, "get_wellsfargo_session"),
-        "Chase": (chase, "get_chase_session"),
-    }
+    # Broker identity + the per-broker `get_<x>_session` getter now live in
+    # `brokers.registry` (ADR 0004). Session getters are resolved lazily, so
+    # this manager no longer imports all broker modules at load time — a single
+    # broker's session can be initialized without importing the other twelve.
 
     def __init__(self):
         self.sessions = {}
@@ -83,20 +57,21 @@ class BrokerSessionManager:
         Returns:
             Session object for the broker, or None if broker not found
         """
-        if broker_name not in self.BROKER_MODULES:
+        if registry.get(broker_name) is None:
             logger.warning("Unknown broker requested", extra={"broker": broker_name})
             print(f"⚠️  Unknown broker: {broker_name}")
             return None
 
-        # Get module and function name from mapping
-        module, func_name = self.BROKER_MODULES[broker_name]
-
-        # Get the session getter function from the module
-        session_getter = getattr(module, func_name, None)
-        if not session_getter:
+        # Resolve the broker's session getter lazily from the registry. This is
+        # where the broker module gets imported (on first use), not at manager
+        # import time.
+        try:
+            session_getter = registry.resolve_session_getter(broker_name)
+        except (KeyError, AttributeError, ImportError) as e:
             logger.error(
                 "Session getter not found",
-                extra={"broker": broker_name, "getter": func_name},
+                extra={"broker": broker_name},
+                exc_info=e,
             )
             print(f"⚠️  Session getter not found for {broker_name}")
             return None
@@ -122,7 +97,7 @@ class BrokerSessionManager:
         # Initialize only selected brokers using dynamic session getter
         tasks = []
         for broker_name in broker_names:
-            if broker_name in self.BROKER_MODULES:
+            if registry.get(broker_name) is not None:
                 tasks.append(self.get_session(broker_name))
             else:
                 print(f"⚠️  Unknown broker: {broker_name}")
@@ -160,8 +135,8 @@ class BrokerSessionManager:
         """Initialize all broker sessions concurrently."""
         print("🔐 Initializing broker sessions...")
 
-        # Initialize all brokers dynamically using the mapping
-        all_broker_names = list(self.BROKER_MODULES.keys())
+        # Initialize all known brokers, resolved from the registry
+        all_broker_names = list(registry.all_names())
         tasks = [self.get_session(broker_name) for broker_name in all_broker_names]
 
         if tasks:

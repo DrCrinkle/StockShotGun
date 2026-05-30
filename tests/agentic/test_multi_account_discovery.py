@@ -110,16 +110,19 @@ def test_make_session_accounts_fn_binds_to_broker_name():
 
 
 def test_fennel_spec_uses_session_driven_discovery():
-    """The canonical example: Fennel SPEC was wired to session_manager_accounts."""
-    from agentic.brokers.fennel import SPEC  # type: ignore[import-untyped]
+    """The canonical example: Fennel (multi_account=True) builds a spec whose
+    list_accounts_fn reads session-manager account ids."""
+    from agentic._base import build_broker_mcp_spec  # type: ignore[import-untyped]
+    from brokers import registry  # type: ignore[import-untyped]
     from brokers.base import BrokerConfig  # type: ignore[import-untyped]
     from brokers.session_manager import session_manager  # type: ignore[import-untyped]
 
+    spec = build_broker_mcp_spec(registry.get("Fennel"))
     fennel_key = BrokerConfig.get_session_key("Fennel")
     session_manager.sessions[fennel_key] = {
         "account_ids": ["primary-fennel", "ira-fennel"]
     }
-    accounts = asyncio.run(SPEC.list_accounts_fn())
+    accounts = asyncio.run(spec.list_accounts_fn())
     assert accounts == ["primary-fennel", "ira-fennel"]
 
 

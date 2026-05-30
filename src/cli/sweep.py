@@ -5,7 +5,10 @@ from datetime import date, datetime
 from typing import Any
 
 from brokers import session_manager, BrokerConfig  # type: ignore[import-untyped]
-from tui.broker_functions import BROKER_CONFIG as BROKER_FUNCTIONS  # type: ignore[import-untyped]
+from brokers.registry import broker_functions_map  # type: ignore[import-untyped]
+
+# Per-broker functions derived from the broker registry (ADR 0004).
+BROKER_FUNCTIONS = broker_functions_map()
 from cli_runtime import (  # type: ignore[import-untyped]
     CliRuntimeError,
     ExitCode,

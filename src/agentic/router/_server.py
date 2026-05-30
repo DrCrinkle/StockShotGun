@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 import os
 from dataclasses import dataclass, field
 from typing import Any
 
-from agentic._base import BrokerMCPServer, BrokerMCPSpec
+from agentic._base import BrokerMCPServer, BrokerMCPSpec, build_broker_mcp_spec
+from brokers import registry
 from agentic._telemetry import logged_tool
 from enforcement import (
     AccountStatusProvider,
@@ -23,24 +23,6 @@ from enforcement import (
 DEFAULT_PLACEHOLDER_ACCOUNT_ID = "primary"
 DEFAULT_RSA_STORE_PATH = "logs/automation.sqlite3"
 DEFAULT_AUTOMATION_STORE_PATH = "logs/automation.sqlite3"
-
-# Broker subpackage names in canonical order, matching enabled brokers in
-# `brokers.base.BrokerConfig.BROKERS`.
-ALL_BROKER_SUBPACKAGES: tuple[str, ...] = (
-    "robinhood",
-    "tradier",
-    "tastytrade",
-    "public",
-    "firstrade",
-    "fennel",
-    "schwab",
-    "bbae",
-    "dspac",
-    "sofi",
-    "webull",
-    "wellsfargo",
-    "chase",
-)
 
 
 class NullAccountStatusProvider:
@@ -178,17 +160,17 @@ def _coerce_qty(holdings: Any, ticker: str) -> float:
 
 
 def load_all_broker_specs() -> dict[str, BrokerMCPSpec]:
-    """Import every `agentic.brokers.<name>` subpackage and collect SPECs.
+    """Build a runtime ``BrokerMCPSpec`` for every enabled broker in the registry.
 
-    Importing happens here (not at module-load) so a single broker SDK import
+    Building a spec resolves the broker's function refs (importing that broker
+    module). It happens here, not at module-load, so a single broker SDK import
     failure doesn't bring down the whole router — failing brokers are skipped
-    with a captured reason that surfaces in `list_brokers` health output.
+    and simply don't appear in the fan-out / `list_brokers` health output.
     """
     specs: dict[str, BrokerMCPSpec] = {}
-    for sub in ALL_BROKER_SUBPACKAGES:
+    for spec in registry.enabled_specs():
         try:
-            mod = importlib.import_module(f"agentic.brokers.{sub}")
-            specs[mod.SPEC.name] = mod.SPEC
+            specs[spec.name] = build_broker_mcp_spec(spec)
         except Exception:  # noqa: BLE001 — keep the router functional on partial failures
             continue
     return specs

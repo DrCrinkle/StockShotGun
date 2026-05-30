@@ -3,6 +3,13 @@ StockShotGun broker integrations.
 
 This package contains modular broker implementations for multi-broker trading.
 Each broker has its own module with trade and holdings functions.
+
+The package no longer eagerly imports the individual broker modules. Broker
+identity and function bindings live in ``brokers.registry`` (the single source
+of truth; ADR 0004) and are resolved lazily via ``importlib``. That keeps
+``import brokers`` — and a single-broker process — from pulling in all thirteen
+broker SDKs. Resolve a broker's functions through ``brokers.registry`` (e.g.
+``registry.resolve_trade("Robinhood")`` or ``registry.broker_functions_map()``).
 """
 
 # Import base infrastructure
@@ -24,20 +31,8 @@ from brokers.base import (
 # Import session manager
 from brokers.session_manager import BrokerSessionManager, session_manager
 
-# Import individual broker functions
-from brokers.robinhood import robinTrade, robinGetHoldings, robinValidate
-from brokers.tradier import tradierTrade, tradierGetHoldings, tradierValidate
-from brokers.tastytrade import tastyTrade, tastyGetHoldings, tastyValidate
-from brokers.public import publicTrade, publicGetHoldings
-from brokers.firstrade import firstradeTrade, firstradeGetHoldings, firstradeValidate
-from brokers.fennel import fennelTrade, fennelGetHoldings
-from brokers.schwab import schwabTrade, schwabGetHoldings, schwabValidate
-from brokers.bbae import bbaeTrade, bbaeGetHoldings, bbaeValidate
-from brokers.dspac import dspacTrade, dspacGetHoldings, dspacValidate
-from brokers.sofi import sofiTrade, sofiGetHoldings, sofiValidate
-from brokers.webull import webullTrade, webullGetHoldings, webullValidate
-from brokers.wellsfargo import wellsfargoTrade, wellsfargoGetHoldings
-from brokers.chase import chaseTrade, chaseGetHoldings
+# The single source of truth for broker identity + function bindings.
+from brokers import registry
 
 __all__ = [
     # Base infrastructure
@@ -56,52 +51,6 @@ __all__ = [
     # Session manager
     "BrokerSessionManager",
     "session_manager",
-    # Robinhood
-    "robinTrade",
-    "robinGetHoldings",
-    "robinValidate",
-    # Tradier
-    "tradierTrade",
-    "tradierGetHoldings",
-    "tradierValidate",
-    # TastyTrade
-    "tastyTrade",
-    "tastyGetHoldings",
-    "tastyValidate",
-    # Public
-    "publicTrade",
-    "publicGetHoldings",
-    # Firstrade
-    "firstradeTrade",
-    "firstradeGetHoldings",
-    "firstradeValidate",
-    # Fennel
-    "fennelTrade",
-    "fennelGetHoldings",
-    # Schwab
-    "schwabTrade",
-    "schwabGetHoldings",
-    "schwabValidate",
-    # BBAE
-    "bbaeTrade",
-    "bbaeGetHoldings",
-    "bbaeValidate",
-    # DSPAC
-    "dspacTrade",
-    "dspacGetHoldings",
-    "dspacValidate",
-    # SoFi
-    "sofiTrade",
-    "sofiGetHoldings",
-    "sofiValidate",
-    # Webull
-    "webullTrade",
-    "webullGetHoldings",
-    "webullValidate",
-    # WellsFargo
-    "wellsfargoTrade",
-    "wellsfargoGetHoldings",
-    # Chase
-    "chaseTrade",
-    "chaseGetHoldings",
+    # Registry (single source of truth)
+    "registry",
 ]

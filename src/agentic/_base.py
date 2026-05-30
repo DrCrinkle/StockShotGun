@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 from agentic._telemetry import logged_tool
+from brokers import registry
 from brokers.base import rate_limiter
 from enforcement import (
     BrokerAccount,
@@ -115,6 +116,30 @@ class BrokerMCPSpec:
     requires_mfa: bool = False
     supports_fractional: bool = False
     notes: str = ""
+
+
+def build_broker_mcp_spec(spec: "registry.BrokerSpec") -> BrokerMCPSpec:
+    """Build the runtime ``BrokerMCPSpec`` from a pure-data registry ``BrokerSpec``.
+
+    Resolving the function refs imports the broker module — so building one
+    spec imports only that broker, not all thirteen (ADR 0004). The registry's
+    ``multi_account`` flag maps to the session-manager-backed account discovery
+    closure; everyone else fans out a single ``"primary"`` leg.
+    """
+    return BrokerMCPSpec(
+        name=spec.name,
+        trade_fn=registry.resolve_trade(spec.name),
+        holdings_fn=registry.resolve_holdings(spec.name),
+        validate_fn=registry.resolve_validate(spec.name),
+        list_accounts_fn=(
+            make_session_accounts_fn(spec.name)
+            if spec.multi_account
+            else _default_single_account
+        ),
+        requires_mfa=spec.requires_mfa,
+        supports_fractional=spec.supports_fractional,
+        notes=spec.notes,
+    )
 
 
 @dataclass

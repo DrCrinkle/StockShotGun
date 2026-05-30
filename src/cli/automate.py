@@ -20,7 +20,10 @@ from cli_runtime import (  # type: ignore[import-untyped]
 )
 from automation_recap import AutomationRecapStore, parse_chat_recap  # type: ignore[import-untyped]
 from brokers import session_manager  # type: ignore[import-untyped]
-from tui.broker_functions import BROKER_CONFIG as BROKER_FUNCTIONS  # type: ignore[import-untyped]
+from brokers.registry import broker_functions_map  # type: ignore[import-untyped]
+
+# Per-broker functions derived from the broker registry (ADR 0004).
+BROKER_FUNCTIONS = broker_functions_map()
 
 from cli.common import (
     _build_dry_run_readiness,

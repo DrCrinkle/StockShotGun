@@ -3,8 +3,9 @@
 `SubprocessBrokerProxy` exposes the same async interface as `BrokerMCPServer`
 (`health_check`, `get_holdings_at_broker`, `list_accounts_at_broker`,
 `place_at_broker`) but routes each call as an MCP `call_tool` over a stdio
-subprocess. Each broker's MCP runs as `python -m agentic.brokers.<broker>` in
-its own process — crashes, leaks, and credentials are isolated.
+subprocess. Each broker's MCP runs as `python -m agentic.broker <BrokerName>`
+in its own process — crashes, leaks, and credentials are isolated. Because the
+registry is lazy, that child imports only the named broker (ADR 0004).
 
 The trust model is identical to in-process: the broker validates each leg
 token against its own single-target intent at `place_at_broker`. The router
@@ -31,15 +32,16 @@ from agentic._base import PlaceResult
 class SubprocessBrokerProxy:
     """Async proxy to a per-broker MCP subprocess.
 
-    Construct with the broker's display name (e.g. "Fennel") and the module
-    path (e.g. "agentic.brokers.fennel"). Call `connect()` before invoking
-    any tool method. The proxy maintains one persistent ClientSession over
-    the spawned child's stdio for the proxy's lifetime — calls are
-    multiplexed over the same session.
+    Construct with the broker's display name (e.g. "Fennel"). The child is
+    spawned as `python -m <module> <name>` (default module `agentic.broker`,
+    the generic per-broker entrypoint). Call `connect()` before invoking any
+    tool method. The proxy maintains one persistent ClientSession over the
+    spawned child's stdio for the proxy's lifetime — calls are multiplexed
+    over the same session.
     """
 
     name: str
-    module: str
+    module: str = "agentic.broker"
     python_executable: str = sys.executable
     extra_env: dict[str, str] | None = None
     _stack: AsyncExitStack | None = None
@@ -54,7 +56,7 @@ class SubprocessBrokerProxy:
             env.update(self.extra_env)
         params = StdioServerParameters(
             command=self.python_executable,
-            args=["-m", self.module],
+            args=["-m", self.module, self.name],
             env=env,
         )
         stack = AsyncExitStack()

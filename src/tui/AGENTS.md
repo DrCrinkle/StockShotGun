@@ -12,7 +12,6 @@ Root AGENTS.md conventions apply; this file documents TUI-only event-loop and in
 src/tui/
 ├── app.py              # Main loop, frame assembly, state orchestration (731 lines)
 ├── input_handler.py    # CRITICAL: MFA/sync input interception via modal dialogs
-├── broker_functions.py # BROKER_CONFIG: maps broker names → trade/holdings/validate fns
 ├── config.py           # Constants (palette, modal dims) + BROKERS list from BrokerConfig
 ├── session_cache.py    # 5s TTL cache for broker auth status
 ├── response_handler.py # stdout/stderr → ResponseBox widget with 100ms debounced redraws
@@ -35,10 +34,12 @@ src/tui/
 - Routes to `ResponseBox` widget with debounced redraws (100ms)
 - Prevents flickering during high-volume concurrent order updates
 
-**Broker Registry (`broker_functions.py`):**
-- `BROKER_CONFIG` dict maps broker names → `{trade, holdings, validate}` function refs
-- `get_broker_function(name, type)` checks `BrokerConfig.enabled` before returning
-- This is 1 of 5 registration points for new brokers (see src/brokers/AGENTS.md)
+**Broker functions (from `brokers.registry`, ADR 0004):**
+- `app.py` builds its `BROKER_CONFIG` via `registry.broker_functions_map()` —
+  `{name: {trade, holdings, validate?}}`. There is no `tui/broker_functions.py`
+  anymore; the registry is the single source of truth.
+- `registry.get_broker_function(name, type)` checks `enabled` before returning.
+- Adding a broker is a single edit to `src/brokers/registry.py` (see src/brokers/AGENTS.md).
 
 **Session Management (`session_cache.py`):**
 - 5-second TTL cache for broker connection status

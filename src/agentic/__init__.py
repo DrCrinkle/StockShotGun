@@ -1,12 +1,13 @@
 """StockShotGun agentic / MCP layer.
 
-This package is the agent-callable boundary of StockShotGun. Two sub-packages:
+This package is the agent-callable boundary of StockShotGun. Two parts:
 
-- `agentic.brokers.<broker>` — twelve per-broker MCP servers, one per broker,
-  each owning its credentials, rate limiter, and circuit-breaker instance. Each
-  exposes `place_at_broker`, `get_holdings_at_broker`, `health_check` —
-  documented as router-only (defense in depth: the broker MCP re-validates
-  enforcement and does not trust its caller).
+- `agentic.broker` — the generic per-broker MCP entrypoint, run as
+  `python -m agentic.broker <BrokerName>`. It resolves one broker from
+  `brokers.registry` (lazily, so only that broker imports) and serves
+  `place_at_broker`, `get_holdings_at_broker`, `health_check` — documented as
+  router-only (defense in depth: the broker MCP re-validates enforcement and
+  does not trust its caller). See ADR 0004.
 - `agentic.router` — the agent-facing fan-out MCP. Exposes `place_order`,
   `get_holdings`, `list_brokers`, `run_sweep`, `propose_order`, `execute_order`.
   Calls per-broker MCPs; never reaches into broker SDKs directly.

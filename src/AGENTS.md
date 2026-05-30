@@ -39,7 +39,7 @@ src/
 - Respect `ExecutionContext`: request IDs, non-interactive mode, output mode, and log file path.
 - When non-interactive mode is set, raise `CliRuntimeError` instead of blocking for user input.
 - Execute orders through the gate/Router path (`cli_bridge.preflight_validate` → `apply_main_py_gate*` → `execute_via_router`); the gate call MUST precede execution. Do not call broker SDKs directly from handlers.
-- Keep broker function lookup centralized through `tui/broker_functions.py` mappings.
+- Keep broker function lookup centralized through `brokers/registry.py` (the single source of truth; ADR 0004). Resolve via `registry.resolve_trade/holdings/validate` or `registry.broker_functions_map()`.
 
 ## ANTI-PATTERNS (SRC LAYER)
 - Adding new action logic directly in argument parsing blocks without wiring into `run_cli`/runtime envelope flow.

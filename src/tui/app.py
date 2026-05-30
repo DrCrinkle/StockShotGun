@@ -9,8 +9,11 @@ from collections.abc import Hashable
 from tui.config import BROKERS
 from tui.widgets import EditWithCallback, ResponseBox
 from tui.holdings_view import HoldingsView
-from tui.broker_functions import BROKER_CONFIG
+from brokers.registry import broker_functions_map
 from tui.response_handler import ResponseWriter
+
+# Per-broker functions derived from the broker registry (ADR 0004).
+BROKER_CONFIG = broker_functions_map()
 from tui.input_handler import (
     tui_input_handler,
     setup_tui_input_interception,

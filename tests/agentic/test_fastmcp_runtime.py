@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 import json
 from pathlib import Path
 from typing import Any
@@ -10,8 +9,10 @@ import pytest
 
 from agentic._base import (
     BrokerMCPSpec,
+    build_broker_mcp_spec,
     build_fastmcp_server,
 )
+from brokers import registry
 from enforcement import (
     AuditLog,
     BrokerAccount,
@@ -155,26 +156,9 @@ def test_health_check_tool_returns_metadata(core: EnforcementCore):
     raise AssertionError(f"health_check result missing broker name: {result!r}")
 
 
-@pytest.mark.parametrize(
-    "broker_dir",
-    [
-        "robinhood",
-        "tradier",
-        "tastytrade",
-        "public",
-        "firstrade",
-        "fennel",
-        "schwab",
-        "bbae",
-        "dspac",
-        "sofi",
-        "webull",
-        "wellsfargo",
-        "chase",
-    ],
-)
-def test_every_real_broker_builds_a_fastmcp_server(broker_dir: str, core: EnforcementCore):
-    mod = importlib.import_module(f"agentic.brokers.{broker_dir}")
-    app = build_fastmcp_server(mod.SPEC, core=core)
+@pytest.mark.parametrize("broker_name", registry.all_names())
+def test_every_real_broker_builds_a_fastmcp_server(broker_name: str, core: EnforcementCore):
+    spec = build_broker_mcp_spec(registry.get(broker_name))
+    app = build_fastmcp_server(spec, core=core)
     tools = asyncio.run(app.list_tools())
     assert {t.name for t in tools} == EXPECTED_TOOLS

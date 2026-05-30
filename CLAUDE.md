@@ -63,12 +63,10 @@ The application supports both CLI and TUI (Terminal User Interface) modes for fl
    - Consistent error handling and status reporting
    - Progress tracking across all operations
 
-3. **Centralized Configuration**: `BrokerConfig` in `brokers/base.py` is the single source of truth for broker configuration. When adding a new broker:
-   - Add broker config to `BrokerConfig.BROKERS`
-   - Create broker module with trade/holdings functions
-   - Add session getter to `session_manager.py`
-   - Import functions in `brokers/__init__.py`
-   - Add to `tui/broker_functions.py` mapping
+3. **Centralized Configuration**: `brokers/registry.py` is the single source of truth for broker identity and function bindings (ADR 0004). `BrokerConfig`, the session manager, the CLI/TUI function maps, and the agentic router all derive from it. When adding a new broker:
+   - Create the broker module with trade/holdings/validate/get_session functions
+   - Add ONE `BrokerSpec(...)` entry to `_SPECS` in `brokers/registry.py` (lazy `"module:symbol"` refs — importing the registry imports no broker SDK)
+   - Add a rate limit to `RateLimiter.BROKER_LIMITS` in `brokers/base.py`
 
 4. **Session Management**: The `BrokerSessionManager` handles authentication and session lifecycle. Sessions are lazy-loaded and cached to minimize login overhead.
 
@@ -253,24 +251,24 @@ For brokers requiring browser automation (like Wells Fargo), use a class-based e
    - Use comprehensive debugging (can be commented out later)
    - Proper error handling with browser cleanup in exception handlers
 
-2. **Update `brokers/base.py`**:
-   - Add broker entry to `BrokerConfig.BROKERS` with session_key, env_vars, requires_mfa, enabled
-   - Add rate limit to `RateLimiter.BROKER_LIMITS` dict (requests per second)
+2. **Update `brokers/registry.py`** (single source of truth — ADR 0004):
+   - Add ONE `BrokerSpec(...)` to the `_SPECS` tuple: `name`, `session_key`,
+     `env_vars`, lazy `"module:symbol"` refs for `trade` / `holdings` /
+     `validate` (optional) / `session_getter`, and flags (`requires_mfa`,
+     `supports_fractional`, `multi_account`, `enabled`, `notes`).
+   - `BrokerConfig.BROKERS`, `session_manager`, the CLI/TUI function maps, and
+     the agentic router's spec loader all derive from this automatically — no
+     other registration edits.
 
-3. **Update `brokers/session_manager.py`**:
-   - Import the broker module
-   - Add entry to `BROKER_MODULES` mapping
+3. **Update `brokers/base.py`**:
+   - Add rate limit to `RateLimiter.BROKER_LIMITS` dict (requests per second).
+     Rate limits are not yet part of the registry.
 
-4. **Update `brokers/__init__.py`**:
-   - Import trade and holdings functions
-   - Add to `__all__` exports
-
-5. **Update `tui/broker_functions.py`**:
-   - Import broker functions
-   - Add entry to `BROKER_CONFIG` dict
-
-6. **Update `setup.py`**:
+4. **Update `setup.py`**:
    - Add broker credentials to the `brokers` dict with env_vars and prompts
+
+The agentic MCP server for the new broker needs no new files — the generic
+`python -m agentic.broker <Name>` entrypoint serves any broker in the registry.
 
 ## Supported Brokers
 

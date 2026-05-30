@@ -10,10 +10,11 @@ Root AGENTS.md conventions apply; this file captures broker-only contracts, regi
 ## STRUCTURE
 ```
 src/brokers/
-├── base.py              # Shared: http_client, RateLimiter, APICache, BrokerConfig, retry logic
-├── session_manager.py   # BrokerSessionManager: lazy auth, concurrent-safe, per-broker locks
+├── registry.py          # SINGLE SOURCE OF TRUTH: BrokerSpec per broker (lazy "module:symbol" refs). ADR 0004
+├── base.py              # Shared: http_client, RateLimiter, APICache, BrokerConfig (derived from registry), retry logic
+├── session_manager.py   # BrokerSessionManager: lazy auth (resolves session getters from registry), per-broker locks
 ├── browser_utils.py     # Shared: create_browser, stop_browser, navigate_and_wait, poll_for_condition
-├── __init__.py          # Re-exports all trade/holdings/validate functions
+├── __init__.py          # Exports base infra + session_manager + registry (no eager per-broker imports)
 ├── robinhood.py         # SDK: robin_stocks (global state, session=True boolean)
 ├── schwab.py            # SDK: schwab-py (OAuth, token persistence in tokens/)
 ├── tastytrade.py        # SDK: tastytrade (standard async)
@@ -44,14 +45,20 @@ Each module MUST implement:
 await rate_limiter.wait_if_needed("BrokerName")
 ```
 
-## ADDING A NEW BROKER (5 registration points)
+## ADDING A NEW BROKER (one registration point — ADR 0004)
 1. `src/brokers/{broker}.py` — Implement Trade, GetHoldings, Validate, get_session
-2. `src/brokers/base.py` — Add to `BrokerConfig.BROKERS` + `RateLimiter.BROKER_LIMITS`
-3. `src/brokers/session_manager.py` — Add to `BROKER_MODULES` mapping
-4. `src/brokers/__init__.py` — Import + add to `__all__`
-5. `src/tui/broker_functions.py` — Add to `BROKER_CONFIG` dict
+2. `src/brokers/registry.py` — Add ONE `BrokerSpec(...)` to the `_SPECS` tuple
+   (name, session_key, env_vars, lazy `"module:symbol"` refs for
+   trade/holdings/validate/session_getter, flags). This is the single source of
+   truth — `BrokerConfig.BROKERS`, the session manager, the CLI/TUI function
+   maps, and the agentic router all derive from it.
+3. `src/brokers/base.py` — Add to `RateLimiter.BROKER_LIMITS` (rate limits are
+   not yet part of the registry).
 
-Also update `src/setup.py` if broker needs credential wizard entry.
+Also update `src/setup.py` if broker needs credential wizard entry. There is no
+longer a per-broker `agentic/brokers/<name>/` package or a TUI broker map to
+edit — the generic `python -m agentic.broker <Name>` entrypoint serves any
+broker in the registry.
 
 ## IMPLEMENTATION CATEGORIES
 
