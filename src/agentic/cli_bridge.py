@@ -101,17 +101,10 @@ async def apply_main_py_gate(
         router.provider,
         ref_price=ref_price,
     )
-    # F5 v0.4 — populate Router's intent cache so a subsequent
-    # `execute_via_router` can reconstruct per-leg args from proposal_id alone.
-    # Router.propose_order does this internally; our path goes around the
-    # router-level method (we call `gate_order` directly to keep the
-    # AccountStatusProvider compatible), so we have to populate explicitly.
-    router._router_intent_cache[proposal.proposal_id] = {  # noqa: SLF001
-        "ticker": intent.ticker,
-        "side": intent.side.value,
-        "qty": intent.qty,
-        "price": intent.price,
-    }
+    # The Proposal is self-describing (ADR 0005): gate_order → propose_fanout
+    # persists ticker/side/qty/price/dry_run on it, so a later
+    # `execute_via_router` reconstructs the per-leg args from the durable store
+    # by proposal_id alone — no router-side intent cache to populate.
     return {
         "proposal_id": proposal.proposal_id,
         "estimated_usd": proposal.estimated_usd,

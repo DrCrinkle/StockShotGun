@@ -81,6 +81,16 @@ class Proposal:
     valid_until_ts: float
     estimated_usd: float
     created_ts: float
+    # The order parameters this proposal authorizes. Stored so execute_order is
+    # self-sufficient from the durable store — no router-side intent cache. They
+    # are uniform across all legs by construction (propose_fanout builds every
+    # leg from one OrderIntent); the per-leg `intent_hash` remains the security
+    # authority, so these are a faithful description, not a trust boundary.
+    ticker: str
+    side: OrderSide
+    qty: float
+    price: float | None
+    dry_run: bool
 
     @property
     def leg_count(self) -> int:

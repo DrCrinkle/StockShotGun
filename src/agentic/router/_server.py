@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from agentic._base import BrokerMCPServer, BrokerMCPSpec, build_broker_mcp_spec
@@ -185,12 +185,6 @@ class Router:
     provider: AccountStatusProvider
     rsa_store_path: str = DEFAULT_RSA_STORE_PATH
     automation_store_path: str = DEFAULT_AUTOMATION_STORE_PATH
-    _router_intent_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
-    """Maps proposal_id → {ticker, side, qty, price} so execute_order can
-    reconstruct the per-leg place_at_broker arguments. The Proposal record
-    only stores hashes + leg metadata; the agent-facing parameters live here.
-    Entries are removed when the proposal expires (TTL-driven cleanup is
-    v0.4 work)."""
 
     @classmethod
     def from_all_brokers(
@@ -580,12 +574,6 @@ class Router:
                     }
                 )
                 continue
-            self._router_intent_cache[proposal.proposal_id] = {
-                "ticker": intent.ticker,
-                "side": intent.side.value,
-                "qty": intent.qty,
-                "price": intent.price,
-            }
             proposals.append(
                 {
                     "ok": True,
@@ -748,12 +736,6 @@ class Router:
             self.provider,
             ref_price=ref_price,
         )
-        self._router_intent_cache[proposal.proposal_id] = {
-            "ticker": intent.ticker,
-            "side": intent.side.value,
-            "qty": intent.qty,
-            "price": intent.price,
-        }
         return {
             "proposal_id": proposal.proposal_id,
             "valid_until_ts": proposal.valid_until_ts,
@@ -808,8 +790,6 @@ class Router:
                 "detail": f"no proposal with id {proposal_id}",
             }
 
-        # Recover the original order parameters from the first leg — all legs
-        # share ticker/side/qty/price by construction.
         if not proposal.legs:
             return {
                 "proposal_id": proposal_id,
@@ -822,17 +802,20 @@ class Router:
                 "detail": "proposal has no legs",
             }
 
-        # We need ticker/qty/side/price to call each broker server's
-        # `place_at_broker`. Pull them from the audit log entry the gate wrote
-        # at propose time — but simpler: each leg's intent_hash binds them.
-        # The router doesn't need them as separate args; the broker leg
-        # implementation reconstructs single-target intent from the call args.
-        # So we look up the agent-supplied params from… the proposal itself.
-        # The current Proposal type doesn't store ticker/side/qty/price.
-        # Workaround: store them on a sidecar `_router_intent_cache` keyed by
-        # proposal_id, populated at propose_order time.
-        cached = self._router_intent_cache.get(proposal_id)
-        if cached is None:
+        # The Proposal is self-describing (ADR 0005): it carries the order
+        # params it authorizes, so execute is sufficient from the durable store
+        # alone — no router-side intent cache, works across restarts and across
+        # processes. The per-leg intent_hash remains the security authority.
+        ticker = proposal.ticker
+        qty = proposal.qty
+        side = proposal.side.value
+        price = proposal.price
+
+        # dry_run is bound into each leg's intent_hash, so a proposal is born
+        # live-or-dry. Enforce that the caller's dry_run matches what was minted
+        # rather than silently flipping the order's mode (or failing every leg
+        # with an opaque intent_mismatch).
+        if dry_run != proposal.dry_run:
             return {
                 "proposal_id": proposal_id,
                 "dry_run": dry_run,
@@ -840,13 +823,12 @@ class Router:
                 "success_count": 0,
                 "failure_count": 0,
                 "rejected": True,
-                "reason": "proposal_intent_uncached",
-                "detail": "router-side intent cache miss; re-propose required",
+                "reason": "dry_run_mismatch",
+                "detail": (
+                    f"proposal minted with dry_run={proposal.dry_run}; "
+                    f"execute called with dry_run={dry_run}"
+                ),
             }
-        ticker = cached["ticker"]
-        qty = cached["qty"]
-        side = cached["side"]
-        price = cached["price"]
 
         legs = await asyncio.gather(
             *(

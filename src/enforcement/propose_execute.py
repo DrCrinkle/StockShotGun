@@ -15,7 +15,7 @@ from enforcement.errors import (
     TokenInvalid,
 )
 from enforcement.intent import intent_hash
-from enforcement.types import BrokerAccount, LegProposal, OrderIntent, Proposal
+from enforcement.types import BrokerAccount, LegProposal, OrderIntent, OrderSide, Proposal
 
 
 class ProposalStore:
@@ -57,7 +57,11 @@ class ProposalStore:
             r["name"]
             for r in self.conn.execute("PRAGMA table_info(proposals)").fetchall()
         }
-        if "proposal_id" not in cols:
+        # Drop on either the pre-F2c shape (no proposal_id) OR the pre-ADR-0004
+        # shape (no stored order params). Proposals are 300s-ephemeral, so
+        # dropping active rows on a shape change is acceptable — the operator
+        # just re-proposes.
+        if "proposal_id" not in cols or "ticker" not in cols:
             self.conn.executescript(
                 "DROP TABLE IF EXISTS leg_proposals;\n"
                 "DROP TABLE IF EXISTS proposals;\n"
@@ -71,7 +75,12 @@ class ProposalStore:
                 proposal_id TEXT PRIMARY KEY,
                 valid_until_ts REAL NOT NULL,
                 estimated_usd REAL NOT NULL,
-                created_ts REAL NOT NULL
+                created_ts REAL NOT NULL,
+                ticker TEXT NOT NULL,
+                side TEXT NOT NULL,
+                qty REAL NOT NULL,
+                price REAL,
+                dry_run INTEGER NOT NULL
             );
             CREATE TABLE IF NOT EXISTS leg_proposals (
                 token TEXT PRIMARY KEY,
@@ -99,14 +108,20 @@ class ProposalStore:
                 self.conn.execute(
                     """
                     INSERT INTO proposals(proposal_id, valid_until_ts,
-                                          estimated_usd, created_ts)
-                    VALUES (?, ?, ?, ?)
+                                          estimated_usd, created_ts,
+                                          ticker, side, qty, price, dry_run)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         proposal.proposal_id,
                         proposal.valid_until_ts,
                         proposal.estimated_usd,
                         proposal.created_ts,
+                        proposal.ticker,
+                        proposal.side.value,
+                        proposal.qty,
+                        proposal.price,
+                        1 if proposal.dry_run else 0,
                     ),
                 )
                 for leg in proposal.legs:
@@ -155,6 +170,11 @@ class ProposalStore:
                 valid_until_ts=float(head["valid_until_ts"]),
                 estimated_usd=float(head["estimated_usd"]),
                 created_ts=float(head["created_ts"]),
+                ticker=head["ticker"],
+                side=OrderSide(head["side"]),
+                qty=float(head["qty"]),
+                price=None if head["price"] is None else float(head["price"]),
+                dry_run=bool(head["dry_run"]),
             )
 
     def consume_leg(self, leg_token: str, supplied_intent_hash: str) -> LegProposal:
@@ -246,12 +266,38 @@ def propose_fanout(
             created_ts=now,
         )
         legs.append(leg)
+    # Invariant: the master order params we store must reproduce EVERY leg's
+    # bound intent_hash. True by construction here (all legs derive from one
+    # `intent`), but assert it so a future change that varies params per leg —
+    # making a single stored param set a lie for some legs — fails loudly
+    # instead of silently persisting the wrong qty/price.
+    for leg in legs:
+        expected = intent_hash(
+            OrderIntent(
+                ticker=intent.ticker,
+                side=intent.side,
+                qty=intent.qty,
+                targets=(BrokerAccount(leg.broker, leg.account_id),),
+                price=intent.price,
+                dry_run=intent.dry_run,
+            )
+        )
+        if leg.intent_hash != expected:
+            raise ValueError(
+                "proposal legs do not all share the master order params; "
+                "store params per-leg or split into separate proposals"
+            )
     proposal = Proposal(
         proposal_id=proposal_id,
         legs=tuple(legs),
         valid_until_ts=valid_until,
         estimated_usd=estimated_usd_total,
         created_ts=now,
+        ticker=intent.ticker,
+        side=intent.side,
+        qty=intent.qty,
+        price=intent.price,
+        dry_run=intent.dry_run,
     )
     store.insert(proposal)
     return proposal
