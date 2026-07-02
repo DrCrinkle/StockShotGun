@@ -12,6 +12,43 @@
 
 ---
 
+## Execution deviations (as built)
+
+This plan shipped with a few departures from the task bodies below. The task
+steps are left as originally written (they're still an accurate record of the
+TDD process); this section is the correction layer.
+
+- **CLI envelope (Tasks 4 & 6).** `main.py` had already grown a shared handler
+  contract by the time these tasks landed: `_run_x(args, parser, context) ->
+  tuple[ExitCode, dict]`, with JSON-vs-text rendering decided centrally by a
+  global `--output json` flag (not a per-command `--json` flag). `signals` and
+  `status` were built to that contract instead of the plan's self-printing
+  `--json` idiom. The plan's test snippets (`run_signals(args)`, bare
+  `argparse.Namespace` with a `json` attribute) are superseded by
+  `_run_signals(args, parser, context)` / `_run_status(args, parser, context)`
+  — see `src/cli/signals.py` and `src/cli/status.py` for the actual shape.
+- **Engine class name (Task 5).** The plan assumes an `ExecutionEngine` class;
+  that rename hadn't landed on this branch, so the methods live on `Router`
+  (`src/agentic/router/_server.py`) instead. `dismiss_calendar_signal` and
+  `promote_calendar_signal` raise `ValueError` at the store layer, which the
+  MCP-layer methods (`dismiss_signal`, `promote_signal`) translate into
+  `{"ok": False, "error": ...}` rather than letting the exception propagate.
+  `scan_signals` similarly catches calendar fetch/parse failures and returns a
+  structured `{"ok": False, "error": ..., "source": ...}` instead of raising —
+  a fetch failure is routine (upstream calendar flakiness), not fatal.
+- **Extra hardening from review loops.** Golden fixture assertions on the
+  captured Nasdaq payload; a dismiss state guard (only `'new'` signals can be
+  dismissed or promoted, enforced with `ValueError` otherwise); a
+  `CalendarSignalLike` Protocol so store methods don't hard-depend on the
+  concrete `CalendarSignal` dataclass; explicit no-fetch sentinels in tests
+  (fetchers that raise if called, to prove `refresh=False` never hits the
+  network); and an honest `promote_signal` docstring — promoted signals enter
+  the `automate` due-buy queue rather than executing immediately, and a
+  signal with a NULL `effective_date` is immediately due on the next
+  `automate` run.
+
+---
+
 ## File structure
 
 | File | Responsibility |
