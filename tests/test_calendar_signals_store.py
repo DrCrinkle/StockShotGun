@@ -16,7 +16,7 @@ def store(tmp_path):
     s.conn.close()
 
 
-def _signal(ticker="ABCD", ratio="1:25", effective_date="2026-07-14"):
+def _signal(ticker="ABCD", ratio="1:25", effective_date: str | None = "2026-07-14"):
     return CalendarSignal(
         ticker=ticker, ratio=ratio, effective_date=effective_date,
         company="ABCD Corp", raw={"symbol": ticker},
