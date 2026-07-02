@@ -7,6 +7,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
+from typing import Any
 
 
 BROKER_ALIAS_MAP = {
@@ -359,6 +360,21 @@ class AutomationRecapStore:
                 created_at TEXT NOT NULL,
                 promoted_at TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS calendar_signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                ratio TEXT NOT NULL,
+                effective_date TEXT,
+                source TEXT NOT NULL,
+                raw_json TEXT NOT NULL,
+                signal_key TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL,
+                dismissed_reason TEXT,
+                promoted_buy_signal_id INTEGER REFERENCES buy_signals(id),
+                first_seen TEXT NOT NULL,
+                last_seen TEXT NOT NULL
+            );
             """
         )
         self.conn.commit()
@@ -576,6 +592,75 @@ class AutomationRecapStore:
             (now.isoformat(), *signal_ids),
         )
         self.conn.commit()
+
+    # --- calendar signals (automated source feed, e.g. Nasdaq calendar) ---
+
+    def upsert_calendar_signals(
+        self,
+        signals: list[Any],
+        source: str,
+        now: datetime,
+    ) -> dict[str, int]:
+        """Idempotent ingest of CalendarSignal objects. New rows get status
+        'new'; existing rows (any status) only bump last_seen — terminal
+        states (dismissed/promoted/expired) are never resurrected."""
+        now_iso = now.isoformat()
+        new = 0
+        seen = 0
+        for signal in signals:
+            key = _line_hash(
+                f"{source}|{signal.ticker}|{signal.ratio}|{signal.effective_date}"
+            )
+            exists = self.conn.execute(
+                "SELECT 1 FROM calendar_signals WHERE signal_key = ?", (key,)
+            ).fetchone()
+            if exists:
+                self.conn.execute(
+                    "UPDATE calendar_signals SET last_seen = ? WHERE signal_key = ?",
+                    (now_iso, key),
+                )
+                seen += 1
+            else:
+                self.conn.execute(
+                    """
+                    INSERT INTO calendar_signals(
+                        ticker, ratio, effective_date, source, raw_json,
+                        signal_key, status, first_seen, last_seen
+                    ) VALUES (?, ?, ?, ?, ?, ?, 'new', ?, ?)
+                    """,
+                    (
+                        signal.ticker,
+                        signal.ratio,
+                        signal.effective_date,
+                        source,
+                        json.dumps(signal.raw),
+                        key,
+                        now_iso,
+                        now_iso,
+                    ),
+                )
+                new += 1
+        self.conn.commit()
+        return {"new": new, "seen": seen}
+
+    def list_calendar_signals(self, status: str | None = None) -> list[sqlite3.Row]:
+        if status is None:
+            return self.conn.execute(
+                "SELECT * FROM calendar_signals ORDER BY effective_date, ticker"
+            ).fetchall()
+        return self.conn.execute(
+            "SELECT * FROM calendar_signals WHERE status = ? "
+            "ORDER BY effective_date, ticker",
+            (status,),
+        ).fetchall()
+
+    def dismiss_calendar_signal(self, signal_id: int, reason: str, now: datetime) -> None:
+        with self.conn:
+            self.conn.execute(
+                "UPDATE calendar_signals SET status = 'dismissed', "
+                "dismissed_reason = ?, last_seen = ? WHERE id = ?",
+                (reason, now.isoformat(), signal_id),
+            )
 
     def mark_sell_triggers_executed(
         self, trigger_ids: list[int], now: datetime
