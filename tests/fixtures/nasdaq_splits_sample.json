@@ -1,0 +1,260 @@
+{
+    "data": {
+        "asOf": "Wed, Jul 1, 2026",
+        "headers": {
+            "symbol": "SYMBOL",
+            "name": "COMPANY",
+            "ratio": "RATIO",
+            "executionDate": "EFFECTIVE DATE"
+        },
+        "rows": [
+            {
+                "symbol": "WLFC",
+                "name": "Willis Lease Finance Corporation",
+                "ratio": "3:1",
+                "executionDate": "7/21/2026"
+            },
+            {
+                "symbol": "BKEM",
+                "name": "BNY Mellon Emerging Markets Equity ETF",
+                "ratio": "3 : 1",
+                "executionDate": "7/20/2026"
+            },
+            {
+                "symbol": "BKIE",
+                "name": "BNY Mellon International Equity ETF",
+                "ratio": "3 : 1",
+                "executionDate": "7/20/2026"
+            },
+            {
+                "symbol": "BKLC",
+                "name": "BNY Mellon US Large Cap Core Equity ETF",
+                "ratio": "3 : 1",
+                "executionDate": "7/20/2026"
+            },
+            {
+                "symbol": "BKMC",
+                "name": "BNY Mellon US Mid Cap Core Equity ETF",
+                "ratio": "3 : 1",
+                "executionDate": "7/20/2026"
+            },
+            {
+                "symbol": "BKSE",
+                "name": "BNY Mellon US Small Cap Core Equity ETF",
+                "ratio": "3 : 1",
+                "executionDate": "7/20/2026"
+            },
+            {
+                "symbol": "SNEX",
+                "name": "StoneX Group Inc.",
+                "ratio": "1.5:1",
+                "executionDate": "7/20/2026"
+            },
+            {
+                "symbol": "AIBD",
+                "name": "Direxion Daily AI and Big Data Bear 2X ETF",
+                "ratio": "1 : 10",
+                "executionDate": "7/15/2026"
+            },
+            {
+                "symbol": "KORU",
+                "name": "Direxion Daily MSCI South Korea Bull 3X ETF",
+                "ratio": "20 : 1",
+                "executionDate": "7/15/2026"
+            },
+            {
+                "symbol": "MUU",
+                "name": "Direxion Daily MU Bull 2X ETF",
+                "ratio": "20:1",
+                "executionDate": "7/15/2026"
+            },
+            {
+                "symbol": "DRIP",
+                "name": "Direxion Daily S&P Oil & Gas Exp. & Prod. Bear 2X ETF",
+                "ratio": "1 : 10",
+                "executionDate": "7/15/2026"
+            },
+            {
+                "symbol": "SOXS",
+                "name": "Direxion Daily Semiconductor Bear 3X ETF",
+                "ratio": "1 : 10",
+                "executionDate": "7/15/2026"
+            },
+            {
+                "symbol": "TZA",
+                "name": "Direxion Daily Small Cap Bear 3X ETF",
+                "ratio": "1 : 10",
+                "executionDate": "7/15/2026"
+            },
+            {
+                "symbol": "TECS",
+                "name": "Direxion Daily Technology Bear 3X ETF",
+                "ratio": "1 : 10",
+                "executionDate": "7/15/2026"
+            },
+            {
+                "symbol": "BMNU",
+                "name": "ETF Opportunities Trust T-REX 2X Long BMNR Daily Target ETF",
+                "ratio": "1 : 10",
+                "executionDate": "7/13/2026"
+            },
+            {
+                "symbol": "DJTU",
+                "name": "ETF Opportunities Trust T-REX 2X Long DJT Daily Target ETF",
+                "ratio": "1 : 10",
+                "executionDate": "7/13/2026"
+            },
+            {
+                "symbol": "LGSXY",
+                "name": "Light S.A ADR",
+                "ratio": "1 : 2",
+                "executionDate": "7/13/2026"
+            },
+            {
+                "symbol": "FUWAY",
+                "name": "Furukawa Electric Co. Ltd. ADR",
+                "ratio": "10 : 1",
+                "executionDate": "7/10/2026"
+            },
+            {
+                "symbol": "ARMH",
+                "name": "Precidian ETFs Trust Arm Holdings PLC ADRhedged",
+                "ratio": "10 : 1",
+                "executionDate": "7/10/2026"
+            },
+            {
+                "symbol": "ASMH",
+                "name": "Precidian ETFs Trust ASML Holding NV ADRhedged",
+                "ratio": "10 : 1",
+                "executionDate": "7/10/2026"
+            },
+            {
+                "symbol": "STHH",
+                "name": "Precidian ETFs Trust STMicroelectronics NV ADRhedged",
+                "ratio": "10 : 1",
+                "executionDate": "7/10/2026"
+            },
+            {
+                "symbol": "SNFCA",
+                "name": "Security National Financial Corporation",
+                "ratio": "5%",
+                "executionDate": "7/10/2026"
+            },
+            {
+                "symbol": "SSUMY",
+                "name": "Sumitomo Corporation ADR",
+                "ratio": "4 : 1",
+                "executionDate": "7/10/2026"
+            },
+            {
+                "symbol": "SLAI",
+                "name": "SOLAI Limited",
+                "ratio": "1 : 7",
+                "executionDate": "7/06/2026"
+            },
+            {
+                "symbol": "SRXH",
+                "name": "SRX Global Inc.",
+                "ratio": "1 : 60",
+                "executionDate": "7/06/2026"
+            },
+            {
+                "symbol": "FNCSF",
+                "name": "North American Financial 15 Split Corp - Class A",
+                "ratio": "10%",
+                "executionDate": "7/03/2026"
+            },
+            {
+                "symbol": "CRWD",
+                "name": "CrowdStrike Holdings, Inc.",
+                "ratio": "4:1",
+                "executionDate": "7/02/2026"
+            },
+            {
+                "symbol": "GTCDF",
+                "name": "Getty Copper Inc",
+                "ratio": "1 : 5",
+                "executionDate": "7/02/2026"
+            },
+            {
+                "symbol": "GMEX",
+                "name": "GMEX ROBOTICS CORPORATION",
+                "ratio": "1:9",
+                "executionDate": "7/02/2026"
+            },
+            {
+                "symbol": "SMTOY",
+                "name": "Sumitomo Electric Industries Ltd. ADR",
+                "ratio": "8 : 1",
+                "executionDate": "7/02/2026"
+            },
+            {
+                "symbol": "VLNT",
+                "name": "Vallant Financial Inc.",
+                "ratio": "10 : 1",
+                "executionDate": "7/02/2026"
+            },
+            {
+                "symbol": "ALIT",
+                "name": "Alight, Inc.",
+                "ratio": "1 : 20",
+                "executionDate": "7/01/2026"
+            },
+            {
+                "symbol": "BFOR",
+                "name": "Barron's 400 ETF",
+                "ratio": "4 : 1",
+                "executionDate": "7/01/2026"
+            },
+            {
+                "symbol": "GOGY",
+                "name": "Golden Grail Technology Corp",
+                "ratio": "1 : 500",
+                "executionDate": "7/01/2026"
+            },
+            {
+                "symbol": "KAOOY",
+                "name": "Kao Corporation ADR",
+                "ratio": "6 : 5",
+                "executionDate": "7/01/2026"
+            },
+            {
+                "symbol": "MQ",
+                "name": "Marqeta, Inc.",
+                "ratio": "1:4",
+                "executionDate": "7/01/2026"
+            },
+            {
+                "symbol": "MLI",
+                "name": "Mueller Industries, Inc.",
+                "ratio": "2 : 1",
+                "executionDate": "7/01/2026"
+            },
+            {
+                "symbol": "RMTI",
+                "name": "Rockwell Medical, Inc.",
+                "ratio": "1:10",
+                "executionDate": "7/01/2026"
+            },
+            {
+                "symbol": "UVIX",
+                "name": "VS TR 2x Long VIX Futures ETF",
+                "ratio": "1 : 20",
+                "executionDate": "7/01/2026"
+            },
+            {
+                "symbol": "UVIXNODATE",
+                "name": "VS TR 2x Long VIX Futures ETF (hand-edited copy for missing-date coverage)",
+                "ratio": "1 : 20",
+                "executionDate": "",
+                "_note": "hand-edited for test coverage: blank executionDate"
+            }
+        ]
+    },
+    "message": null,
+    "status": {
+        "rCode": 200,
+        "bCodeMessage": null,
+        "developerMessage": null
+    }
+}
