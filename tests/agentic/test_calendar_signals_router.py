@@ -70,7 +70,16 @@ def test_scan_signals_refresh_false_reads_store(engine: Router):
     assert result["counts"] == {"new": 0, "seen": 0, "expired": 0}
 
 
-def test_scan_signals_refresh_true_uses_injected_fetcher(engine: Router):
+def test_scan_signals_refresh_true_uses_injected_fetcher(
+    engine: Router, monkeypatch: pytest.MonkeyPatch
+):
+    async def _real_fetcher_should_never_be_called(*args, **kwargs):
+        raise AssertionError("real fetcher called")
+
+    monkeypatch.setattr(
+        "signals.nasdaq.fetch_splits_calendar", _real_fetcher_should_never_be_called
+    )
+
     async def fake_fetch():
         return [
             CalendarSignal(
@@ -86,6 +95,18 @@ def test_scan_signals_refresh_true_uses_injected_fetcher(engine: Router):
     result = asyncio.run(engine.scan_signals(refresh=True))
     assert result["counts"]["new"] == 1
     assert result["signals"][0]["ticker"] == "ZZZZ"
+
+
+def test_scan_signals_refresh_true_fetch_failure_returns_structured_error(
+    engine: Router,
+):
+    async def failing_fetch():
+        raise RuntimeError("nasdaq down")
+
+    engine.calendar_fetcher = failing_fetch
+    result = asyncio.run(engine.scan_signals(refresh=True))
+    assert result["ok"] is False
+    assert "nasdaq down" in result["error"]
 
 
 def test_dismiss_signal(engine: Router):

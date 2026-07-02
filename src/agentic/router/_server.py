@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from agentic._base import BrokerMCPServer, BrokerMCPSpec, build_broker_mcp_spec
 from brokers import registry
@@ -19,6 +19,9 @@ from enforcement import (
     OrderSide,
     gate_order,
 )
+
+if TYPE_CHECKING:
+    from signals.nasdaq import CalendarSignal
 
 DEFAULT_PLACEHOLDER_ACCOUNT_ID = "primary"
 DEFAULT_RSA_STORE_PATH = "logs/automation.sqlite3"
@@ -186,7 +189,7 @@ class Router:
     rsa_store_path: str = DEFAULT_RSA_STORE_PATH
     automation_store_path: str = DEFAULT_AUTOMATION_STORE_PATH
     # Injectable for tests; None = fetch from the real Nasdaq calendar.
-    calendar_fetcher: Any = None
+    calendar_fetcher: Callable[[], Awaitable[list["CalendarSignal"]]] | None = None
 
     @classmethod
     def from_all_brokers(
@@ -501,7 +504,12 @@ class Router:
     async def scan_signals(self, refresh: bool = True) -> dict[str, Any]:
         """Scan the reverse-split calendar into calendar_signals (refresh=True)
         or just read staged 'new' signals (refresh=False). Read/ingest only —
-        never proposes or executes orders."""
+        never proposes or executes orders.
+
+        If the calendar fetch/parse step fails (network error, malformed
+        payload, etc.), returns `{"ok": False, "error": ..., "source": ...}`
+        instead of raising — a fetch failure is expected/routine, not fatal.
+        """
         from datetime import datetime as _dt
 
         from automation_recap import AutomationRecapStore  # type: ignore[import-untyped]
@@ -517,10 +525,13 @@ class Router:
                     parse_splits_payload,
                 )
 
-                if self.calendar_fetcher is not None:
-                    signals = await self.calendar_fetcher()
-                else:
-                    signals = parse_splits_payload(await fetch_splits_calendar())
+                try:
+                    if self.calendar_fetcher is not None:
+                        signals = await self.calendar_fetcher()
+                    else:
+                        signals = parse_splits_payload(await fetch_splits_calendar())
+                except Exception as exc:  # noqa: BLE001 — fetch/parse failure is routine, not fatal
+                    return {"ok": False, "error": str(exc), "source": SOURCE_NAME}
                 counts.update(
                     store.upsert_calendar_signals(signals, source=SOURCE_NAME, now=now)
                 )
@@ -554,9 +565,10 @@ class Router:
 
     @logged_tool(tool="router.promote_signal")
     async def promote_signal(self, signal_id: int) -> dict[str, Any]:
-        """Promote a calendar signal into the actionable buy_signals queue.
-        Does NOT place any order — the buy still flows through the normal
-        propose/execute gates."""
+        """Promote a calendar signal into the automate due-buy queue. The buy
+        is NOT executed by this call, but it will be gated and executed on
+        the next automate run — and a signal without an effective date
+        becomes immediately due. Dismiss instead if unsure."""
         from datetime import datetime as _dt
 
         from automation_recap import AutomationRecapStore  # type: ignore[import-untyped]
@@ -1058,6 +1070,9 @@ def build_router_fastmcp_server(router: Router) -> Any:
         (refresh=True) or read staged 'new' signals (refresh=False).
         Read/ingest only — never trades. Evaluate each returned signal and
         either promote_signal (worth playing) or dismiss_signal (with reason).
+
+        If the calendar fetch/parse step fails, returns
+        `{"ok": False, "error": ..., "source": ...}` instead of raising.
         """
         return await router.scan_signals(refresh=refresh)
 
@@ -1072,9 +1087,10 @@ def build_router_fastmcp_server(router: Router) -> Any:
 
     @app.tool()
     async def promote_signal(signal_id: int) -> dict[str, Any]:
-        """Promote a calendar signal to the actionable buy queue. This stages
-        intent only — the buy itself still requires propose_order +
-        principal approval + execute_order."""
+        """Promote a calendar signal into the automate due-buy queue. The buy
+        is NOT executed by this call, but it will be gated and executed on
+        the next automate run — and a signal without an effective date
+        becomes immediately due. Dismiss instead if unsure."""
         return await router.promote_signal(signal_id=signal_id)
 
     @app.tool()
