@@ -140,3 +140,25 @@ def test_dismiss_rejected_for_promoted_signal(store):
     store.promote_calendar_signal(row_id, now=NOW)
     with pytest.raises(ValueError):
         store.dismiss_calendar_signal(row_id, reason="skip", now=NOW)
+
+
+def test_status_counts_empty_db_defaults(store):
+    counts = store.status_counts()
+    assert counts == {
+        "calendar_signals": {"new": 0},
+        "buy_signals": {"pending": 0},
+        "pending_sell_triggers": {"pending": 0},
+    }
+
+
+def test_status_counts_reflects_seeded_data(store):
+    store.upsert_calendar_signals(
+        [_signal("AAAA"), _signal("BBBB")], source="nasdaq_calendar", now=NOW
+    )
+    a_id = [r["id"] for r in store.list_calendar_signals() if r["ticker"] == "AAAA"][0]
+    store.dismiss_calendar_signal(a_id, reason="skip", now=NOW)
+
+    counts = store.status_counts()
+    assert counts["calendar_signals"] == {"new": 1, "dismissed": 1}
+    assert counts["buy_signals"] == {"pending": 0}
+    assert counts["pending_sell_triggers"] == {"pending": 0}

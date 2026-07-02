@@ -44,6 +44,38 @@ class RsaStoreTradeTests(unittest.TestCase):
         self.assertEqual(row["notes"], "Round 2")
         store.close()
 
+    def test_list_trades_orders_newest_first(self) -> None:
+        store = RsaStore(":memory:")
+        first_id = store.create_trade("AREB", "1:25")
+        second_id = store.create_trade("WXYZ", "1:10")
+        rows = store.list_trades()
+        self.assertEqual([r["id"] for r in rows], [second_id, first_id])
+        store.close()
+
+    def test_list_trades_includes_expected_columns(self) -> None:
+        store = RsaStore(":memory:")
+        trade_id = store.create_trade(
+            "AREB",
+            "1:25",
+            expected_split_date="2026-05-15",
+            signal_id=42,
+            notes="Round 2",
+        )
+        row = store.list_trades()[0]
+        self.assertEqual(row["id"], trade_id)
+        self.assertEqual(row["ticker"], "AREB")
+        self.assertEqual(row["split_ratio"], "1:25")
+        self.assertEqual(row["expected_split_date"], "2026-05-15")
+        self.assertEqual(row["signal_id"], 42)
+        self.assertEqual(row["notes"], "Round 2")
+        self.assertIn("created_at", row.keys())
+        store.close()
+
+    def test_list_trades_empty_db_returns_empty_list(self) -> None:
+        store = RsaStore(":memory:")
+        self.assertEqual(store.list_trades(), [])
+        store.close()
+
     def test_init_schema_is_idempotent_on_existing_db(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "rsa.sqlite3")

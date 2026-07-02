@@ -19,6 +19,12 @@ from sweep import SweepStatus
 NOW = datetime(2026, 7, 1, 12, 0, 0)
 
 
+def _run(tmp_path, output_format="json"):
+    return asyncio.run(
+        _run_status(_args(tmp_path), None, _context(output_format), now=NOW)
+    )
+
+
 def _args(tmp_path):
     return argparse.Namespace(db_path=str(tmp_path / "automation.sqlite3"))
 
@@ -56,10 +62,10 @@ def test_seeded_snapshot(tmp_path):
     )
     recap_store.close()
 
-    exit_code, data = asyncio.run(_run_status(_args(tmp_path), None, _context()))
+    exit_code, data = _run(tmp_path)
 
     assert exit_code == ExitCode.SUCCESS
-    assert "generated_at" in data and data["generated_at"]
+    assert data["generated_at"] == NOW.isoformat()
 
     assert len(data["trades"]) == 1
     trade = data["trades"][0]
@@ -79,13 +85,13 @@ def test_seeded_snapshot(tmp_path):
 
 
 def test_empty_db(tmp_path):
-    exit_code, data = asyncio.run(_run_status(_args(tmp_path), None, _context()))
+    exit_code, data = _run(tmp_path)
 
     assert exit_code == ExitCode.SUCCESS
     assert data["trades"] == []
     assert data["calendar_signals"]["new"] == 0
     assert data["buy_signals"]["pending"] == 0
-    assert "pending_sell_triggers" in data
+    assert data["pending_sell_triggers"]["pending"] == 0
 
 
 def test_never_swept_position(tmp_path):
@@ -98,7 +104,7 @@ def test_never_swept_position(tmp_path):
     rsa_store.add_position(trade_id, "Tradier", "acct2", 2, now=NOW)
     rsa_store.close()
 
-    exit_code, data = asyncio.run(_run_status(_args(tmp_path), None, _context()))
+    exit_code, data = _run(tmp_path)
 
     assert exit_code == ExitCode.SUCCESS
     assert len(data["trades"]) == 1
@@ -107,3 +113,21 @@ def test_never_swept_position(tmp_path):
     assert positions[0]["broker"] == "Tradier"
     assert positions[0]["status"] is None
     assert positions[0]["observed_qty"] is None
+
+
+def test_text_output_includes_ticker_and_never_swept(tmp_path, capsys):
+    db_path = str(tmp_path / "automation.sqlite3")
+
+    rsa_store = RsaStore(db_path)
+    trade_id = rsa_store.create_trade(
+        "WXYZ", "1:10", expected_split_date="2026-08-01", now=NOW
+    )
+    rsa_store.add_position(trade_id, "Tradier", "acct2", 2, now=NOW)
+    rsa_store.close()
+
+    exit_code, _ = _run(tmp_path, output_format="text")
+
+    assert exit_code == ExitCode.SUCCESS
+    captured = capsys.readouterr()
+    assert "WXYZ" in captured.out
+    assert "never-swept" in captured.out

@@ -764,5 +764,32 @@ class AutomationRecapStore:
             )
         return cursor.rowcount
 
+    def _count_by(self, table: str, column: str) -> dict[str, int]:
+        # table/column are trusted literals, never caller/user input — do not widen.
+        # Assumes a NOT NULL status column on `table`.
+        rows = self.conn.execute(
+            f"SELECT {column} AS k, COUNT(*) AS n FROM {table} GROUP BY {column}"
+        ).fetchall()
+        return {row["k"]: row["n"] for row in rows}
+
+    def status_counts(self) -> dict[str, dict[str, int]]:
+        """Read-only status-count snapshot across the three signal/trigger
+        tables the `status` CLI command reports on. Guarantees the stable
+        default keys the CLI relies on even against an empty database."""
+        calendar_signals = self._count_by("calendar_signals", "status")
+        calendar_signals.setdefault("new", 0)
+
+        buy_signals = self._count_by("buy_signals", "status")
+        buy_signals.setdefault("pending", 0)
+
+        pending_sell_triggers = self._count_by("pending_sell_triggers", "status")
+        pending_sell_triggers.setdefault("pending", 0)
+
+        return {
+            "calendar_signals": calendar_signals,
+            "buy_signals": buy_signals,
+            "pending_sell_triggers": pending_sell_triggers,
+        }
+
     def close(self) -> None:
         self.conn.close()

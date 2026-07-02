@@ -14,13 +14,6 @@ from cli_runtime import ExitCode  # type: ignore[import-untyped]
 from rsa_store import RsaStore  # type: ignore[import-untyped]
 
 
-def _count_by(conn: sqlite3.Connection, table: str, column: str) -> dict[str, int]:
-    rows = conn.execute(
-        f"SELECT {column} AS k, COUNT(*) AS n FROM {table} GROUP BY {column}"
-    ).fetchall()
-    return {row["k"]: row["n"] for row in rows}
-
-
 def _position_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     return {
         "broker": row["broker"],
@@ -68,16 +61,17 @@ def _print_status(data: dict[str, Any]) -> None:
         print(f"  {label}: {summary}")
 
 
-async def _run_status(args, parser, context) -> tuple[ExitCode, dict[str, Any]]:
+async def _run_status(
+    args, parser, context, now: datetime | None = None
+) -> tuple[ExitCode, dict[str, Any]]:
+    now = now or datetime.now()
     rsa_store = RsaStore(args.db_path)
     recap_store = AutomationRecapStore(args.db_path)
     try:
-        trade_rows = rsa_store.conn.execute(
-            "SELECT id, ticker, split_ratio, expected_split_date, created_at "
-            "FROM rsa_trades ORDER BY id DESC"
-        ).fetchall()
+        trade_rows = rsa_store.list_trades()
 
         trades = [
+            # one list_positions query per trade — fine at RSA scale (handful of open trades)
             _trade_to_dict(
                 trade_row,
                 [_position_to_dict(p) for p in rsa_store.list_positions(trade_row["id"])],
@@ -85,23 +79,14 @@ async def _run_status(args, parser, context) -> tuple[ExitCode, dict[str, Any]]:
             for trade_row in trade_rows
         ]
 
-        calendar_signals = _count_by(recap_store.conn, "calendar_signals", "status")
-        calendar_signals.setdefault("new", 0)
-
-        buy_signals = _count_by(recap_store.conn, "buy_signals", "status")
-        buy_signals.setdefault("pending", 0)
-
-        pending_sell_triggers = _count_by(
-            recap_store.conn, "pending_sell_triggers", "status"
-        )
-        pending_sell_triggers.setdefault("pending", 0)
+        counts = recap_store.status_counts()
 
         result: dict[str, Any] = {
-            "generated_at": datetime.now().isoformat(),
+            "generated_at": now.isoformat(),
             "trades": trades,
-            "calendar_signals": calendar_signals,
-            "buy_signals": buy_signals,
-            "pending_sell_triggers": pending_sell_triggers,
+            "calendar_signals": counts["calendar_signals"],
+            "buy_signals": counts["buy_signals"],
+            "pending_sell_triggers": counts["pending_sell_triggers"],
         }
 
         if context.output_format != "json":
