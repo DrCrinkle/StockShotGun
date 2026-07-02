@@ -43,8 +43,8 @@ The main build. Deterministic code, no LLM involvement.
 
 - New `src/signals/` module + CLI command `python3 src/main.py signals scan`.
 - Polls free reverse-split announcement sources. **v1: Nasdaq corporate-actions calendar.** v2 (later): SEC filings (8-K / DEF 14A) as a confirming second source.
-- Normalizes hits into a new `rsa_signals` table in the existing SQLite store (`rsa_store.py`): ticker, ratio (N:D), effective date, source, raw payload, first-seen / last-seen timestamps, status (`new`, `evaluated`, `traded`, `expired`, `dismissed`).
-- `rsa_trades.signal_id` becomes a real foreign key to `rsa_signals.id`.
+- Normalizes hits into a new `calendar_signals` table in `AutomationRecapStore` (`automation_recap.py`, `logs/automation.sqlite3`) — alongside the existing signal tiers (`buy_signals`, `research_signals`, `tba_candidates`) that `recap_ingest` already populates. Columns: ticker, ratio (N:D), effective date, source, raw payload, signal_key (dedup), status (`new`, `promoted`, `dismissed`, `expired`), first/last seen.
+- Worthwhile signals are **promoted into the existing `buy_signals` queue**, which the `automate` due-buy path already consumes — the calendar becomes a second signal source next to chat recaps, not a parallel pipeline.
 - Idempotent: re-scanning updates `last_seen`, never duplicates. A signal whose effective date passes without action expires automatically.
 - Output is JSON (machine-readable) with a human table via the normal CLI formatting.
 - Exposed as a new MCP tool `scan_signals(refresh: bool)` on `ssg-router`: `refresh=true` polls sources; `refresh=false` reads staged signals from the store. Also `dismiss_signal(signal_id, reason)` so the agent can mark rejects.
