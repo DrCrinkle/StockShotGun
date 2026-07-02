@@ -82,3 +82,15 @@ def test_empty_payload_returns_empty_list():
     assert parse_splits_payload({"data": None}) == []
     assert parse_splits_payload({}) == []
     assert parse_splits_payload(None) == []
+    assert parse_splits_payload({"data": "err"}) == []
+    assert parse_splits_payload({"data": 5}) == []
+    assert parse_splits_payload({"data": {"rows": "nope"}}) == []
+
+
+def test_zero_numerator_ratio_excluded():
+    payload = {"data": {"rows": [
+        {"symbol": "ZERO", "ratio": "0 : 10", "executionDate": "7/14/2026"},
+        {"symbol": "REV", "ratio": "1 : 10", "executionDate": "7/15/2026"},
+    ]}}
+    signals = parse_splits_payload(payload)
+    assert [s.ticker for s in signals] == ["REV"]

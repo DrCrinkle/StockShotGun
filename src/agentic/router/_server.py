@@ -1071,6 +1071,9 @@ def build_router_fastmcp_server(router: Router) -> Any:
         Read/ingest only — never trades. Evaluate each returned signal and
         either promote_signal (worth playing) or dismiss_signal (with reason).
 
+        Signals with a null effective_date become immediately due if
+        promoted — verify the real split date before promoting one.
+
         If the calendar fetch/parse step fails, returns
         `{"ok": False, "error": ..., "source": ...}` instead of raising.
         """

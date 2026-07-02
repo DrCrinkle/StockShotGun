@@ -90,6 +90,32 @@ def test_promote_is_rejected_for_non_new_signal(store):
         store.promote_calendar_signal(row_id, now=NOW)
 
 
+def test_promote_is_rejected_for_past_effective_date(store):
+    store.upsert_calendar_signals(
+        [_signal(effective_date="2026-06-20")], source="nasdaq_calendar", now=NOW
+    )
+    row_id = store.list_calendar_signals()[0]["id"]
+    with pytest.raises(ValueError):
+        store.promote_calendar_signal(row_id, now=NOW)
+
+
+def test_promote_succeeds_for_future_effective_date(store):
+    # Existing NOW=2026-07-01 / effective_date=2026-07-14 fixture default — must stay green.
+    store.upsert_calendar_signals([_signal()], source="nasdaq_calendar", now=NOW)
+    row_id = store.list_calendar_signals()[0]["id"]
+    buy_id = store.promote_calendar_signal(row_id, now=NOW)
+    assert isinstance(buy_id, int)
+
+
+def test_promote_succeeds_for_effective_date_of_today(store):
+    store.upsert_calendar_signals(
+        [_signal(effective_date="2026-07-01")], source="nasdaq_calendar", now=NOW
+    )
+    row_id = store.list_calendar_signals()[0]["id"]
+    buy_id = store.promote_calendar_signal(row_id, now=NOW)
+    assert isinstance(buy_id, int)
+
+
 def test_expire_stale_marks_past_effective_dates(store):
     store.upsert_calendar_signals(
         [_signal("OLDX", effective_date="2026-06-20"),

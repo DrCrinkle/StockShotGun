@@ -75,8 +75,12 @@ def parse_splits_payload(payload: dict[str, Any] | None) -> list[CalendarSignal]
     Malformed rows are skipped, never fatal — the calendar is upstream
     data we don't control.
     """
-    data = (payload or {}).get("data") or {}
-    rows = data.get("rows") or []
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        return []
+    rows = data.get("rows")
+    if not isinstance(rows, list):
+        return []
     signals: list[CalendarSignal] = []
     for row in rows:
         if not isinstance(row, dict):
@@ -88,7 +92,7 @@ def parse_splits_payload(payload: dict[str, Any] | None) -> list[CalendarSignal]
         if parsed is None:
             continue
         num, den = parsed
-        if num >= den:  # forward split or 1:1 — not an RSA candidate
+        if num <= 0 or den <= 0 or num >= den:  # forward split, 1:1, or zero-numerator — not an RSA candidate
             continue
         signals.append(
             CalendarSignal(

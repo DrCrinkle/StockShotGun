@@ -708,7 +708,15 @@ class AutomationRecapStore:
         If the signal's `effective_date` is None, the created buy_signals row
         gets `target_date` NULL — and `_is_due_buy_signal` treats a NULL
         target as immediately due, so a date-less promotion becomes an
-        immediately-due buy in the automate path."""
+        immediately-due buy in the automate path.
+
+        Refuses to promote a signal whose `effective_date` has already
+        passed: buy_signals only stores MM/DD (no year), so the due-buy
+        resolver would reconstruct a passed date as next year's occurrence,
+        mis-scheduling a real buy ~1 year out. With this guard in place, the
+        MM/DD `target_date` produced below always resolves to the correct
+        next occurrence. NULL effective_date stays allowed — that's the
+        documented immediately-due behavior above."""
         with self.conn:
             row = self.conn.execute(
                 "SELECT * FROM calendar_signals WHERE id = ?", (signal_id,)
@@ -718,6 +726,15 @@ class AutomationRecapStore:
             if row["status"] != "new":
                 raise ValueError(
                     f"calendar signal {signal_id} is '{row['status']}', not 'new'"
+                )
+            if (
+                row["effective_date"] is not None
+                and row["effective_date"] < now.date().isoformat()
+            ):
+                raise ValueError(
+                    f"calendar signal {signal_id} effective date "
+                    f"{row['effective_date']} has passed — expire or re-scan "
+                    "instead of promoting"
                 )
 
             target_mmdd = None
