@@ -66,13 +66,13 @@ def _parse_date(raw_date: Any) -> str | None:
     return None
 
 
-def parse_splits_payload(payload: dict[str, Any]) -> list[CalendarSignal]:
+def parse_splits_payload(payload: dict[str, Any] | None) -> list[CalendarSignal]:
     """Extract reverse splits from a Nasdaq splits-calendar payload.
 
     Malformed rows are skipped, never fatal — the calendar is upstream
     data we don't control.
     """
-    data = payload.get("data") or {}
+    data = (payload or {}).get("data") or {}
     rows = data.get("rows") or []
     signals: list[CalendarSignal] = []
     for row in rows:

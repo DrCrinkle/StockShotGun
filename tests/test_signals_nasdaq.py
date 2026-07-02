@@ -64,3 +64,4 @@ def test_forward_and_decimal_splits_excluded():
 def test_empty_payload_returns_empty_list():
     assert parse_splits_payload({"data": None}) == []
     assert parse_splits_payload({}) == []
+    assert parse_splits_payload(None) == []
