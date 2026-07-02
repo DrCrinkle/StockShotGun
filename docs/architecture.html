@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StockShotGun — Architecture &amp; Rethink Map</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --line:#30363d;
+    --ink:#e6edf3; --dim:#9aa7b4; --faint:#6b7785;
+    --cli:#58a6ff; --enf:#f0883e; --agent:#bc8cff; --broker:#3fb950;
+    --rsa:#e3b341; --data:#79c0ff; --warn:#f85149; --ok:#3fb950;
+    --chip:#21262d;
+    --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
+    line-height:1.6;font-size:15px}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 24px 120px}
+  header.top{padding:56px 0 28px;border-bottom:1px solid var(--line);margin-bottom:8px}
+  h1{font-size:34px;margin:0 0 6px;letter-spacing:-.02em}
+  .sub{color:var(--dim);font-size:16px;max-width:760px}
+  .meta{color:var(--faint);font-size:13px;margin-top:14px;font-family:var(--mono)}
+  h2{font-size:23px;margin:52px 0 6px;letter-spacing:-.01em;scroll-margin-top:20px}
+  h2 .num{color:var(--faint);font-family:var(--mono);font-size:16px;margin-right:10px}
+  h3{font-size:17px;margin:26px 0 8px}
+  p{margin:10px 0}
+  code{font-family:var(--mono);font-size:.86em;background:var(--chip);
+    padding:1.5px 6px;border-radius:5px;color:#c9d6e3}
+  a{color:var(--cli);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .lede{color:var(--dim);max-width:820px}
+
+  /* nav */
+  nav.toc{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.92);
+    backdrop-filter:blur(8px);border-bottom:1px solid var(--line);
+    margin:0 -24px 0;padding:11px 24px;display:flex;gap:6px;flex-wrap:wrap;font-size:13px}
+  nav.toc a{color:var(--dim);padding:3px 9px;border-radius:6px}
+  nav.toc a:hover{background:var(--chip);color:var(--ink);text-decoration:none}
+
+  /* layer stack */
+  .stack{display:flex;flex-direction:column;gap:10px;margin:22px 0}
+  .layer{border:1px solid var(--line);border-radius:12px;background:var(--panel);
+    padding:14px 16px;position:relative;overflow:hidden}
+  .layer::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px}
+  .layer.cli::before{background:var(--cli)} .layer.enf::before{background:var(--enf)}
+  .layer.agent::before{background:var(--agent)} .layer.broker::before{background:var(--broker)}
+  .layer.data::before{background:var(--data)}
+  .layer .lname{font-weight:650;font-size:15px;display:flex;align-items:center;gap:10px}
+  .tag{font-family:var(--mono);font-size:11px;padding:2px 7px;border-radius:20px;
+    background:var(--chip);color:var(--dim);font-weight:500}
+  .layer .ldesc{color:var(--dim);font-size:13.5px;margin-top:5px}
+  .mods{display:flex;gap:7px;flex-wrap:wrap;margin-top:11px}
+  .mod{font-family:var(--mono);font-size:11.5px;background:var(--panel2);
+    border:1px solid var(--line);border-radius:7px;padding:4px 9px;color:#c4d0dc}
+  .mod b{color:var(--ink);font-weight:600}
+  .arrowdn{text-align:center;color:var(--faint);font-size:18px;line-height:1;margin:-4px 0}
+
+  /* flow */
+  .flow{counter-reset:step;margin:18px 0;border:1px solid var(--line);
+    border-radius:12px;overflow:hidden;background:var(--panel)}
+  .flow .fhead{padding:12px 16px;border-bottom:1px solid var(--line);
+    font-weight:650;display:flex;align-items:center;gap:10px;background:var(--panel2)}
+  .step{display:grid;grid-template-columns:40px 1fr;gap:14px;padding:13px 16px;
+    border-bottom:1px solid var(--line)}
+  .step:last-child{border-bottom:0}
+  .step .n{counter-increment:step;width:28px;height:28px;border-radius:50%;
+    display:grid;place-items:center;font-family:var(--mono);font-size:13px;
+    background:var(--chip);border:1px solid var(--line);color:var(--ink)}
+  .step .n::before{content:counter(step)}
+  .step .body b{color:var(--ink)}
+  .step .body{font-size:14px;color:var(--dim)}
+  .step .ref{font-family:var(--mono);font-size:11.5px;color:var(--faint);
+    display:block;margin-top:3px}
+  .step .ref code{background:transparent;padding:0;color:var(--faint)}
+  .pill{font-family:var(--mono);font-size:11px;padding:1px 7px;border-radius:5px;font-weight:600}
+  .pill.gate{background:rgba(240,136,62,.16);color:var(--enf)}
+  .pill.tok{background:rgba(188,140,255,.16);color:var(--agent)}
+  .pill.sdk{background:rgba(63,185,80,.16);color:var(--broker)}
+
+  /* cards */
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));
+    gap:14px;margin:18px 0}
+  .card{border:1px solid var(--line);border-radius:12px;background:var(--panel);padding:16px}
+  .card h4{margin:0 0 4px;font-size:15.5px;display:flex;align-items:center;gap:8px}
+  .dot{width:9px;height:9px;border-radius:50%;flex:none}
+  .card p{font-size:13.5px;color:var(--dim);margin:7px 0}
+  .card .files{font-family:var(--mono);font-size:11.5px;color:var(--faint);
+    border-top:1px solid var(--line);margin-top:11px;padding-top:9px}
+  .card .files div{margin:2px 0}
+
+  /* table */
+  table{width:100%;border-collapse:collapse;margin:16px 0;font-size:13.5px}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--dim);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  td code{font-size:.85em}
+  tbody tr:hover{background:var(--panel)}
+
+  /* tension */
+  .tension{border:1px solid var(--line);border-left:4px solid var(--warn);
+    border-radius:10px;background:var(--panel);padding:15px 17px;margin:13px 0}
+  .tension h4{margin:0 0 4px;font-size:16px;display:flex;align-items:baseline;gap:10px}
+  .tension .sev{font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:20px;
+    font-weight:600;background:var(--chip);color:var(--dim)}
+  .tension .sev.hi{background:rgba(248,81,73,.15);color:var(--warn)}
+  .tension .sev.med{background:rgba(240,136,62,.15);color:var(--enf)}
+  .tension .sev.low{background:rgba(63,185,80,.13);color:var(--ok)}
+  .tension p{font-size:14px;margin:8px 0 0;color:var(--dim)}
+  .tension .ask{margin-top:9px;font-size:13.5px;color:var(--ink)}
+  .tension .ask::before{content:"↳ rethink: ";color:var(--faint);font-family:var(--mono);font-size:12px}
+
+  .redesign{border:1px solid var(--line);border-left:4px solid var(--agent);
+    border-radius:10px;background:var(--panel2);padding:15px 17px;margin:8px 0 13px}
+  .redesign h4{margin:0 0 6px;font-size:15px}
+  .redesign p{font-size:13.5px;color:var(--dim);margin:6px 0 12px}
+  .ba{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .ba-col{border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--bg)}
+  .ba-col.before{border-color:rgba(248,81,73,.35)}
+  .ba-col.after{border-color:rgba(63,185,80,.35)}
+  .ba-label{font-family:var(--mono);font-size:11px;padding:6px 11px;
+    border-bottom:1px solid var(--line);color:var(--dim);letter-spacing:.02em}
+  .ba-col.before .ba-label{color:#f0a39e;background:rgba(248,81,73,.08)}
+  .ba-col.after .ba-label{color:#86e29a;background:rgba(63,185,80,.08)}
+  .ba pre{margin:0;padding:11px 13px;font-family:var(--mono);font-size:11px;
+    line-height:1.45;color:#c4d0dc;overflow-x:auto;white-space:pre}
+  @media(max-width:720px){.ba{grid-template-columns:1fr}}
+  .note{background:var(--panel2);border:1px solid var(--line);border-radius:10px;
+    padding:13px 16px;color:var(--dim);font-size:13.5px;margin:16px 0}
+  .note b{color:var(--ink)}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;margin:14px 0;font-size:13px;color:var(--dim)}
+  .legend span{display:flex;align-items:center;gap:7px}
+  hr.soft{border:0;border-top:1px solid var(--line);margin:40px 0}
+  .foot{color:var(--faint);font-size:12.5px;margin-top:40px;font-family:var(--mono)}
+</style>
+</head>
+<body>
+<nav class="toc">
+  <a href="#overview">Overview</a>
+  <a href="#layers">Layer stack</a>
+  <a href="#trade">Trade flow</a>
+  <a href="#sweep">Sweep / RSA flow</a>
+  <a href="#subsystems">Subsystems</a>
+  <a href="#data">Data stores</a>
+  <a href="#decisions">Decisions (ADRs)</a>
+  <a href="#tensions">Tensions &amp; rethink</a>
+</nav>
+
+<div class="wrap">
+<header class="top" id="overview">
+  <h1>StockShotGun</h1>
+  <div class="sub">A multi-broker trading tool that submits one order and fans it out across 13 brokerage accounts simultaneously. Reverse-split arbitrage (RSA) is the primary use case. This is a map of how it works <em>today</em> — built to help rethink the architecture.</div>
+  <div class="meta">src/ · Python 3.13 · async-first · generated 2026-05-31 from live source</div>
+</header>
+
+<p class="lede">The system has five horizontal layers. A request enters through the <b>CLI/TUI</b>, passes a <b>safety gate</b> (the enforcement layer), is fanned out by the <b>agentic router</b> into one leg per <code>(broker, account)</code>, each leg hits a <b>broker integration</b>, and state lands in one of several <b>SQLite stores</b>. The same router/gate path serves both the human CLI and the agent-facing MCP surface — that convergence is the single most important thing to understand here.</p>
+
+<div class="note">
+<b>Heads-up:</b> the repo's <code>CLAUDE.md</code> describes an older flat layout (<code>brokers/</code> + <code>tui/</code> at root, "12 brokers", <code>OrderBatchProcessor</code>). That's stale. The real tree is a layered <code>src/</code> with <code>enforcement/</code>, <code>agentic/</code>, <code>cli/</code> packages, 13 brokers, and the <code>OrderBatchProcessor</code> has been <b>retired</b> in favor of the router. This doc reflects the current source.
+</div>
+
+<!-- ================= LAYERS ================= -->
+<h2 id="layers"><span class="num">01</span>The layer stack</h2>
+<p class="lede">Top to bottom is the direction of a request. Each layer only talks to the one below it through a narrow seam.</p>
+
+<div class="legend">
+  <span><span class="dot" style="background:var(--cli)"></span>Interface</span>
+  <span><span class="dot" style="background:var(--enf)"></span>Enforcement (safety)</span>
+  <span><span class="dot" style="background:var(--agent)"></span>Agentic / fan-out</span>
+  <span><span class="dot" style="background:var(--broker)"></span>Broker integrations</span>
+  <span><span class="dot" style="background:var(--data)"></span>Persistence</span>
+</div>
+
+<div class="stack">
+  <div class="layer cli">
+    <div class="lname">Interface layer <span class="tag">human + agent</span></div>
+    <div class="ldesc">Argparse CLI (<code>buy / sell / holdings / health / sweep / automate / setup</code>), an urwid TUI, and the agent-facing MCP router surface. All three normalize into one <code>ExecutionContext</code> (request-id, output format, dry-run, mock-brokers) and a JSON response envelope with typed <code>ExitCode</code>s.</div>
+    <div class="mods">
+      <span class="mod"><b>main.py</b> · parser + dispatch</span>
+      <span class="mod"><b>cli/</b> trade·sweep·automate·batch</span>
+      <span class="mod"><b>tui/</b> app·widgets·handlers</span>
+      <span class="mod"><b>cli_runtime.py</b> · context·envelope·exitcodes</span>
+    </div>
+  </div>
+  <div class="arrowdn">▼</div>
+  <div class="layer enf">
+    <div class="lname">Enforcement layer <span class="tag">the safety spine</span></div>
+    <div class="ldesc"><code>EnforcementCore</code> runs every order through a pipeline before any money moves: <b>freeze-list → circuit-breaker → eligible-account filter → reconciliation → per-order &amp; daily USD limits → audit</b>. It then mints a two-phase <b>propose/execute</b> proposal carrying one single-use token per leg. This is the architectural heart of the project.</div>
+    <div class="mods">
+      <span class="mod"><b>gate.py</b> · EnforcementCore</span>
+      <span class="mod"><b>propose_execute.py</b> · ProposalStore + per-leg tokens</span>
+      <span class="mod"><b>limits·freeze·circuit_breaker</b></span>
+      <span class="mod"><b>account_checks·audit_log·intent</b></span>
+    </div>
+  </div>
+  <div class="arrowdn">▼</div>
+  <div class="layer agent">
+    <div class="lname">Agentic / fan-out layer <span class="tag">ADR 0003</span></div>
+    <div class="ldesc">A thin <code>Router</code> exposes fan-out MCP tools and explodes one intent into N legs (one per <code>broker×account</code>), executing them concurrently with <code>asyncio.gather</code>. Each broker is a <code>BrokerMCPServer</code> running <b>in-process</b> (default) or as an isolated <b>subprocess</b> (<code>python -m agentic.broker &lt;Name&gt;</code>). <code>cli_bridge.py</code> lets the plain CLI reuse this exact path.</div>
+    <div class="mods">
+      <span class="mod"><b>router/_server.py</b> · Router</span>
+      <span class="mod"><b>_base.py</b> · BrokerMCPServer · place_at_broker</span>
+      <span class="mod"><b>_subprocess.py</b> · SubprocessBrokerProxy</span>
+      <span class="mod"><b>cli_bridge.py</b> · apply_main_py_gate · execute_via_router</span>
+      <span class="mod"><b>_telemetry.py</b> · @logged_tool</span>
+    </div>
+  </div>
+  <div class="arrowdn">▼</div>
+  <div class="layer broker">
+    <div class="lname">Broker integration layer <span class="tag">13 brokers · ADR 0004</span></div>
+    <div class="ldesc">One module per broker, each exposing <code>{broker}Trade</code> / <code>{broker}GetHoldings</code> / <code>get_{broker}_session</code>. A single lazy <code>registry.py</code> (<code>"module:symbol"</code> string refs) is the sole source of broker identity — importing it loads <em>zero</em> SDKs. Shared <code>base.py</code> holds the pooled httpx client, global rate limiter, and TTL cache. Most are API-based; Wells Fargo &amp; Chase use browser automation.</div>
+    <div class="mods">
+      <span class="mod"><b>registry.py</b> · BrokerSpec single source</span>
+      <span class="mod"><b>base.py</b> · http_client·rate_limiter·api_cache·BrokerConfig</span>
+      <span class="mod"><b>session_manager.py</b></span>
+      <span class="mod"><b>robinhood·tradier·tasty·…·_redbridge·wellsfargo</b></span>
+    </div>
+  </div>
+  <div class="arrowdn">▼</div>
+  <div class="layer data">
+    <div class="lname">Persistence layer <span class="tag">several SQLite files</span></div>
+    <div class="ldesc">Ephemeral order proposals, an append-only audit log, RSA trade/position/sweep history, and automation/recap state — each in its own store with its own lifecycle.</div>
+    <div class="mods">
+      <span class="mod"><b>proposals.sqlite</b> · 300s TTL</span>
+      <span class="mod"><b>audit.jsonl</b> · append-only</span>
+      <span class="mod"><b>rsa_store.py</b> · rsa_trades·rsa_positions·sweep_state·sweep_history</span>
+      <span class="mod"><b>automation.sqlite3</b> · buy/sell signals</span>
+    </div>
+  </div>
+</div>
+
+<!-- ================= TRADE FLOW ================= -->
+<h2 id="trade"><span class="num">02</span>The trade flow — <code>buy</code> / <code>sell</code></h2>
+<p class="lede">How <code>python src/main.py buy 1 XYZ</code> becomes real orders. The key idea: nothing reaches a broker SDK without first being <span class="pill gate">gated</span> into a proposal and then <span class="pill tok">leg-token validated</span> at the broker boundary.</p>
+
+<div class="flow">
+  <div class="fhead"><span class="dot" style="background:var(--cli)"></span>buy / sell — two-phase propose → execute</div>
+  <div class="step"><div class="n"></div><div class="body">
+    <b>Parse &amp; pre-flight validate.</b> Resolve <code>--broker</code> selection from the registry; concurrently validate each broker can authenticate, dropping the ones that can't <em>before</em> gating.
+    <span class="ref"><code>cli/trade.py:34 run_trade</code> → <code>cli_bridge.preflight_validate:219</code></span>
+  </div></div>
+  <div class="step"><div class="n"></div><div class="body">
+    <b><span class="pill gate">GATE</span> Propose.</b> <code>apply_main_py_gate</code> lazily builds the singleton <code>Router</code>, then calls <code>EnforcementCore.propose_order</code>: freeze-list, circuit-breaker, settled-cash/PDT account filter, reconciliation vs stored qty, per-order + daily USD limits, audit integrity check.
+    <span class="ref"><code>cli_bridge.py:66</code> → <code>gate.py:72 propose_order</code></span>
+  </div></div>
+  <div class="step"><div class="n"></div><div class="body">
+    <b><span class="pill tok">MINT</span> One proposal, N leg-tokens.</b> <code>propose_fanout</code> writes one <code>proposals</code> row (self-describing: ticker/side/qty/price/dry_run — ADR 0005) plus one <code>leg_proposals</code> row per target, each with a random 256-bit token bound to the SHA-256 of a <em>single-target</em> intent. Returns a <code>proposal_id</code>.
+    <span class="ref"><code>propose_execute.py:229 propose_fanout</code></span>
+  </div></div>
+  <div class="step"><div class="n"></div><div class="body">
+    <b>Execute (fan-out).</b> <code>execute_via_router</code> → <code>Router.execute_order(proposal_id)</code> rebuilds the intent from the stored proposal alone, then <code>asyncio.gather</code>s one <code>place_at_broker</code> call per leg. A leg failure does <em>not</em> halt its siblings.
+    <span class="ref"><code>cli_bridge.py:290</code> → <code>router/_server.py:758 execute_order</code></span>
+  </div></div>
+  <div class="step"><div class="n"></div><div class="body">
+    <b><span class="pill tok">VERIFY</span> Per-leg, at the broker boundary.</b> Each <code>BrokerMCPServer.place_at_broker</code> reconstructs its single-target intent, hashes it, and <code>consume_leg</code> atomically rejects unless the hash matches its stored token (defense in depth — same check whether in-process or subprocess).
+    <span class="ref"><code>_base.py:207 place_at_broker</code> → <code>gate.py:173 gate_execute_leg</code></span>
+  </div></div>
+  <div class="step"><div class="n"></div><div class="body">
+    <b><span class="pill sdk">SDK</span> Place the order.</b> Rate-limit (<code>rate_limiter.wait_if_needed</code>), then call the registry-resolved <code>{broker}Trade(side, qty, ticker, price)</code> — a sync SDK wrapped in <code>asyncio.to_thread</code>. Catch SDK exceptions per leg.
+    <span class="ref"><code>_base.py:280 spec.trade_fn</code> → <code>brokers/&lt;name&gt;.py</code></span>
+  </div></div>
+  <div class="step"><div class="n"></div><div class="body">
+    <b>Record outcome &amp; aggregate.</b> Each leg writes an <code>execute</code> audit entry (fill qty/price, idempotency key) and updates the circuit breaker. Results aggregate into a legacy <code>{successful, failed, skipped}</code> shape → mapped to an <code>ExitCode</code> (SUCCESS / PARTIAL_BROKER_FAILURE / FULL_BROKER_FAILURE).
+    <span class="ref"><code>gate.py:207 record_leg_outcome</code> → <code>cli_runtime.py:68 compute_trade_exit_code</code></span>
+  </div></div>
+</div>
+
+<!-- ================= SWEEP FLOW ================= -->
+<h2 id="sweep"><span class="num">03</span>The sweep / RSA flow</h2>
+<p class="lede">The reverse-split-arbitrage side runs on a parallel track. You buy fractional shares before a 1:N split; the broker rounds your fraction up to one whole post-split share; sweep detects when that share has <em>arrived</em> and then sells it.</p>
+
+<div class="flow">
+  <div class="fhead"><span class="dot" style="background:var(--rsa)"></span>buy --rsa → sweep → sell_arrived</div>
+  <div class="step"><div class="n"></div><div class="body">
+    <b>Declare the RSA trade at buy time.</b> <code>buy --rsa --ratio 1:25</code> writes an <code>rsa_trades</code> row immediately (ratio, expected split date, notes). Positions are <em>not</em> written yet.
+    <span class="ref"><code>rsa_store.py</code> · table <code>rsa_trades</code></span>
+  </div></div>
+  <div class="step"><div class="n"></div><div class="body">
+    <b>Lazy position discovery (ADR 0002).</b> The <em>first</em> <code>sweep --from-trade &lt;id&gt;</code> queries holdings on every enabled broker and, for each <code>(broker, account)</code> showing the ticker, lazy-creates an <code>rsa_positions</code> row with <code>pre_split_qty = observed</code>. Broker <code>Trade()</code> functions only return broker-level success, so per-account fills are discovered later, post-settlement.
+    <span class="ref"><code>cli/sweep.py</code> / <code>router/_server.py:266 run_sweep</code></span>
+  </div></div>
+  <div class="step"><div class="n"></div><div class="body">
+    <b>Classify each position.</b> Compare observed vs <code>pre_split_qty</code> and <code>expected_post_qty = ceil(pre·N/D)</code> → one of <code>AWAITING_SPLIT · PROCESSING · FRACTIONAL_PENDING · SHARE_ARRIVED · AMBIGUOUS · SKIPPED · ERROR</code>. Falls back to the <code>{ticker}D</code> symbol some brokers use post-split.
+    <span class="ref"><code>sweep.py:21 SweepStatus</code> · <code>sweep.py:343 classify_holding</code></span>
+  </div></div>
+  <div class="step"><div class="n"></div><div class="body">
+    <b>Resolve ambiguity with date + profile.</b> When observed == pre == post (e.g. 1 share, 1:25), use <code>BROKER_PROFILES.processing_window_days</code> + <code>expected_split_date</code> (or <code>--force</code>) to decide if the share has arrived.
+    <span class="ref"><code>sweep.py:42 BROKER_PROFILES</code> · <code>resolve_ambiguous_with_date</code></span>
+  </div></div>
+  <div class="step"><div class="n"></div><div class="body">
+    <b>Persist history.</b> Each run upserts <code>sweep_state</code> (latest per position) and appends a <code>sweep_history</code> row — history is never overwritten, status changes print to stdout.
+    <span class="ref"><code>sweep_persistence.py:42 persist_sweep_results</code></span>
+  </div></div>
+  <div class="step"><div class="n"></div><div class="body">
+    <b>Sell what arrived.</b> <code>Router.sell_arrived</code> re-sweeps, groups <code>SHARE_ARRIVED</code> legs by observed qty, and mints one sell proposal per qty group — handing it back to the <span class="pill gate">gate</span> → execute path above for confirmation.
+    <span class="ref"><code>router/_server.py:498 sell_arrived</code></span>
+  </div></div>
+</div>
+
+<div class="note"><b>Feeder, not yet wired to auto-execution:</b> <code>automation_recap.py</code> parses structured "Recaps" from the RSA community forum into buy/sell <em>signals</em> (a <code>watchlist → pending → executed</code> state machine in <code>automation.sqlite3</code>). Today buys are still kicked off manually; the recap parser proposes, a human confirms.</div>
+
+<!-- ================= SUBSYSTEMS ================= -->
+<h2 id="subsystems"><span class="num">04</span>Subsystem reference</h2>
+<div class="grid">
+  <div class="card">
+    <h4><span class="dot" style="background:var(--cli)"></span>Interface — <code>main.py</code>, <code>cli/</code>, <code>tui/</code></h4>
+    <p>Builds the argparse tree, normalizes everything into <code>ExecutionContext</code>, and routes JSON cleanly (broker SDK stdout is redirected to stderr in JSON mode). The TUI shares the same <code>cli/</code> handlers.</p>
+    <div class="files">
+      <div>main.py · 755 lines (parser + health/holdings inline)</div>
+      <div>cli/{trade,sweep,automate,batch,common}.py</div>
+      <div>tui/{app,widgets,holdings_view,*_handler}.py</div>
+    </div>
+  </div>
+  <div class="card">
+    <h4><span class="dot" style="background:var(--enf)"></span>Enforcement — <code>enforcement/</code></h4>
+    <p>The safety library. <code>EnforcementCore</code> is the composition root; <code>gate_order</code> is the module-level call every execution path must precede a broker call with. Per-leg tokens, intent hashing, idempotency keys, freeze list, circuit breaker, USD limits, append-only audit.</p>
+    <div class="files">
+      <div>gate.py · propose_execute.py · types.py · intent.py</div>
+      <div>limits.py · freeze.py · circuit_breaker.py</div>
+      <div>account_checks.py · audit_log.py · errors.py</div>
+    </div>
+  </div>
+  <div class="card">
+    <h4><span class="dot" style="background:var(--agent)"></span>Agentic — <code>agentic/</code></h4>
+    <p>The fan-out engine and MCP surface. <code>Router</code> exposes ~9 agent tools; <code>BrokerMCPServer</code> wraps each broker with gate+rate-limit+audit; <code>SubprocessBrokerProxy</code> gives true process isolation. <code>cli_bridge</code> is the seam letting the non-agentic CLI reuse all of it.</p>
+    <div class="files">
+      <div>router/_server.py · router/__main__.py</div>
+      <div>_base.py · _subprocess.py · broker.py</div>
+      <div>cli_bridge.py · cli.py · _telemetry.py</div>
+    </div>
+  </div>
+  <div class="card">
+    <h4><span class="dot" style="background:var(--broker)"></span>Brokers — <code>brokers/</code></h4>
+    <p>13 integrations behind a lazy single-source registry. Shared async infra in <code>base.py</code>: pooled HTTP/2 client, global per-broker rate limiter, TTL'd <code>api_cache</code>, <code>BrokerConfig</code>. BBAE+DSPAC share a Redbridge factory; Wells Fargo &amp; Chase are browser-driven.</p>
+    <div class="files">
+      <div>registry.py · base.py · session_manager.py</div>
+      <div>robinhood·tradier·tastytrade·public·firstrade</div>
+      <div>fennel·schwab·sofi·webull · _redbridge(bbae,dspac)</div>
+      <div>wellsfargo·chase (zendriver browser) · browser_utils.py</div>
+    </div>
+  </div>
+  <div class="card">
+    <h4><span class="dot" style="background:var(--rsa)"></span>RSA / Sweep — <code>sweep.py</code>, <code>rsa_store.py</code></h4>
+    <p>Split-status classification + per-broker settlement profiles, lazy position discovery, and full sweep history. Exposed both as a standalone <code>sweep</code> CLI and as router tools (<code>run_sweep</code>, <code>sell_arrived</code>).</p>
+    <div class="files">
+      <div>sweep.py · BROKER_PROFILES · classify_holding</div>
+      <div>rsa_store.py · sweep_persistence.py</div>
+      <div>automation_recap.py · automation_recap state machine</div>
+    </div>
+  </div>
+  <div class="card">
+    <h4><span class="dot" style="background:var(--data)"></span>Runtime contract — <code>cli_runtime.py</code></h4>
+    <p>The machine-facing contract: <code>ExitCode</code> enum (0/2/3/4/5/6/8/10), <code>ExecutionContext</code>, and <code>build_response_envelope</code> (ok/command/request_id/data/warnings/errors). Makes the CLI safely scriptable and agent-callable.</p>
+    <div class="files">
+      <div>cli_runtime.py · ExitCode · ExecutionContext</div>
+      <div>build_response_envelope · compute_trade_exit_code</div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= DATA ================= -->
+<h2 id="data"><span class="num">05</span>Data stores</h2>
+<p class="lede">Four distinct persistence concerns, four lifecycles. They do not share a database or a cleanup story.</p>
+<table>
+  <thead><tr><th>Store</th><th>Tables / shape</th><th>Lifecycle</th><th>Owner</th></tr></thead>
+  <tbody>
+    <tr><td><code>logs/proposals.sqlite</code></td><td><code>proposals</code> (self-describing order) + <code>leg_proposals</code> (token, intent_hash, consumed_at per leg)</td><td>Ephemeral — 300s TTL; <b>detect-and-drop</b> migration on shape change; rows linger past TTL (no cleanup job)</td><td>enforcement / ProposalStore</td></tr>
+    <tr><td><code>logs/audit.jsonl</code></td><td>append-only JSONL: <code>propose</code> + <code>execute</code> entries with intent hashes, fills, reasons</td><td>Append-only, integrity-checked (<code>require_intact</code>)</td><td>enforcement / AuditLog</td></tr>
+    <tr><td><code>logs/automation.sqlite3</code></td><td><code>rsa_trades · rsa_positions · sweep_state · sweep_history</code> (+ recap buy/sell signals)</td><td>Durable — the RSA system of record</td><td>RsaStore + automation_recap</td></tr>
+    <tr><td><code>logs/mcp-YYYY-MM-DD.jsonl</code></td><td>one line per MCP tool call (redacted args, duration, ok/error)</td><td>Daily rotation, observability only</td><td>agentic / @logged_tool</td></tr>
+  </tbody>
+</table>
+
+<!-- ================= ADRS ================= -->
+<h2 id="decisions"><span class="num">06</span>Decisions that shaped this (ADRs)</h2>
+<table>
+  <thead><tr><th>ADR</th><th>Decision</th><th>Why it matters for a rethink</th></tr></thead>
+  <tbody>
+    <tr><td><b>0001</b></td><td>Per-account position granularity</td><td>A broker can hold multiple accounts (taxable + IRA) that split differently. Position = one <code>(broker, account)</code>, not one broker.</td></tr>
+    <tr><td><b>0002</b></td><td>Lazy position discovery</td><td>Positions are discovered on first sweep, not at buy — because buys don't return per-account fills and a post-buy query races settlement.</td></tr>
+    <tr><td><b>0003</b></td><td>MCP fan-out: per-broker MCPs + router + per-leg tokens</td><td>The big one. Reframed the tool for the agentic era: one fan-out call is the differentiator. Introduced the in-process/subprocess duality and per-leg token model.</td></tr>
+    <tr><td><b>0004</b></td><td>Broker registry as single source of truth</td><td>Collapsed 5 duplicated broker enumerations into one lazy registry. Importing it imports no SDK; a subprocess resolves only its own broker.</td></tr>
+    <tr><td><b>0005</b></td><td>Self-describing proposal (delete router intent cache)</td><td>Order params now live on the proposal row, so execute works across restarts/processes from <code>proposal_id</code> alone. Removed a fragile in-memory sidecar.</td></tr>
+  </tbody>
+</table>
+
+<!-- ================= TENSIONS ================= -->
+<h2 id="tensions"><span class="num">07</span>Tensions &amp; rethink candidates</h2>
+<p class="lede">This is the payload. These are the places where the current shape is in friction with itself — the questions worth answering before you redraw the architecture. Severity reflects how much it constrains future change, not how broken it is.</p>
+
+<div class="tension">
+  <h4>The agentic router is load-bearing for the <em>non</em>-agentic CLI <span class="sev hi">high</span></h4>
+  <p>ADR 0003 framed the MCP layer as the agent-facing surface, with per-broker MCPs as "implementation detail." But <code>cli_bridge.apply_main_py_gate</code> + <code>execute_via_router</code> route the <em>plain CLI's</em> buy/sell through the same <code>Router</code> singleton and MCP <code>place_at_broker</code> path. So "the agentic layer" is no longer optional — it's the only execution path. A human typing <code>buy 1 XYZ</code> is paying for MCP-shaped indirection (router → BrokerMCPServer → spec.trade_fn).</p>
+  <div class="ask">Is the Router the <em>core execution engine</em> (and the CLI/TUI/MCP are all just adapters onto it), or is it an agent adapter that the CLI shouldn't depend on? Pick one and name it. The current code wants the first; the ADR language implies the second.</div>
+</div>
+
+<div class="redesign">
+  <h4>↳ Redesign drafted — <a href="adr/0006-execution-engine-as-core.md">ADR 0006: Execution Engine as Core</a></h4>
+  <p>Verified the friction is real, not cosmetic: the main CLI/TUI reach the Router through <code>cli_bridge</code>, which reimplements the propose half by hand and <b>diverges from the agent path</b> — it hardcodes one synthetic <code>BrokerAccount(broker,"primary")</code> leg (bypassing per-account fan-out, ADR 0001), and its <code>--dry-run</code> short-circuits to a credentials-only readiness check that never touches the enforcement pipeline. The fix: promote <code>Router</code> → <code>execution/ExecutionEngine</code>, split the misnamed <code>BrokerMCPServer</code> behind a <code>BrokerPort</code> protocol so the engine never imports <code>agentic/</code>, and delete <code>cli_bridge</code>. Six incremental steps behind a <code>Router</code> alias.</p>
+  <div class="ba">
+    <div class="ba-col before">
+      <div class="ba-label">before — two propose paths, glue between</div>
+<pre>main.py ─┐
+tui/app ─┴─► cli_bridge.py
+             ├ apply_main_py_gate ─► gate_order()
+             │     ["primary" leg, always live]
+             ├ execute_via_router ─► Router.execute_order
+             └ reshape → {successful, failed, …}
+
+agentic/cli ─┐
+FastMCP     ─┴─► Router.propose_order / execute_order
+                 [real accounts, dry_run bound]
+
+Router lives in agentic/, imports BrokerMCPServer (agentic/)</pre>
+    </div>
+    <div class="ba-col after">
+      <div class="ba-label">after — one engine, thin adapters</div>
+<pre>cli/trade ─┐
+tui/app    ├─► execution/ExecutionEngine
+agentic/cli┤     .propose_order / execute_order / place_order
+FastMCP    ┘     [real accounts + dry_run for EVERYONE]
+                     ▼
+              enforcement/ (gate, propose/execute, audit)
+                     ▼
+              BrokerPort ─in_process─► InProcessBroker  (execution/)
+                         └subprocess─► SubprocessProxy  (agentic/, MCP)
+
+imports: agentic/ ─► execution/ ─► enforcement/  (never reverse)
+cli_bridge.py: deleted</pre>
+    </div>
+  </div>
+</div>
+
+<div class="tension">
+  <h4>Dual broker layer: <code>brokers/*</code> functions <em>and</em> <code>BrokerMCPServer</code> wrapping them <span class="sev med">med</span></h4>
+  <p>Each broker is described twice — once as raw async functions in <code>brokers/&lt;name&gt;.py</code> (resolved via registry string refs), and again as a uniform 4-tool MCP server in <code>agentic/_base.py</code>. Rate limits live in <code>base.py</code> <em>and</em> the registry owns everything else (ADR 0004 explicitly left rate limits out). Two enumerations of broker capability that must stay in sync.</p>
+  <div class="ask">Should the <code>BrokerSpec</code> own rate limits too, closing the last gap in "single source of truth"? And is the MCP-server-per-broker wrapper earning its keep in in-process mode, or is it ceremony around a plain function call?</div>
+</div>
+
+<div class="tension">
+  <h4>Two deployment shapes, one trust model to maintain <span class="sev med">med</span></h4>
+  <p>In-process (1 process, fast) vs subprocess (14 processes, isolated). ADR 0003's elegance is that <code>place_at_broker</code> validates identically in both — but you still carry the <code>SubprocessBrokerProxy</code> stdio plumbing, FastMCP result-unwrapping quirks, and a second failure surface for a mode that may rarely run. For a single-user tool on one machine, is the subprocess mode a real requirement or a someday?</p>
+  <div class="ask">Is blast-radius isolation across 14 processes worth its complexity for your actual deployment (one operator, one box)? If not, the in-process path could be the only path and the proxy retired.</div>
+</div>
+
+<div class="tension">
+  <h4>The propose/execute + per-leg-token + audit machinery may be over-built for one user <span class="sev med">med</span></h4>
+  <p>Two-phase proposals, 256-bit single-use tokens per leg, intent-hash binding, 300s TTL, detect-and-drop schema migrations, idempotency keys, integrity-checked audit log. This is genuinely good engineering — it's also a lot of safety apparatus for a tool one person runs by hand. Much of it exists to make the <em>agent</em> path safe (don't let an LLM double-submit). The cost is real: schema migrations that drop rows, multiple SQLite files, and a proposal-cleanup obligation that's been deferred twice.</p>
+  <div class="ask">Separate the question: which safety properties protect against <em>broker/network</em> failure (keep — circuit breaker, reconciliation, limits) vs which protect against an <em>untrusted caller</em> (tokens, intent hashing)? If the only caller is you + a trusted agent, the second set could shrink dramatically.</div>
+</div>
+
+<div class="tension">
+  <h4>Persistence is scattered across stores with no shared cleanup <span class="sev low">low</span></h4>
+  <p>Four stores (proposals, audit, RSA/automation, MCP logs), three file formats (sqlite ×2, jsonl ×2), three lifecycles. Proposal rows "linger past TTL until a future cleanup job" (ADR 0005 admits this). No single place answers "what's the state of the world right now."</p>
+  <div class="ask">Would one durable store with a clear schema + a retention policy beat four ad-hoc ones? Or at least: who owns proposal-row GC, and when does it ship?</div>
+</div>
+
+<div class="tension">
+  <h4><code>main.py</code> still carries inline business logic <span class="sev low">low</span></h4>
+  <p>The <code>cli/</code> split moved trade/sweep/automate/batch out, but <code>health</code> and <code>holdings</code> handlers (and all argparse construction, ~250 lines) still live inline in the 755-line <code>main.py</code>, including Webull-specific health probing. The dispatch is a chain of <code>if args.action == …</code>.</p>
+  <div class="ask">Finish the extraction — a uniform command registry (<code>{action → handler}</code>) would let <code>main.py</code> shrink to parse → dispatch → render, matching the cleanliness of the layers below it.</div>
+</div>
+
+<div class="tension">
+  <h4>Fan-out concurrency is real but capped by sync SDKs + a global rate limiter <span class="sev low">low</span></h4>
+  <p>Legs run via <code>asyncio.gather</code>, but most broker SDKs are synchronous and run in <code>asyncio.to_thread</code> (thread-pool + GIL), and a single global <code>rate_limiter</code> serializes per broker. Browser brokers (Wells Fargo, Chase) are far slower than the API ones. "Simultaneous" is true at the dispatch layer; wall-clock is gated by the slowest broker.</p>
+  <div class="ask">For RSA, submission <em>simultaneity</em> is the whole point. Worth measuring actual leg-dispatch skew — and deciding whether browser brokers belong on the same hot path as API brokers or on a separate, slower track.</div>
+</div>
+
+<hr class="soft">
+<p class="lede">If you want, I can take any one of these tensions and spin it into a concrete redesign — e.g. "Router as the single execution core with CLI/TUI/MCP as thin adapters," with a before/after module diagram and a migration path. Or I can generate the same map as an editable diagram (Mermaid/SVG) you can mark up.</p>
+
+<div class="foot">StockShotGun · docs/architecture.html · reflects src/ @ 2026-05-31 · file refs are file:line into src/</div>
+</div>
+</body>
+</html>

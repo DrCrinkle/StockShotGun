@@ -1,4 +1,10 @@
-"""Router implementation — fan-out across per-broker MCP servers."""
+"""ExecutionEngine — fan-out across per-broker MCP servers.
+
+Historically this class was named ``Router``. ADR 0006 renames it to
+``ExecutionEngine`` to reflect that it is the core execution engine the
+CLI/TUI/MCP all sit on, not an agent-only surface. ``Router`` remains a
+module-level alias for back-compat until callers are repointed.
+"""
 
 from __future__ import annotations
 
@@ -7,9 +13,10 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-from agentic._base import BrokerMCPServer, BrokerMCPSpec, build_broker_mcp_spec
 from brokers import registry
-from agentic._telemetry import logged_tool
+from execution.in_process import BrokerMCPServer, BrokerMCPSpec, build_broker_mcp_spec
+from execution.ports import BrokerPort
+from execution.telemetry import logged_tool
 from enforcement import (
     AccountStatusProvider,
     BrokerAccount,
@@ -55,7 +62,7 @@ class BrokerServerAccountStatusProvider:
     that the router calls before invoking `gate_order`.
     """
 
-    def __init__(self, broker_servers: dict[str, BrokerMCPServer]):
+    def __init__(self, broker_servers: dict[str, BrokerPort]):
         self._broker_servers = broker_servers
         self._observed: dict[tuple[str, str, str], float] = {}
 
@@ -177,10 +184,10 @@ def load_all_broker_specs() -> dict[str, BrokerMCPSpec]:
 
 
 @dataclass
-class Router:
-    """In-process router holding one `BrokerMCPServer` per enabled broker."""
+class ExecutionEngine:
+    """In-process engine holding one `BrokerMCPServer` per enabled broker."""
 
-    broker_servers: dict[str, BrokerMCPServer]
+    broker_servers: dict[str, BrokerPort]
     core: EnforcementCore
     provider: AccountStatusProvider
     rsa_store_path: str = DEFAULT_RSA_STORE_PATH
@@ -191,7 +198,7 @@ class Router:
         cls,
         core: EnforcementCore | None = None,
         provider: AccountStatusProvider | None = None,
-    ) -> "Router":
+    ) -> "ExecutionEngine":
         specs = load_all_broker_specs()
         c = core or EnforcementCore.from_default_paths()
         servers = {name: BrokerMCPServer(spec, core=c) for name, spec in specs.items()}
@@ -919,8 +926,14 @@ class Router:
         )
 
 
-def build_router_fastmcp_server(router: Router) -> Any:
-    """Wrap a Router into a FastMCP server with the agent-facing tools."""
+# Back-compat alias (ADR 0006): the class was renamed Router → ExecutionEngine.
+# Callers (cli_bridge, agentic.cli, tests, the MCP entrypoint) still import
+# `Router`; this keeps them working until they are repointed in later steps.
+Router = ExecutionEngine
+
+
+def build_router_fastmcp_server(router: ExecutionEngine) -> Any:
+    """Wrap an ExecutionEngine into a FastMCP server with the agent-facing tools."""
     from mcp.server.fastmcp import FastMCP
 
     app = FastMCP(name="ssg-router")
@@ -1061,7 +1074,7 @@ def run_stdio() -> None:
     Set `SSG_AGENTIC_SMOKE_ONLY=1` to print the broker health dict and exit
     without starting the stdio server — useful for CI / load-check scripts.
     """
-    router = Router.from_all_brokers()
+    router = ExecutionEngine.from_all_brokers()
     if os.getenv("SSG_AGENTIC_SMOKE_ONLY") == "1":
         import json
 

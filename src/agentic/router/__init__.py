@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from agentic.router._server import (
     BrokerServerAccountStatusProvider,
+    ExecutionEngine,
     NullAccountStatusProvider,
     Router,
     build_router_fastmcp_server,
@@ -23,6 +24,7 @@ from agentic.router._server import (
 
 __all__ = [
     "BrokerServerAccountStatusProvider",
+    "ExecutionEngine",
     "NullAccountStatusProvider",
     "Router",
     "build_router_fastmcp_server",
