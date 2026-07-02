@@ -100,3 +100,43 @@ def test_expire_stale_marks_past_effective_dates(store):
     assert expired == 1
     statuses = {r["ticker"]: r["status"] for r in store.list_calendar_signals()}
     assert statuses == {"OLDX": "expired", "NEWX": "new"}
+
+
+def test_promote_with_null_date_creates_undated_buy_signal(store):
+    store.upsert_calendar_signals(
+        [_signal(effective_date=None)], source="nasdaq_calendar", now=NOW
+    )
+    row = store.list_calendar_signals()[0]
+    buy_id = store.promote_calendar_signal(row["id"], now=NOW)
+
+    buy = store.conn.execute(
+        "SELECT * FROM buy_signals WHERE id = ?", (buy_id,)
+    ).fetchone()
+    assert buy["target_date"] is None
+    assert buy["status"] == "pending"
+
+    updated = store.list_calendar_signals()[0]
+    assert updated["status"] == "promoted"
+
+
+def test_expire_skips_null_effective_date(store):
+    store.upsert_calendar_signals(
+        [_signal(effective_date=None)], source="nasdaq_calendar", now=NOW
+    )
+    expired = store.expire_stale_calendar_signals(today=date(2026, 7, 1), now=NOW)
+    assert expired == 0
+    row = store.list_calendar_signals()[0]
+    assert row["status"] == "new"
+
+
+def test_dismiss_unknown_id_raises(store):
+    with pytest.raises(ValueError):
+        store.dismiss_calendar_signal(999, reason="skip", now=NOW)
+
+
+def test_dismiss_rejected_for_promoted_signal(store):
+    store.upsert_calendar_signals([_signal()], source="nasdaq_calendar", now=NOW)
+    row_id = store.list_calendar_signals()[0]["id"]
+    store.promote_calendar_signal(row_id, now=NOW)
+    with pytest.raises(ValueError):
+        store.dismiss_calendar_signal(row_id, reason="skip", now=NOW)

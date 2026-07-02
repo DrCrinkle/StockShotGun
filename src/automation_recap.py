@@ -7,7 +7,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 
 BROKER_ALIAS_MAP = {
@@ -287,6 +287,17 @@ def _extract_brokers(detail: str) -> list[str]:
         if re.search(pattern, lowered) and broker not in found:
             found.append(broker)
     return found
+
+
+class CalendarSignalLike(Protocol):
+    """Structural contract for calendar-signal ingestion. Deliberately a
+    local Protocol rather than an import from `signals` — the store must
+    not depend on source-adapter packages."""
+
+    ticker: str
+    ratio: str
+    effective_date: str | None
+    raw: dict[str, Any]
 
 
 class AutomationRecapStore:
@@ -593,11 +604,23 @@ class AutomationRecapStore:
         )
         self.conn.commit()
 
+    def mark_sell_triggers_executed(
+        self, trigger_ids: list[int], now: datetime
+    ) -> None:
+        if not trigger_ids:
+            return
+        placeholders = ",".join("?" for _ in trigger_ids)
+        self.conn.execute(
+            f"UPDATE pending_sell_triggers SET status='executed', executed_at=? WHERE id IN ({placeholders})",
+            (now.isoformat(), *trigger_ids),
+        )
+        self.conn.commit()
+
     # --- calendar signals (automated source feed, e.g. Nasdaq calendar) ---
 
     def upsert_calendar_signals(
         self,
-        signals: list[Any],
+        signals: list[CalendarSignalLike],
         source: str,
         now: datetime,
     ) -> dict[str, int]:
@@ -611,6 +634,8 @@ class AutomationRecapStore:
             key = _line_hash(
                 f"{source}|{signal.ticker}|{signal.ratio}|{signal.effective_date}"
             )
+            # SELECT-then-INSERT (not ON CONFLICT) because the new/seen count
+            # split needs to know existence up front; fine at calendar scale.
             exists = self.conn.execute(
                 "SELECT 1 FROM calendar_signals WHERE signal_key = ?", (key,)
             ).fetchone()
@@ -646,16 +671,30 @@ class AutomationRecapStore:
     def list_calendar_signals(self, status: str | None = None) -> list[sqlite3.Row]:
         if status is None:
             return self.conn.execute(
-                "SELECT * FROM calendar_signals ORDER BY effective_date, ticker"
+                "SELECT * FROM calendar_signals "
+                "ORDER BY effective_date IS NULL, effective_date, ticker"
             ).fetchall()
         return self.conn.execute(
             "SELECT * FROM calendar_signals WHERE status = ? "
-            "ORDER BY effective_date, ticker",
+            "ORDER BY effective_date IS NULL, effective_date, ticker",
             (status,),
         ).fetchall()
 
     def dismiss_calendar_signal(self, signal_id: int, reason: str, now: datetime) -> None:
+        """Dismiss a 'new' calendar signal. Raises `ValueError` if the signal
+        doesn't exist, and raises `ValueError` if it isn't in 'new' status —
+        in particular this prevents dismissing an already-'promoted' signal,
+        which would orphan its pending buy_signals row."""
         with self.conn:
+            row = self.conn.execute(
+                "SELECT * FROM calendar_signals WHERE id = ?", (signal_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"calendar signal {signal_id} not found")
+            if row["status"] != "new":
+                raise ValueError(
+                    f"calendar signal {signal_id} is '{row['status']}', not 'new'"
+                )
             self.conn.execute(
                 "UPDATE calendar_signals SET status = 'dismissed', "
                 "dismissed_reason = ?, last_seen = ? WHERE id = ?",
@@ -664,24 +703,29 @@ class AutomationRecapStore:
 
     def promote_calendar_signal(self, signal_id: int, now: datetime) -> int:
         """Promote a 'new' calendar signal into the actionable buy_signals
-        queue (consumed by the automate due-buy path). Returns buy_signal id."""
-        row = self.conn.execute(
-            "SELECT * FROM calendar_signals WHERE id = ?", (signal_id,)
-        ).fetchone()
-        if row is None:
-            raise ValueError(f"calendar signal {signal_id} not found")
-        if row["status"] != "new":
-            raise ValueError(
-                f"calendar signal {signal_id} is '{row['status']}', not 'new'"
-            )
+        queue (consumed by the automate due-buy path). Returns buy_signal id.
 
-        target_mmdd = None
-        if row["effective_date"]:
-            iso = datetime.strptime(row["effective_date"], "%Y-%m-%d")
-            target_mmdd = iso.strftime("%m/%d")
-
-        key = _line_hash(f"calendar_promote|{row['signal_key']}")
+        If the signal's `effective_date` is None, the created buy_signals row
+        gets `target_date` NULL — and `_is_due_buy_signal` treats a NULL
+        target as immediately due, so a date-less promotion becomes an
+        immediately-due buy in the automate path."""
         with self.conn:
+            row = self.conn.execute(
+                "SELECT * FROM calendar_signals WHERE id = ?", (signal_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"calendar signal {signal_id} not found")
+            if row["status"] != "new":
+                raise ValueError(
+                    f"calendar signal {signal_id} is '{row['status']}', not 'new'"
+                )
+
+            target_mmdd = None
+            if row["effective_date"]:
+                iso = datetime.strptime(row["effective_date"], "%Y-%m-%d")
+                target_mmdd = iso.strftime("%m/%d")
+
+            key = _line_hash(f"calendar_promote|{row['signal_key']}")
             cursor = self.conn.execute(
                 """
                 INSERT INTO buy_signals(
@@ -708,7 +752,9 @@ class AutomationRecapStore:
         return buy_id
 
     def expire_stale_calendar_signals(self, today: date, now: datetime) -> int:
-        """Mark 'new' signals whose effective date has passed as expired."""
+        """Mark 'new' signals whose effective date has passed as expired.
+        Signals with a NULL effective_date are never touched — there is no
+        date to compare against, so they can't be considered stale."""
         with self.conn:
             cursor = self.conn.execute(
                 "UPDATE calendar_signals SET status = 'expired', last_seen = ? "
@@ -717,18 +763,6 @@ class AutomationRecapStore:
                 (now.isoformat(), today.isoformat()),
             )
         return cursor.rowcount
-
-    def mark_sell_triggers_executed(
-        self, trigger_ids: list[int], now: datetime
-    ) -> None:
-        if not trigger_ids:
-            return
-        placeholders = ",".join("?" for _ in trigger_ids)
-        self.conn.execute(
-            f"UPDATE pending_sell_triggers SET status='executed', executed_at=? WHERE id IN ({placeholders})",
-            (now.isoformat(), *trigger_ids),
-        )
-        self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()
