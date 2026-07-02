@@ -287,6 +287,22 @@ async def _sofi_get_funded_accounts(cookies):
         return None
 
 
+def _sofi_order_succeeded(result):
+    """Determine whether a SoFi order response body indicates success.
+
+    SoFi confirms a placed order with an ``orderId`` plus a confirmation
+    header. The header wording has drifted over time ("Your order is placed."
+    -> "Your order has been placed"), so a truthy ``orderId`` is treated as the
+    authoritative signal, with a "placed" header match as a fallback.
+    """
+    if not isinstance(result, dict):
+        return False
+    if result.get("orderId"):
+        return True
+    header = result.get("header") or ""
+    return "placed" in header.lower()
+
+
 async def _sofi_place_order(
     symbol, quantity, limit_price, account_id, order_type, cookies, csrf_token
 ):
@@ -322,7 +338,7 @@ async def _sofi_place_order(
 
         if response.status_code == 200:
             result = response.json()
-            if result.get("header") == "Your order is placed.":
+            if _sofi_order_succeeded(result):
                 return (True, None)
 
         error_text = response.text
