@@ -20,6 +20,22 @@ def test_parse_returns_only_reverse_splits():
         assert int(num) < int(den), f"{s.ticker} ratio {s.ratio} is not a reverse split"
 
 
+def test_golden_signal_from_fixture():
+    """Golden-value regression: pins the exact parse output for the real
+    fixture so a swapped date-format bug (e.g. %d/%m/%Y) or a ratio-parsing
+    regression ships red instead of silently passing (None dates are
+    otherwise allowed by test_effective_date_is_iso_or_none)."""
+    signals = parse_splits_payload(load_fixture())
+    assert len(signals) == 18
+
+    by_ticker = {s.ticker: s for s in signals}
+    alit = by_ticker["ALIT"]
+    assert alit.ticker == "ALIT"
+    assert alit.ratio == "1:20"
+    assert alit.effective_date == "2026-07-01"
+    assert alit.company == "Alight, Inc."
+
+
 def test_ratio_is_normalized_no_spaces():
     signals = parse_splits_payload(load_fixture())
     for s in signals:
@@ -39,9 +55,10 @@ def test_malformed_rows_are_skipped_not_fatal():
         {"symbol": "BADRATIO", "ratio": "n/a", "executionDate": "7/14/2026"},
         {"symbol": "PERCENT", "ratio": "5%", "executionDate": "7/14/2026"},
         {"ratio": "1 : 10", "executionDate": "7/14/2026"},  # no symbol
+        {"symbol": " gme ", "ratio": "1 : 10", "executionDate": "7/14/2026"},
     ]}}
     signals = parse_splits_payload(payload)
-    assert [s.ticker for s in signals] == ["GOOD"]
+    assert [s.ticker for s in signals] == ["GOOD", "GME"]
 
 
 def test_missing_execution_date_yields_none():

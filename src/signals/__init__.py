@@ -1,3 +1,5 @@
+"""Signal source adapters for RSA candidate detection."""
+
 from signals.nasdaq import (
     SOURCE_NAME,
     CalendarSignal,

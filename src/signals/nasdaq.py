@@ -25,6 +25,9 @@ _HEADERS = {
     "Accept": "application/json",
 }
 
+# Real Nasdaq data only ever uses ":" as the separator (e.g. "1 : 20").
+# "x" and "/" are accepted defensively against upstream formatting drift,
+# not formats observed in production payloads.
 _RATIO_RE = re.compile(r"^\s*(\d+)\s*[:x/]\s*(\d+)\s*$")
 
 SOURCE_NAME = "nasdaq_calendar"
