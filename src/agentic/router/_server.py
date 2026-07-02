@@ -185,6 +185,8 @@ class Router:
     provider: AccountStatusProvider
     rsa_store_path: str = DEFAULT_RSA_STORE_PATH
     automation_store_path: str = DEFAULT_AUTOMATION_STORE_PATH
+    # Injectable for tests; None = fetch from the real Nasdaq calendar.
+    calendar_fetcher: Any = None
 
     @classmethod
     def from_all_brokers(
@@ -494,6 +496,80 @@ class Router:
                 for t in result.tba
             ],
         }
+
+    @logged_tool(tool="router.scan_signals")
+    async def scan_signals(self, refresh: bool = True) -> dict[str, Any]:
+        """Scan the reverse-split calendar into calendar_signals (refresh=True)
+        or just read staged 'new' signals (refresh=False). Read/ingest only —
+        never proposes or executes orders."""
+        from datetime import datetime as _dt
+
+        from automation_recap import AutomationRecapStore  # type: ignore[import-untyped]
+
+        now = _dt.now()
+        store = AutomationRecapStore(self.automation_store_path)
+        try:
+            counts = {"new": 0, "seen": 0, "expired": 0}
+            if refresh:
+                from signals.nasdaq import (  # type: ignore[import-untyped]
+                    SOURCE_NAME,
+                    fetch_splits_calendar,
+                    parse_splits_payload,
+                )
+
+                if self.calendar_fetcher is not None:
+                    signals = await self.calendar_fetcher()
+                else:
+                    signals = parse_splits_payload(await fetch_splits_calendar())
+                counts.update(
+                    store.upsert_calendar_signals(signals, source=SOURCE_NAME, now=now)
+                )
+                counts["expired"] = store.expire_stale_calendar_signals(
+                    today=now.date(), now=now
+                )
+            rows = [
+                {key: row[key] for key in row.keys()}
+                for row in store.list_calendar_signals(status="new")
+            ]
+            return {"ok": True, "counts": counts, "signals": rows}
+        finally:
+            store.close()
+
+    @logged_tool(tool="router.dismiss_signal")
+    async def dismiss_signal(self, signal_id: int, reason: str) -> dict[str, Any]:
+        """Mark a 'new' calendar signal dismissed with a reason (audit trail)."""
+        from datetime import datetime as _dt
+
+        from automation_recap import AutomationRecapStore  # type: ignore[import-untyped]
+
+        store = AutomationRecapStore(self.automation_store_path)
+        try:
+            try:
+                store.dismiss_calendar_signal(signal_id, reason=reason, now=_dt.now())
+            except ValueError as exc:
+                return {"ok": False, "signal_id": signal_id, "error": str(exc)}
+            return {"ok": True, "signal_id": signal_id, "status": "dismissed"}
+        finally:
+            store.close()
+
+    @logged_tool(tool="router.promote_signal")
+    async def promote_signal(self, signal_id: int) -> dict[str, Any]:
+        """Promote a calendar signal into the actionable buy_signals queue.
+        Does NOT place any order — the buy still flows through the normal
+        propose/execute gates."""
+        from datetime import datetime as _dt
+
+        from automation_recap import AutomationRecapStore  # type: ignore[import-untyped]
+
+        store = AutomationRecapStore(self.automation_store_path)
+        try:
+            try:
+                buy_id = store.promote_calendar_signal(signal_id, now=_dt.now())
+            except ValueError as exc:
+                return {"ok": False, "signal_id": signal_id, "error": str(exc)}
+            return {"ok": True, "signal_id": signal_id, "buy_signal_id": buy_id}
+        finally:
+            store.close()
 
     @logged_tool(tool="router.sell_arrived")
     async def sell_arrived(
@@ -975,6 +1051,31 @@ def build_router_fastmcp_server(router: Router) -> Any:
         each tier without a second call.
         """
         return await router.recap_ingest(recap_text=recap_text)
+
+    @app.tool()
+    async def scan_signals(refresh: bool = True) -> dict[str, Any]:
+        """Scan the Nasdaq reverse-split calendar into the signal store
+        (refresh=True) or read staged 'new' signals (refresh=False).
+        Read/ingest only — never trades. Evaluate each returned signal and
+        either promote_signal (worth playing) or dismiss_signal (with reason).
+        """
+        return await router.scan_signals(refresh=refresh)
+
+    @app.tool()
+    async def dismiss_signal(signal_id: int, reason: str) -> dict[str, Any]:
+        """Dismiss a staged calendar signal that isn't worth playing. Always
+        give a concrete reason (e.g. 'ratio below 1:5', 'price exceeds
+        per-order cap') — it's the audit trail for why the agent skipped a
+        play. Only 'new' signals can be dismissed; returns ok=false with an
+        error message otherwise."""
+        return await router.dismiss_signal(signal_id=signal_id, reason=reason)
+
+    @app.tool()
+    async def promote_signal(signal_id: int) -> dict[str, Any]:
+        """Promote a calendar signal to the actionable buy queue. This stages
+        intent only — the buy itself still requires propose_order +
+        principal approval + execute_order."""
+        return await router.promote_signal(signal_id=signal_id)
 
     @app.tool()
     async def sell_arrived(
