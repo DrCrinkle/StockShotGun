@@ -662,6 +662,62 @@ class AutomationRecapStore:
                 (reason, now.isoformat(), signal_id),
             )
 
+    def promote_calendar_signal(self, signal_id: int, now: datetime) -> int:
+        """Promote a 'new' calendar signal into the actionable buy_signals
+        queue (consumed by the automate due-buy path). Returns buy_signal id."""
+        row = self.conn.execute(
+            "SELECT * FROM calendar_signals WHERE id = ?", (signal_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"calendar signal {signal_id} not found")
+        if row["status"] != "new":
+            raise ValueError(
+                f"calendar signal {signal_id} is '{row['status']}', not 'new'"
+            )
+
+        target_mmdd = None
+        if row["effective_date"]:
+            iso = datetime.strptime(row["effective_date"], "%Y-%m-%d")
+            target_mmdd = iso.strftime("%m/%d")
+
+        key = _line_hash(f"calendar_promote|{row['signal_key']}")
+        with self.conn:
+            cursor = self.conn.execute(
+                """
+                INSERT INTO buy_signals(
+                    ticker, target_date, ratio, round_num, notes,
+                    signal_key, status, created_at
+                ) VALUES (?, ?, ?, NULL, ?, ?, 'pending', ?)
+                """,
+                (
+                    row["ticker"],
+                    target_mmdd,
+                    row["ratio"],
+                    f"promoted from calendar_signals #{signal_id} ({row['source']})",
+                    key,
+                    now.isoformat(),
+                ),
+            )
+            buy_id = cursor.lastrowid
+            assert buy_id is not None
+            self.conn.execute(
+                "UPDATE calendar_signals SET status = 'promoted', "
+                "promoted_buy_signal_id = ?, last_seen = ? WHERE id = ?",
+                (buy_id, now.isoformat(), signal_id),
+            )
+        return buy_id
+
+    def expire_stale_calendar_signals(self, today: date, now: datetime) -> int:
+        """Mark 'new' signals whose effective date has passed as expired."""
+        with self.conn:
+            cursor = self.conn.execute(
+                "UPDATE calendar_signals SET status = 'expired', last_seen = ? "
+                "WHERE status = 'new' AND effective_date IS NOT NULL "
+                "AND effective_date < ?",
+                (now.isoformat(), today.isoformat()),
+            )
+        return cursor.rowcount
+
     def mark_sell_triggers_executed(
         self, trigger_ids: list[int], now: datetime
     ) -> None:

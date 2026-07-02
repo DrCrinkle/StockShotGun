@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 
 import pytest
 
@@ -62,3 +62,41 @@ def test_list_filters_by_status(store):
     store.dismiss_calendar_signal(a_id, reason="skip", now=NOW)
     assert [r["ticker"] for r in store.list_calendar_signals(status="new")] == ["BBBB"]
     assert [r["ticker"] for r in store.list_calendar_signals(status="dismissed")] == ["AAAA"]
+
+
+def test_promote_creates_pending_buy_signal(store):
+    store.upsert_calendar_signals([_signal()], source="nasdaq_calendar", now=NOW)
+    row = store.list_calendar_signals()[0]
+    buy_id = store.promote_calendar_signal(row["id"], now=NOW)
+
+    buy = store.conn.execute(
+        "SELECT * FROM buy_signals WHERE id = ?", (buy_id,)
+    ).fetchone()
+    assert buy["ticker"] == "ABCD"
+    assert buy["ratio"] == "1:25"
+    assert buy["target_date"] == "07/14"  # buy_signals uses MM/DD like recap parsing
+    assert buy["status"] == "pending"
+
+    updated = store.list_calendar_signals()[0]
+    assert updated["status"] == "promoted"
+    assert updated["promoted_buy_signal_id"] == buy_id
+
+
+def test_promote_is_rejected_for_non_new_signal(store):
+    store.upsert_calendar_signals([_signal()], source="nasdaq_calendar", now=NOW)
+    row_id = store.list_calendar_signals()[0]["id"]
+    store.dismiss_calendar_signal(row_id, reason="skip", now=NOW)
+    with pytest.raises(ValueError):
+        store.promote_calendar_signal(row_id, now=NOW)
+
+
+def test_expire_stale_marks_past_effective_dates(store):
+    store.upsert_calendar_signals(
+        [_signal("OLDX", effective_date="2026-06-20"),
+         _signal("NEWX", effective_date="2026-07-14")],
+        source="nasdaq_calendar", now=NOW,
+    )
+    expired = store.expire_stale_calendar_signals(today=date(2026, 7, 1), now=NOW)
+    assert expired == 1
+    statuses = {r["ticker"]: r["status"] for r in store.list_calendar_signals()}
+    assert statuses == {"OLDX": "expired", "NEWX": "new"}
