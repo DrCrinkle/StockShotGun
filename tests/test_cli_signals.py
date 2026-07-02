@@ -36,6 +36,10 @@ def _fake_fetcher(signals):
     return fetch
 
 
+async def _must_not_fetch():
+    raise AssertionError("list must not invoke the fetcher")
+
+
 def _signal(ticker="ABCD", ratio="1:25", effective_date="2026-07-14"):
     return CalendarSignal(
         ticker=ticker,
@@ -93,13 +97,13 @@ def test_list_reads_without_network(tmp_path):
         )
     )
 
-    # fetcher=None: `list` must never touch the network / fetcher at all.
+    # list must never touch the network / fetcher at all.
     exit_code, data = asyncio.run(
         _run_signals(
             _args(tmp_path, action="list"),
             None,
             _context(),
-            fetcher=None,
+            fetcher=_must_not_fetch,
             now=NOW,
         )
     )
@@ -125,7 +129,7 @@ def test_list_status_filter(tmp_path):
             _args(tmp_path, action="list", status="expired"),
             None,
             _context(),
-            fetcher=None,
+            fetcher=_must_not_fetch,
             now=NOW,
         )
     )
@@ -137,7 +141,7 @@ def test_list_status_filter(tmp_path):
             _args(tmp_path, action="list"),
             None,
             _context(),
-            fetcher=None,
+            fetcher=_must_not_fetch,
             now=NOW,
         )
     )

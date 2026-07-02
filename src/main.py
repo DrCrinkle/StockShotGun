@@ -648,6 +648,7 @@ def _build_parser():
     signals_parser.add_argument(
         "--status",
         default=None,
+        choices=["new", "promoted", "dismissed", "expired"],
         help="Filter listed signals by status (new, promoted, dismissed, expired)",
     )
     signals_parser.set_defaults(quantity=None, ticker=None, price=None)

@@ -5,6 +5,7 @@ Follows the shared handler contract: (args, parser, context) in,
 (ExitCode, data-dict) out. JSON envelope emission happens in main().
 """
 
+import sqlite3
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Any
@@ -27,12 +28,12 @@ async def _default_fetcher() -> list[CalendarSignal]:
     return parse_splits_payload(payload)
 
 
-def _row_to_dict(row) -> dict[str, Any]:
+def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     return {key: row[key] for key in row.keys()}
 
 
 def _print_signals(
-    signals_action: str, counts: dict[str, int], rows: list[dict[str, Any]]
+    signals_action: str, counts: dict[str, int] | None, rows: list[dict[str, Any]]
 ) -> None:
     if signals_action == "scan":
         print(
@@ -59,8 +60,9 @@ async def _run_signals(
     now = now or datetime.now()
     store = AutomationRecapStore(args.db_path)
     try:
-        counts = {"new": 0, "seen": 0, "expired": 0}
+        counts: dict[str, int] | None = None
         if args.signals_action == "scan":
+            counts = {"new": 0, "seen": 0, "expired": 0}
             fetch = fetcher or _default_fetcher
             try:
                 signals = await fetch()
@@ -88,11 +90,13 @@ async def _run_signals(
         if context.output_format != "json":
             _print_signals(args.signals_action, counts, rows)
 
-        return ExitCode.SUCCESS, {
+        result: dict[str, Any] = {
             "action": args.signals_action,
             "status_filter": status_filter,
-            "counts": counts,
             "signals": rows,
         }
+        if counts is not None:
+            result["counts"] = counts
+        return ExitCode.SUCCESS, result
     finally:
         store.close()
