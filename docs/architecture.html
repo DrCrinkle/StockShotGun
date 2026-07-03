@@ -47,7 +47,7 @@
   .layer::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px}
   .layer.cli::before{background:var(--cli)} .layer.enf::before{background:var(--enf)}
   .layer.agent::before{background:var(--agent)} .layer.broker::before{background:var(--broker)}
-  .layer.data::before{background:var(--data)}
+  .layer.data::before{background:var(--data)} .layer.rsa::before{background:var(--rsa)}
   .layer .lname{font-weight:650;font-size:15px;display:flex;align-items:center;gap:10px}
   .tag{font-family:var(--mono);font-size:11px;padding:2px 7px;border-radius:20px;
     background:var(--chip);color:var(--dim);font-weight:500}
@@ -141,6 +141,7 @@
   <a href="#layers">Layer stack</a>
   <a href="#trade">Trade flow</a>
   <a href="#sweep">Sweep / RSA flow</a>
+  <a href="#signals">Signals flow</a>
   <a href="#subsystems">Subsystems</a>
   <a href="#data">Data stores</a>
   <a href="#decisions">Decisions (ADRs)</a>
@@ -150,14 +151,14 @@
 <div class="wrap">
 <header class="top" id="overview">
   <h1>StockShotGun</h1>
-  <div class="sub">A multi-broker trading tool that submits one order and fans it out across 13 brokerage accounts simultaneously. Reverse-split arbitrage (RSA) is the primary use case. This is a map of how it works <em>today</em> — built to help rethink the architecture.</div>
-  <div class="meta">src/ · Python 3.13 · async-first · generated 2026-05-31 from live source</div>
+  <div class="sub">A multi-broker trading tool that submits one order and fans it out across 13 brokerage accounts simultaneously. Reverse-split arbitrage (RSA) is the primary use case. This is a map of how it works <em>today</em>.</div>
+  <div class="meta">src/ · Python 3.13 · async-first · generated 2026-05-31, updated 2026-07-02 from live source</div>
 </header>
 
-<p class="lede">The system has five horizontal layers. A request enters through the <b>CLI/TUI</b>, passes a <b>safety gate</b> (the enforcement layer), is fanned out by the <b>agentic router</b> into one leg per <code>(broker, account)</code>, each leg hits a <b>broker integration</b>, and state lands in one of several <b>SQLite stores</b>. The same router/gate path serves both the human CLI and the agent-facing MCP surface — that convergence is the single most important thing to understand here.</p>
+<p class="lede">The system has six horizontal layers. A request enters through the <b>CLI/TUI/MCP</b>, is picked up by the <b>ExecutionEngine</b> — the single core every adapter sits on top of (ADR 0006) — passes a <b>safety gate</b> (the enforcement layer), is fanned out into one leg per <code>(broker, account)</code> over a <b>BrokerPort</b>, each leg hits a <b>broker integration</b>, and state lands in one of several <b>SQLite stores</b>. A separate <b>signals layer</b> feeds candidate tickers in from the Nasdaq splits calendar. The engine convergence — CLI, TUI, and the agent-facing MCP surface all calling the exact same <code>propose_order</code>/<code>execute_order</code> — is the single most important thing to understand here.</p>
 
 <div class="note">
-<b>Heads-up:</b> the repo's <code>CLAUDE.md</code> describes an older flat layout (<code>brokers/</code> + <code>tui/</code> at root, "12 brokers", <code>OrderBatchProcessor</code>). That's stale. The real tree is a layered <code>src/</code> with <code>enforcement/</code>, <code>agentic/</code>, <code>cli/</code> packages, 13 brokers, and the <code>OrderBatchProcessor</code> has been <b>retired</b> in favor of the router. This doc reflects the current source.
+<b>Status:</b> <a href="adr/0006-execution-engine-as-core.md">ADR 0006</a> — Router promoted to <code>ExecutionEngine</code>, <code>cli_bridge.py</code> deleted — is <b>Accepted (2026-07-02)</b> and merged into this branch (PR #3, open). The RSA signals-detection layer (Nasdaq calendar → <code>calendar_signals</code> → promote → <code>buy_signals</code>) shipped to main via PR #2 the same day. This doc reflects that source. 301 tests passing.
 </div>
 
 <!-- ================= LAYERS ================= -->
@@ -166,8 +167,9 @@
 
 <div class="legend">
   <span><span class="dot" style="background:var(--cli)"></span>Interface</span>
+  <span><span class="dot" style="background:var(--rsa)"></span>Signals (detection)</span>
+  <span><span class="dot" style="background:var(--agent)"></span>ExecutionEngine (core)</span>
   <span><span class="dot" style="background:var(--enf)"></span>Enforcement (safety)</span>
-  <span><span class="dot" style="background:var(--agent)"></span>Agentic / fan-out</span>
   <span><span class="dot" style="background:var(--broker)"></span>Broker integrations</span>
   <span><span class="dot" style="background:var(--data)"></span>Persistence</span>
 </div>
@@ -175,18 +177,42 @@
 <div class="stack">
   <div class="layer cli">
     <div class="lname">Interface layer <span class="tag">human + agent</span></div>
-    <div class="ldesc">Argparse CLI (<code>buy / sell / holdings / health / sweep / automate / setup</code>), an urwid TUI, and the agent-facing MCP router surface. All three normalize into one <code>ExecutionContext</code> (request-id, output format, dry-run, mock-brokers) and a JSON response envelope with typed <code>ExitCode</code>s.</div>
+    <div class="ldesc">Argparse CLI (<code>buy / sell / holdings / health / sweep / automate / signals / status / setup</code>), an urwid TUI, and the agent-facing MCP router surface (<code>ssg-router</code>). All are thin adapters: they normalize into one <code>ExecutionContext</code> and JSON response envelope, then call straight into the <code>ExecutionEngine</code> below — there is no other way to place an order.</div>
     <div class="mods">
       <span class="mod"><b>main.py</b> · parser + dispatch</span>
-      <span class="mod"><b>cli/</b> trade·sweep·automate·batch</span>
+      <span class="mod"><b>cli/</b> trade·sweep·automate·batch·signals·status·common</span>
       <span class="mod"><b>tui/</b> app·widgets·handlers</span>
       <span class="mod"><b>cli_runtime.py</b> · context·envelope·exitcodes</span>
     </div>
   </div>
   <div class="arrowdn">▼</div>
+  <div class="layer rsa">
+    <div class="lname">Signals layer <span class="tag">detection — shipped 2026-07-02</span></div>
+    <div class="ldesc">Deterministic, no-LLM candidate detection feeding the trade flow. <code>signals scan</code> polls the Nasdaq corporate-actions splits calendar, normalizes reverse-split hits into <code>calendar_signals</code>, and a human or agent <code>promote_signal</code>s worthwhile ones into the existing <code>buy_signals</code> queue that <code>automate</code>'s due-buy path already consumes — the calendar is a second signal source next to chat recaps, not a parallel pipeline. NULL-dated signals are immediately due; promote refuses past-dated signals.</div>
+    <div class="mods">
+      <span class="mod"><b>signals/nasdaq.py</b> · fetch·parse CalendarSignal</span>
+      <span class="mod"><b>automation_recap.py</b> · calendar_signals table</span>
+      <span class="mod"><b>cli/signals.py</b> · scan·list</span>
+      <span class="mod"><b>router tools</b> · scan_signals·dismiss_signal·promote_signal</span>
+    </div>
+  </div>
+  <div class="arrowdn">▼</div>
+  <div class="layer agent">
+    <div class="lname">ExecutionEngine — the core <span class="tag">ADR 0006 · execution/engine.py</span></div>
+    <div class="ldesc"><code>ExecutionEngine</code> is the neutral core every adapter above sits on top of: <code>propose_order</code> → <code>execute_order</code> (two-phase), plus <code>place_order</code> (one-shot), <code>validate_targets</code> (pre-flight), <code>run_sweep</code>/<code>sell_arrived</code>, and the signal tools. It explodes one intent into N legs (one per real <code>broker×account</code> — for every caller, not just agents) and executes them concurrently via a <code>BrokerPort</code> protocol: <b>in-process</b> (<code>InProcessBroker</code>, default) or isolated <b>subprocess</b> (<code>SubprocessBrokerProxy</code>, <code>python -m agentic.broker &lt;Name&gt;</code>). The engine never imports <code>agentic/</code> — import direction is locked one-way (<code>agentic/ → execution/ → enforcement/</code>). <code>cli_bridge.py</code> is deleted; there is one propose path.</div>
+    <div class="mods">
+      <span class="mod"><b>execution/engine.py</b> · ExecutionEngine (class body relocated here)</span>
+      <span class="mod"><b>execution/ports.py</b> · BrokerPort protocol</span>
+      <span class="mod"><b>execution/in_process.py</b> · InProcessBroker</span>
+      <span class="mod"><b>agentic/_subprocess.py</b> · SubprocessBrokerProxy</span>
+      <span class="mod"><b>agentic/router/_server.py</b> · FastMCP tools · Router alias</span>
+      <span class="mod"><b>execution/telemetry.py</b> · @logged_tool</span>
+    </div>
+  </div>
+  <div class="arrowdn">▼</div>
   <div class="layer enf">
     <div class="lname">Enforcement layer <span class="tag">the safety spine</span></div>
-    <div class="ldesc"><code>EnforcementCore</code> runs every order through a pipeline before any money moves: <b>freeze-list → circuit-breaker → eligible-account filter → reconciliation → per-order &amp; daily USD limits → audit</b>. It then mints a two-phase <b>propose/execute</b> proposal carrying one single-use token per leg. This is the architectural heart of the project.</div>
+    <div class="ldesc"><code>EnforcementCore</code> runs every order through a pipeline before any money moves: <b>freeze-list → circuit-breaker → eligible-account filter → reconciliation → per-order &amp; daily USD limits → audit</b>. It then mints a two-phase <b>propose/execute</b> proposal carrying one single-use token per leg. This is the architectural heart of the project — and, post-ADR-0006, the one gate every surface passes through identically.</div>
     <div class="mods">
       <span class="mod"><b>gate.py</b> · EnforcementCore</span>
       <span class="mod"><b>propose_execute.py</b> · ProposalStore + per-leg tokens</span>
@@ -195,37 +221,25 @@
     </div>
   </div>
   <div class="arrowdn">▼</div>
-  <div class="layer agent">
-    <div class="lname">Agentic / fan-out layer <span class="tag">ADR 0003</span></div>
-    <div class="ldesc">A thin <code>Router</code> exposes fan-out MCP tools and explodes one intent into N legs (one per <code>broker×account</code>), executing them concurrently with <code>asyncio.gather</code>. Each broker is a <code>BrokerMCPServer</code> running <b>in-process</b> (default) or as an isolated <b>subprocess</b> (<code>python -m agentic.broker &lt;Name&gt;</code>). <code>cli_bridge.py</code> lets the plain CLI reuse this exact path.</div>
-    <div class="mods">
-      <span class="mod"><b>router/_server.py</b> · Router</span>
-      <span class="mod"><b>_base.py</b> · BrokerMCPServer · place_at_broker</span>
-      <span class="mod"><b>_subprocess.py</b> · SubprocessBrokerProxy</span>
-      <span class="mod"><b>cli_bridge.py</b> · apply_main_py_gate · execute_via_router</span>
-      <span class="mod"><b>_telemetry.py</b> · @logged_tool</span>
-    </div>
-  </div>
-  <div class="arrowdn">▼</div>
   <div class="layer broker">
     <div class="lname">Broker integration layer <span class="tag">13 brokers · ADR 0004</span></div>
-    <div class="ldesc">One module per broker, each exposing <code>{broker}Trade</code> / <code>{broker}GetHoldings</code> / <code>get_{broker}_session</code>. A single lazy <code>registry.py</code> (<code>"module:symbol"</code> string refs) is the sole source of broker identity — importing it loads <em>zero</em> SDKs. Shared <code>base.py</code> holds the pooled httpx client, global rate limiter, and TTL cache. Most are API-based; Wells Fargo &amp; Chase use browser automation.</div>
+    <div class="ldesc">One module per broker, each exposing <code>{broker}Trade</code> / <code>{broker}GetHoldings</code> / <code>get_{broker}_session</code>. A single lazy <code>registry.py</code> (<code>"module:symbol"</code> string refs) is the sole source of broker identity — importing it loads <em>zero</em> SDKs. Shared <code>base.py</code> holds the pooled httpx client, global rate limiter, and TTL cache. Most are API-based; Wells Fargo &amp; Chase use browser automation. Trade functions are account-blind (<code>TradeFn(side, qty, ticker, price)</code>) — a structural guard rejects any real-account leg on a spec not yet marked <code>account_scoped_trade</code>, and Fennel is pinned <code>multi_account=False</code> so its internal all-accounts fan-out can't multiply live orders under per-account dispatch.</div>
     <div class="mods">
       <span class="mod"><b>registry.py</b> · BrokerSpec single source</span>
       <span class="mod"><b>base.py</b> · http_client·rate_limiter·api_cache·BrokerConfig</span>
       <span class="mod"><b>session_manager.py</b></span>
-      <span class="mod"><b>robinhood·tradier·tasty·…·_redbridge·wellsfargo</b></span>
+      <span class="mod"><b>robinhood·tradier·tasty·…·_redbridge·wellsfargo·chase</b></span>
     </div>
   </div>
   <div class="arrowdn">▼</div>
   <div class="layer data">
     <div class="lname">Persistence layer <span class="tag">several SQLite files</span></div>
-    <div class="ldesc">Ephemeral order proposals, an append-only audit log, RSA trade/position/sweep history, and automation/recap state — each in its own store with its own lifecycle.</div>
+    <div class="ldesc">Ephemeral order proposals, an append-only audit log, RSA trade/position/sweep history, and automation/recap state (now including calendar signals) — each in its own store with its own lifecycle.</div>
     <div class="mods">
       <span class="mod"><b>proposals.sqlite</b> · 300s TTL</span>
       <span class="mod"><b>audit.jsonl</b> · append-only</span>
       <span class="mod"><b>rsa_store.py</b> · rsa_trades·rsa_positions·sweep_state·sweep_history</span>
-      <span class="mod"><b>automation.sqlite3</b> · buy/sell signals</span>
+      <span class="mod"><b>automation.sqlite3</b> · buy_signals·calendar_signals·pending_sell_triggers</span>
     </div>
   </div>
 </div>
@@ -235,36 +249,38 @@
 <p class="lede">How <code>python src/main.py buy 1 XYZ</code> becomes real orders. The key idea: nothing reaches a broker SDK without first being <span class="pill gate">gated</span> into a proposal and then <span class="pill tok">leg-token validated</span> at the broker boundary.</p>
 
 <div class="flow">
-  <div class="fhead"><span class="dot" style="background:var(--cli)"></span>buy / sell — two-phase propose → execute</div>
+  <div class="fhead"><span class="dot" style="background:var(--cli)"></span>buy / sell — two-phase propose → execute, on the engine, for every caller</div>
   <div class="step"><div class="n"></div><div class="body">
-    <b>Parse &amp; pre-flight validate.</b> Resolve <code>--broker</code> selection from the registry; concurrently validate each broker can authenticate, dropping the ones that can't <em>before</em> gating.
-    <span class="ref"><code>cli/trade.py:34 run_trade</code> → <code>cli_bridge.preflight_validate:219</code></span>
+    <b>Parse &amp; pre-flight validate.</b> Resolve <code>--broker</code> selection from the registry; <code>engine.validate_targets</code> concurrently validates each broker can authenticate, dropping the ones that can't <em>before</em> gating. CLI, batch, automate, and TUI all call the same method.
+    <span class="ref"><code>cli/trade.py run_trade</code> → <code>ExecutionEngine.validate_targets</code> (<code>execution/engine.py:758</code>)</span>
   </div></div>
   <div class="step"><div class="n"></div><div class="body">
-    <b><span class="pill gate">GATE</span> Propose.</b> <code>apply_main_py_gate</code> lazily builds the singleton <code>Router</code>, then calls <code>EnforcementCore.propose_order</code>: freeze-list, circuit-breaker, settled-cash/PDT account filter, reconciliation vs stored qty, per-order + daily USD limits, audit integrity check.
-    <span class="ref"><code>cli_bridge.py:66</code> → <code>gate.py:72 propose_order</code></span>
+    <b><span class="pill gate">GATE</span> Propose.</b> <code>get_engine()</code> (<code>cli/common.py</code>) returns the lazy singleton <code>ExecutionEngine</code>; <code>engine.propose_order(...)</code> discovers real per-account targets and calls <code>EnforcementCore.propose_order</code>: freeze-list, circuit-breaker, settled-cash/PDT account filter, reconciliation vs stored qty, per-order + daily USD limits, audit integrity check. <code>dry_run</code> is bound into the hashed intent for every caller, not just agents.
+    <span class="ref"><code>execution/engine.py:877 propose_order</code> → <code>gate.py:72</code></span>
   </div></div>
   <div class="step"><div class="n"></div><div class="body">
     <b><span class="pill tok">MINT</span> One proposal, N leg-tokens.</b> <code>propose_fanout</code> writes one <code>proposals</code> row (self-describing: ticker/side/qty/price/dry_run — ADR 0005) plus one <code>leg_proposals</code> row per target, each with a random 256-bit token bound to the SHA-256 of a <em>single-target</em> intent. Returns a <code>proposal_id</code>.
     <span class="ref"><code>propose_execute.py:229 propose_fanout</code></span>
   </div></div>
   <div class="step"><div class="n"></div><div class="body">
-    <b>Execute (fan-out).</b> <code>execute_via_router</code> → <code>Router.execute_order(proposal_id)</code> rebuilds the intent from the stored proposal alone, then <code>asyncio.gather</code>s one <code>place_at_broker</code> call per leg. A leg failure does <em>not</em> halt its siblings.
-    <span class="ref"><code>cli_bridge.py:290</code> → <code>router/_server.py:758 execute_order</code></span>
+    <b>Execute (fan-out).</b> <code>engine.execute_order(proposal_id)</code> rebuilds the intent from the stored proposal alone, then <code>asyncio.gather</code>s one <code>place_at_broker</code> call per leg over the <code>BrokerPort</code>. A leg failure does <em>not</em> halt its siblings. <code>render_execution_result</code> (<code>cli/common.py</code>) then renders the engine's native per-leg result into the display shape each adapter expects — counts are per-<em>leg</em>, so a broker with taxable+IRA contributes 2, not 1.
+    <span class="ref"><code>execution/engine.py:936 execute_order</code> → <code>cli/common.py render_execution_result</code></span>
   </div></div>
   <div class="step"><div class="n"></div><div class="body">
-    <b><span class="pill tok">VERIFY</span> Per-leg, at the broker boundary.</b> Each <code>BrokerMCPServer.place_at_broker</code> reconstructs its single-target intent, hashes it, and <code>consume_leg</code> atomically rejects unless the hash matches its stored token (defense in depth — same check whether in-process or subprocess).
-    <span class="ref"><code>_base.py:207 place_at_broker</code> → <code>gate.py:173 gate_execute_leg</code></span>
+    <b><span class="pill tok">VERIFY</span> Per-leg, at the broker boundary.</b> Each <code>InProcessBroker.place_at_broker</code> reconstructs its single-target intent, hashes it, and <code>consume_leg</code> atomically rejects unless the hash matches its stored token (defense in depth — same check whether in-process or subprocess). A leg addressed to a real account on a spec whose trade fn is account-blind fails cleanly with <code>account_scoped_dispatch_unsupported</code> rather than risking a double-buy.
+    <span class="ref"><code>execution/in_process.py place_at_broker</code> → <code>gate.py:173 gate_execute_leg</code></span>
   </div></div>
   <div class="step"><div class="n"></div><div class="body">
     <b><span class="pill sdk">SDK</span> Place the order.</b> Rate-limit (<code>rate_limiter.wait_if_needed</code>), then call the registry-resolved <code>{broker}Trade(side, qty, ticker, price)</code> — a sync SDK wrapped in <code>asyncio.to_thread</code>. Catch SDK exceptions per leg.
-    <span class="ref"><code>_base.py:280 spec.trade_fn</code> → <code>brokers/&lt;name&gt;.py</code></span>
+    <span class="ref"><code>in_process.py spec.trade_fn</code> → <code>brokers/&lt;name&gt;.py</code></span>
   </div></div>
   <div class="step"><div class="n"></div><div class="body">
-    <b>Record outcome &amp; aggregate.</b> Each leg writes an <code>execute</code> audit entry (fill qty/price, idempotency key) and updates the circuit breaker. Results aggregate into a legacy <code>{successful, failed, skipped}</code> shape → mapped to an <code>ExitCode</code> (SUCCESS / PARTIAL_BROKER_FAILURE / FULL_BROKER_FAILURE).
+    <b>Record outcome &amp; aggregate.</b> Each leg writes an <code>execute</code> audit entry (fill qty/price, idempotency key) and updates the circuit breaker. <code>render_execution_result</code> / <code>aggregate_execution_results</code> shape the per-leg results into <code>{successful, failed, skipped}</code> → mapped to an <code>ExitCode</code> (SUCCESS / PARTIAL_BROKER_FAILURE / FULL_BROKER_FAILURE). A rejection (propose-time <code>GateError</code> or execute-time <code>rejected=True</code>) renders as zeros, never a false success.
     <span class="ref"><code>gate.py:207 record_leg_outcome</code> → <code>cli_runtime.py:68 compute_trade_exit_code</code></span>
   </div></div>
 </div>
+
+<div class="note"><b><code>--dry-run</code> is a full-pipeline rehearsal, not a readiness check.</b> Since ADR 0006 step 3, <code>--dry-run</code> runs <code>propose_order(dry_run=True)</code> + <code>execute_order(dry_run=True)</code> through the exact same path above — limits, freeze list, reconciliation, and token minting all execute; nothing is placed. The old credentials-only <code>_build_dry_run_readiness</code> short-circuit is deleted.</div>
 
 <!-- ================= SWEEP FLOW ================= -->
 <h2 id="sweep"><span class="num">03</span>The sweep / RSA flow</h2>
@@ -293,28 +309,52 @@
     <span class="ref"><code>sweep_persistence.py:42 persist_sweep_results</code></span>
   </div></div>
   <div class="step"><div class="n"></div><div class="body">
-    <b>Sell what arrived.</b> <code>Router.sell_arrived</code> re-sweeps, groups <code>SHARE_ARRIVED</code> legs by observed qty, and mints one sell proposal per qty group — handing it back to the <span class="pill gate">gate</span> → execute path above for confirmation.
-    <span class="ref"><code>router/_server.py:498 sell_arrived</code></span>
+    <b>Sell what arrived.</b> <code>engine.sell_arrived</code> re-sweeps, groups <code>SHARE_ARRIVED</code> legs by observed qty, and mints one sell proposal per qty group — handing it back to the <span class="pill gate">gate</span> → execute path above for confirmation.
+    <span class="ref"><code>execution/engine.py sell_arrived</code></span>
   </div></div>
 </div>
 
-<div class="note"><b>Feeder, not yet wired to auto-execution:</b> <code>automation_recap.py</code> parses structured "Recaps" from the RSA community forum into buy/sell <em>signals</em> (a <code>watchlist → pending → executed</code> state machine in <code>automation.sqlite3</code>). Today buys are still kicked off manually; the recap parser proposes, a human confirms.</div>
+<div class="note"><b>Two signal feeders into the same <code>buy_signals</code> queue:</b> <code>automation_recap.py</code> parses structured "Recaps" from the RSA community forum, and (shipped 2026-07-02) <code>signals/nasdaq.py</code> polls the Nasdaq splits calendar into <code>calendar_signals</code>, which <code>promote_signal</code> converts into the same <code>buy_signals</code> row shape. Either way, buys land in the <code>watchlist → pending → executed</code> state machine that <code>automate</code>'s due-buy path consumes — see the signals flow below. Buys are still human-gated end to end; the recap/calendar parsers stage candidates, a human (or, per the RSA-engine spec, an approval-gated agent) confirms.</div>
+
+<!-- ================= SIGNALS FLOW ================= -->
+<h2 id="signals"><span class="num">03a</span>The signals flow — calendar → buy queue</h2>
+<p class="lede">Detection is deterministic code with no LLM involvement in what the data <em>is</em> — an agent (or human) only judges whether a detected signal is worth playing.</p>
+
+<div class="flow">
+  <div class="fhead"><span class="dot" style="background:var(--rsa)"></span>signals scan → promote → automate due-buy</div>
+  <div class="step"><div class="n"></div><div class="body">
+    <b>Fetch &amp; parse.</b> <code>signals scan</code> (CLI) or <code>scan_signals(refresh=true)</code> (MCP) polls the Nasdaq corporate-actions splits calendar and parses reverse splits (ratio N:D, N&lt;D) into <code>CalendarSignal</code> objects. Malformed rows are skipped, never fatal — a fetch failure returns a structured error rather than raising.
+    <span class="ref"><code>signals/nasdaq.py fetch_splits_calendar · parse_splits_payload</code></span>
+  </div></div>
+  <div class="step"><div class="n"></div><div class="body">
+    <b>Idempotent upsert.</b> Hits land in <code>calendar_signals</code> (in the same <code>automation.sqlite3</code> as everything else). Re-scanning bumps <code>last_seen</code> only — dismissed/promoted/expired rows are never resurrected. A signal whose effective date passes without action auto-expires on the next scan.
+    <span class="ref"><code>automation_recap.py upsert_calendar_signals · expire_stale_calendar_signals</code></span>
+  </div></div>
+  <div class="step"><div class="n"></div><div class="body">
+    <b>Evaluate &amp; promote or dismiss.</b> A human or agent reviews `new` signals (price sanity, ratio worth playing, settlement timing) and either <code>promote_signal</code>s it into the actionable <code>buy_signals</code> queue, or <code>dismiss_signal</code>s it with a reason — the audit trail for why a play was skipped. Promote refuses non-`new` signals; a NULL effective date is treated as immediately due.
+    <span class="ref"><code>automation_recap.py promote_calendar_signal</code> → router tools <code>promote_signal</code> · <code>dismiss_signal</code></span>
+  </div></div>
+  <div class="step"><div class="n"></div><div class="body">
+    <b>Consumed by <code>automate</code>.</b> Promoted signals are ordinary <code>buy_signals</code> rows — the existing due-buy path picks them up on its normal cadence and drives them through the <span class="pill gate">gate</span> → execute flow above, same as a recap-sourced signal.
+    <span class="ref"><code>cli/automate.py</code></span>
+  </div></div>
+</div>
 
 <!-- ================= SUBSYSTEMS ================= -->
 <h2 id="subsystems"><span class="num">04</span>Subsystem reference</h2>
 <div class="grid">
   <div class="card">
     <h4><span class="dot" style="background:var(--cli)"></span>Interface — <code>main.py</code>, <code>cli/</code>, <code>tui/</code></h4>
-    <p>Builds the argparse tree, normalizes everything into <code>ExecutionContext</code>, and routes JSON cleanly (broker SDK stdout is redirected to stderr in JSON mode). The TUI shares the same <code>cli/</code> handlers.</p>
+    <p>Builds the argparse tree, normalizes everything into <code>ExecutionContext</code>, and routes JSON cleanly (broker SDK stdout is redirected to stderr in JSON mode). The TUI shares the same <code>cli/</code> handlers. All order-placing handlers call <code>get_engine()</code> and nothing else.</p>
     <div class="files">
-      <div>main.py · 755 lines (parser + health/holdings inline)</div>
-      <div>cli/{trade,sweep,automate,batch,common}.py</div>
+      <div>main.py · parser + dispatch (+ signals, status actions)</div>
+      <div>cli/{trade,sweep,automate,batch,signals,status,common}.py</div>
       <div>tui/{app,widgets,holdings_view,*_handler}.py</div>
     </div>
   </div>
   <div class="card">
     <h4><span class="dot" style="background:var(--enf)"></span>Enforcement — <code>enforcement/</code></h4>
-    <p>The safety library. <code>EnforcementCore</code> is the composition root; <code>gate_order</code> is the module-level call every execution path must precede a broker call with. Per-leg tokens, intent hashing, idempotency keys, freeze list, circuit breaker, USD limits, append-only audit.</p>
+    <p>The safety library. <code>EnforcementCore</code> is the composition root; <code>gate_order</code> is the module-level call every execution path must precede a broker call with. Per-leg tokens, intent hashing, idempotency keys, freeze list, circuit breaker, USD limits, append-only audit. Locked by a layering test that fails the build if anything here imports <code>agentic/</code>.</p>
     <div class="files">
       <div>gate.py · propose_execute.py · types.py · intent.py</div>
       <div>limits.py · freeze.py · circuit_breaker.py</div>
@@ -322,12 +362,22 @@
     </div>
   </div>
   <div class="card">
-    <h4><span class="dot" style="background:var(--agent)"></span>Agentic — <code>agentic/</code></h4>
-    <p>The fan-out engine and MCP surface. <code>Router</code> exposes ~9 agent tools; <code>BrokerMCPServer</code> wraps each broker with gate+rate-limit+audit; <code>SubprocessBrokerProxy</code> gives true process isolation. <code>cli_bridge</code> is the seam letting the non-agentic CLI reuse all of it.</p>
+    <h4><span class="dot" style="background:var(--agent)"></span>Execution core — <code>execution/</code> <span class="tag">ADR 0006</span></h4>
+    <p><code>ExecutionEngine</code> — one class body, one propose path, one execute path. Owns fan-out (per real account), <code>validate_targets</code>, the signal tools, and the <code>BrokerPort</code> protocol. Imports only <code>enforcement/</code>, <code>brokers/</code>, stdlib — never <code>agentic/</code>; the layering test enforces the flip.</p>
     <div class="files">
-      <div>router/_server.py · router/__main__.py</div>
-      <div>_base.py · _subprocess.py · broker.py</div>
-      <div>cli_bridge.py · cli.py · _telemetry.py</div>
+      <div>engine.py · ExecutionEngine (propose_order·execute_order·place_order·validate_targets·run_sweep·sell_arrived·scan_signals)</div>
+      <div>ports.py · BrokerPort protocol</div>
+      <div>in_process.py · InProcessBroker</div>
+      <div>telemetry.py · @logged_tool</div>
+    </div>
+  </div>
+  <div class="card">
+    <h4><span class="dot" style="background:var(--agent)"></span>Agentic / MCP transport — <code>agentic/</code></h4>
+    <p>What's left of the old fan-out layer after ADR 0006: pure MCP transport around the engine. FastMCP tool registration on <code>ssg-router</code> (12 tools) and <code>SubprocessBrokerProxy</code>'s stdio for process-isolated broker calls. No fan-out logic lives here anymore — it's all on the engine. <code>cli_bridge.py</code> is deleted.</p>
+    <div class="files">
+      <div>router/_server.py · build_router_fastmcp_server · Router = ExecutionEngine alias</div>
+      <div>_subprocess.py · SubprocessBrokerProxy</div>
+      <div>cli.py · operator CLI</div>
     </div>
   </div>
   <div class="card">
@@ -336,22 +386,32 @@
     <div class="files">
       <div>registry.py · base.py · session_manager.py</div>
       <div>robinhood·tradier·tastytrade·public·firstrade</div>
-      <div>fennel·schwab·sofi·webull · _redbridge(bbae,dspac)</div>
+      <div>fennel (multi_account=False)·schwab·sofi·webull · _redbridge(bbae,dspac)</div>
       <div>wellsfargo·chase (zendriver browser) · browser_utils.py</div>
     </div>
   </div>
   <div class="card">
+    <h4><span class="dot" style="background:var(--rsa)"></span>Signals — <code>signals/</code> <span class="tag">shipped 2026-07-02</span></h4>
+    <p>Deterministic reverse-split detection. Nasdaq calendar source adapter, no storage/CLI logic of its own — orchestration lives in the CLI handler and the engine's signal methods.</p>
+    <div class="files">
+      <div>signals/nasdaq.py · CalendarSignal · fetch_splits_calendar · parse_splits_payload</div>
+      <div>cli/signals.py · scan · list</div>
+      <div>automation_recap.py · calendar_signals table + upsert/promote/dismiss/expire</div>
+    </div>
+  </div>
+  <div class="card">
     <h4><span class="dot" style="background:var(--rsa)"></span>RSA / Sweep — <code>sweep.py</code>, <code>rsa_store.py</code></h4>
-    <p>Split-status classification + per-broker settlement profiles, lazy position discovery, and full sweep history. Exposed both as a standalone <code>sweep</code> CLI and as router tools (<code>run_sweep</code>, <code>sell_arrived</code>).</p>
+    <p>Split-status classification + per-broker settlement profiles, lazy position discovery, and full sweep history. Exposed both as a standalone <code>sweep</code> CLI and as engine methods (<code>run_sweep</code>, <code>sell_arrived</code>). <code>cli/status.py</code> emits an aggregate JSON snapshot (trades, positions by sweep status, signal-queue counts) for Pulse polling.</p>
     <div class="files">
       <div>sweep.py · BROKER_PROFILES · classify_holding</div>
       <div>rsa_store.py · sweep_persistence.py</div>
-      <div>automation_recap.py · automation_recap state machine</div>
+      <div>automation_recap.py · buy_signals · calendar_signals state machines</div>
+      <div>cli/status.py · Pulse JSON snapshot</div>
     </div>
   </div>
   <div class="card">
     <h4><span class="dot" style="background:var(--data)"></span>Runtime contract — <code>cli_runtime.py</code></h4>
-    <p>The machine-facing contract: <code>ExitCode</code> enum (0/2/3/4/5/6/8/10), <code>ExecutionContext</code>, and <code>build_response_envelope</code> (ok/command/request_id/data/warnings/errors). Makes the CLI safely scriptable and agent-callable.</p>
+    <p>The machine-facing contract: <code>ExitCode</code> enum (0/2/3/4/5/6/8/10), <code>ExecutionContext</code>, and <code>build_response_envelope</code> (ok/command/request_id/data/warnings/errors). Makes the CLI safely scriptable and agent-callable. <code>compute_trade_exit_code</code> reads the engine's rendered result directly — no legacy reshaping.</p>
     <div class="files">
       <div>cli_runtime.py · ExitCode · ExecutionContext</div>
       <div>build_response_envelope · compute_trade_exit_code</div>
@@ -367,8 +427,8 @@
   <tbody>
     <tr><td><code>logs/proposals.sqlite</code></td><td><code>proposals</code> (self-describing order) + <code>leg_proposals</code> (token, intent_hash, consumed_at per leg)</td><td>Ephemeral — 300s TTL; <b>detect-and-drop</b> migration on shape change; rows linger past TTL (no cleanup job)</td><td>enforcement / ProposalStore</td></tr>
     <tr><td><code>logs/audit.jsonl</code></td><td>append-only JSONL: <code>propose</code> + <code>execute</code> entries with intent hashes, fills, reasons</td><td>Append-only, integrity-checked (<code>require_intact</code>)</td><td>enforcement / AuditLog</td></tr>
-    <tr><td><code>logs/automation.sqlite3</code></td><td><code>rsa_trades · rsa_positions · sweep_state · sweep_history</code> (+ recap buy/sell signals)</td><td>Durable — the RSA system of record</td><td>RsaStore + automation_recap</td></tr>
-    <tr><td><code>logs/mcp-YYYY-MM-DD.jsonl</code></td><td>one line per MCP tool call (redacted args, duration, ok/error)</td><td>Daily rotation, observability only</td><td>agentic / @logged_tool</td></tr>
+    <tr><td><code>logs/automation.sqlite3</code></td><td><code>rsa_trades · rsa_positions · sweep_state · sweep_history · buy_signals · calendar_signals · pending_sell_triggers</code></td><td>Durable — the RSA system of record; also the signal-detection queue (Nasdaq calendar + recap parser share the same <code>buy_signals</code> destination)</td><td>RsaStore + AutomationRecapStore</td></tr>
+    <tr><td><code>logs/mcp-YYYY-MM-DD.jsonl</code></td><td>one line per MCP tool call (redacted args, duration, ok/error)</td><td>Daily rotation, observability only</td><td>execution / @logged_tool</td></tr>
   </tbody>
 </table>
 
@@ -382,6 +442,7 @@
     <tr><td><b>0003</b></td><td>MCP fan-out: per-broker MCPs + router + per-leg tokens</td><td>The big one. Reframed the tool for the agentic era: one fan-out call is the differentiator. Introduced the in-process/subprocess duality and per-leg token model.</td></tr>
     <tr><td><b>0004</b></td><td>Broker registry as single source of truth</td><td>Collapsed 5 duplicated broker enumerations into one lazy registry. Importing it imports no SDK; a subprocess resolves only its own broker.</td></tr>
     <tr><td><b>0005</b></td><td>Self-describing proposal (delete router intent cache)</td><td>Order params now live on the proposal row, so execute works across restarts/processes from <code>proposal_id</code> alone. Removed a fragile in-memory sidecar.</td></tr>
+    <tr><td><b>0006</b></td><td>Execution engine as core — Router promoted to <code>ExecutionEngine</code>, <code>cli_bridge</code> deleted</td><td><b>Accepted 2026-07-02.</b> Closes the tension below: CLI/TUI/MCP are now provably thin adapters over one engine, one propose path, one result type. Fixed two real bugs the hand-rolled bridge path had (single-<code>"primary"</code>-leg fan-out, <code>--dry-run</code> never reaching the gate).</td></tr>
   </tbody>
 </table>
 
@@ -390,14 +451,14 @@
 <p class="lede">This is the payload. These are the places where the current shape is in friction with itself — the questions worth answering before you redraw the architecture. Severity reflects how much it constrains future change, not how broken it is.</p>
 
 <div class="tension">
-  <h4>The agentic router is load-bearing for the <em>non</em>-agentic CLI <span class="sev hi">high</span></h4>
-  <p>ADR 0003 framed the MCP layer as the agent-facing surface, with per-broker MCPs as "implementation detail." But <code>cli_bridge.apply_main_py_gate</code> + <code>execute_via_router</code> route the <em>plain CLI's</em> buy/sell through the same <code>Router</code> singleton and MCP <code>place_at_broker</code> path. So "the agentic layer" is no longer optional — it's the only execution path. A human typing <code>buy 1 XYZ</code> is paying for MCP-shaped indirection (router → BrokerMCPServer → spec.trade_fn).</p>
-  <div class="ask">Is the Router the <em>core execution engine</em> (and the CLI/TUI/MCP are all just adapters onto it), or is it an agent adapter that the CLI shouldn't depend on? Pick one and name it. The current code wants the first; the ADR language implies the second.</div>
+  <h4>The agentic router was load-bearing for the <em>non</em>-agentic CLI <span class="sev low">resolved</span></h4>
+  <p>ADR 0003 framed the MCP layer as the agent-facing surface, with per-broker MCPs as "implementation detail." But <code>cli_bridge.apply_main_py_gate</code> + <code>execute_via_router</code> routed the <em>plain CLI's</em> buy/sell through the same <code>Router</code> singleton and MCP <code>place_at_broker</code> path by hand — and diverged from the agent path doing it: one synthetic <code>BrokerAccount(broker,"primary")</code> leg (bypassing per-account fan-out, ADR 0001), and <code>--dry-run</code> short-circuiting to a credentials-only readiness check that never touched the enforcement pipeline.</p>
+  <div class="ask">Resolved by naming the Router the core execution engine outright, not an agent adapter.</div>
 </div>
 
 <div class="redesign">
-  <h4>↳ Redesign drafted — <a href="adr/0006-execution-engine-as-core.md">ADR 0006: Execution Engine as Core</a></h4>
-  <p>Verified the friction is real, not cosmetic: the main CLI/TUI reach the Router through <code>cli_bridge</code>, which reimplements the propose half by hand and <b>diverges from the agent path</b> — it hardcodes one synthetic <code>BrokerAccount(broker,"primary")</code> leg (bypassing per-account fan-out, ADR 0001), and its <code>--dry-run</code> short-circuits to a credentials-only readiness check that never touches the enforcement pipeline. The fix: promote <code>Router</code> → <code>execution/ExecutionEngine</code>, split the misnamed <code>BrokerMCPServer</code> behind a <code>BrokerPort</code> protocol so the engine never imports <code>agentic/</code>, and delete <code>cli_bridge</code>. Six incremental steps behind a <code>Router</code> alias.</p>
+  <h4>✓ Shipped — <a href="adr/0006-execution-engine-as-core.md">ADR 0006: Execution Engine as Core</a> <span class="tag" style="color:var(--ok)">Accepted 2026-07-02</span></h4>
+  <p><code>Router</code> was promoted to <code>execution/engine.py::ExecutionEngine</code> (class body relocated, not just renamed — the import direction is now genuinely one-way: <code>agentic/ → execution/ → enforcement/</code>, locked by <code>tests/test_execution_layering.py</code> across both packages). The misnamed <code>BrokerMCPServer</code> split behind a <code>BrokerPort</code> protocol into <code>InProcessBroker</code> (engine-owned) and <code>SubprocessBrokerProxy</code> (agentic-owned MCP transport). <code>cli_bridge.py</code> is deleted — <code>grep -rn cli_bridge src tests</code> returns zero. <code>--dry-run</code> is now a full-pipeline rehearsal (limits/freeze/reconciliation/token-minting all run, nothing is placed) instead of a credentials-only check. All six migration steps shipped incrementally behind the <code>Router = ExecutionEngine</code> alias, each landing with the full suite green; 301 tests pass today (was 258 at the start of this plan, 213 before ADR 0006 began).</p>
   <div class="ba">
     <div class="ba-col before">
       <div class="ba-label">before — two propose paths, glue between</div>
@@ -415,9 +476,9 @@ FastMCP     ─┴─► Router.propose_order / execute_order
 Router lives in agentic/, imports BrokerMCPServer (agentic/)</pre>
     </div>
     <div class="ba-col after">
-      <div class="ba-label">after — one engine, thin adapters</div>
+      <div class="ba-label">after — one engine, thin adapters (as shipped)</div>
 <pre>cli/trade ─┐
-tui/app    ├─► execution/ExecutionEngine
+tui/app    ├─► execution/engine.py::ExecutionEngine
 agentic/cli┤     .propose_order / execute_order / place_order
 FastMCP    ┘     [real accounts + dry_run for EVERYONE]
                      ▼
@@ -426,16 +487,30 @@ FastMCP    ┘     [real accounts + dry_run for EVERYONE]
               BrokerPort ─in_process─► InProcessBroker  (execution/)
                          └subprocess─► SubprocessProxy  (agentic/, MCP)
 
-imports: agentic/ ─► execution/ ─► enforcement/  (never reverse)
-cli_bridge.py: deleted</pre>
+imports: agentic/ ─► execution/ ─► enforcement/  (never reverse, test-locked)
+cli_bridge.py: deleted
+render_execution_result() / aggregate_execution_results() (cli/common.py)
+  replace the old {successful, failed, skipped} reshape by hand</pre>
     </div>
   </div>
 </div>
 
 <div class="tension">
-  <h4>Dual broker layer: <code>brokers/*</code> functions <em>and</em> <code>BrokerMCPServer</code> wrapping them <span class="sev med">med</span></h4>
-  <p>Each broker is described twice — once as raw async functions in <code>brokers/&lt;name&gt;.py</code> (resolved via registry string refs), and again as a uniform 4-tool MCP server in <code>agentic/_base.py</code>. Rate limits live in <code>base.py</code> <em>and</em> the registry owns everything else (ADR 0004 explicitly left rate limits out). Two enumerations of broker capability that must stay in sync.</p>
-  <div class="ask">Should the <code>BrokerSpec</code> own rate limits too, closing the last gap in "single source of truth"? And is the MCP-server-per-broker wrapper earning its keep in in-process mode, or is it ceremony around a plain function call?</div>
+  <h4>Account-scoped dispatch: <code>TradeFn</code> is account-blind, so per-account fan-out is guard-railed, not real, for every broker but the placeholder case <span class="sev med">med</span></h4>
+  <p>ADR 0006 gave every caller real per-account discovery — but <code>TradeFn(side, qty, ticker, price)</code> takes no account parameter, so a broker can't actually be told <em>which</em> account to trade in. Fennel's trade fn fans out internally over all session accounts, so under naive per-account fan-out it would multiply into N² live orders; it's now pinned <code>multi_account=False</code> as a stopgap. A structural guard in <code>InProcessBroker.place_at_broker</code> rejects any leg addressed to a real (non-<code>"primary"</code>) account on a spec without an explicit <code>account_scoped_trade</code> flag — provably inert today (every current broker's real legs are all <code>"primary"</code>) but load-bearing the moment a second multi-account broker shows up.</p>
+  <div class="ask">Threading <code>account_id</code> through <code>TradeFn</code> is the documented long-term fix (ADR 0006 open questions) — until then, "per-account fan-out" is a safety guarantee (never double-buy) rather than a fully-realized capability (route to a specific account).</div>
+</div>
+
+<div class="tension">
+  <h4>Fill-vs-marking crash window in <code>automate</code> <span class="sev low">low</span></h4>
+  <p><code>automate</code> marks a signal executed immediately after its order's <code>execute_order</code> returns. A crash between the broker fill and <code>mark_buy_signals_executed</code> would leave a filled order's signal sitting <code>pending</code>, re-executing (double-trade) on the next run. Mitigated but not eliminated: signals are now marked incrementally per-order rather than in one bulk pass after the whole batch, so a mid-batch abort only exposes the crash window for the order in flight, not the entire batch.</p>
+  <div class="ask">ADR 0006's candidate fix — a persisted <code>executing</code> state written before dispatch, so a crash surfaces as "needs manual reconciliation" instead of silently re-executing — is still open.</div>
+</div>
+
+<div class="tension">
+  <h4>Dual broker layer: <code>brokers/*</code> functions <em>and</em> <code>InProcessBroker</code> wrapping them <span class="sev med">med</span></h4>
+  <p>Each broker is described twice — once as raw async functions in <code>brokers/&lt;name&gt;.py</code> (resolved via registry string refs), and again as a uniform runtime wrapper (<code>execution/in_process.py::InProcessBroker</code>, post-ADR-0006) implementing <code>place_at_broker</code> / <code>get_holdings_at_broker</code> / <code>list_accounts_at_broker</code> / <code>health_check</code>. Rate limits live in <code>base.py</code> <em>and</em> the registry owns everything else (ADR 0004 explicitly left rate limits out). Two enumerations of broker capability that must stay in sync.</p>
+  <div class="ask">Should the <code>BrokerSpec</code> own rate limits too, closing the last gap in "single source of truth"? And is the <code>BrokerPort</code>-wrapper-per-broker earning its keep in in-process mode, or is it ceremony around a plain function call?</div>
 </div>
 
 <div class="tension">
@@ -458,7 +533,7 @@ cli_bridge.py: deleted</pre>
 
 <div class="tension">
   <h4><code>main.py</code> still carries inline business logic <span class="sev low">low</span></h4>
-  <p>The <code>cli/</code> split moved trade/sweep/automate/batch out, but <code>health</code> and <code>holdings</code> handlers (and all argparse construction, ~250 lines) still live inline in the 755-line <code>main.py</code>, including Webull-specific health probing. The dispatch is a chain of <code>if args.action == …</code>.</p>
+  <p>The <code>cli/</code> split moved trade/sweep/automate/batch/signals/status out, but <code>health</code> and <code>holdings</code> handlers (and all argparse construction) still live inline in the ~800-line <code>main.py</code>, including Webull-specific health probing. The dispatch is a chain of <code>if args.action == …</code>.</p>
   <div class="ask">Finish the extraction — a uniform command registry (<code>{action → handler}</code>) would let <code>main.py</code> shrink to parse → dispatch → render, matching the cleanliness of the layers below it.</div>
 </div>
 
@@ -469,9 +544,9 @@ cli_bridge.py: deleted</pre>
 </div>
 
 <hr class="soft">
-<p class="lede">If you want, I can take any one of these tensions and spin it into a concrete redesign — e.g. "Router as the single execution core with CLI/TUI/MCP as thin adapters," with a before/after module diagram and a migration path. Or I can generate the same map as an editable diagram (Mermaid/SVG) you can mark up.</p>
+<p class="lede">The big one — Router as the single execution core with CLI/TUI/MCP as thin adapters — shipped as ADR 0006. If you want, I can take any of the remaining tensions and spin it into a concrete redesign, or generate this map as an editable diagram (Mermaid/SVG) you can mark up.</p>
 
-<div class="foot">StockShotGun · docs/architecture.html · reflects src/ @ 2026-05-31 · file refs are file:line into src/</div>
+<div class="foot">StockShotGun · docs/architecture.html · reflects src/ @ 2026-07-02 (originally generated 2026-05-31) · file refs are file:line into src/</div>
 </div>
 </body>
 </html>

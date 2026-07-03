@@ -188,14 +188,15 @@
 <p class="subtitle">
   Multi-broker reverse-split arbitrage tool, agentic-first.
   One MCP surface fans out across 13 brokerage integrations with per-leg-token-validated
-  safety enforcement.
+  safety enforcement — plus, as of July 2026, automated reverse-split detection feeding the buy queue.
 </p>
 
 <div class="badges">
-  <span class="badge good">135 tests passing</span>
+  <span class="badge good">301 tests passing</span>
   <span class="badge accent">38/53 ISCs</span>
-  <span class="badge accent">8 MCP tools</span>
+  <span class="badge accent">12 MCP tools</span>
   <span class="badge">13 brokers</span>
+  <span class="badge good">ADR 0006 shipped</span>
   <span class="badge">Python 3.14, async-first</span>
 </div>
 
@@ -204,61 +205,82 @@
   Submits the same order to many brokerage accounts simultaneously. Primary
   use case is reverse-split arbitrage — buy across N brokers before the split,
   wait, sweep to detect post-split share arrival per broker, propose sells when
-  legs are ready. Every order — buy and sell, gated CLI and legacy CLI — goes
-  through a two-step propose/execute flow with per-leg confirmation tokens
-  bound to a single-target intent hash. There is no single-call live order
-  path. Code enforces safety; prompts do not.
+  legs are ready. Candidates now arrive two ways: a human-pasted community
+  recap, or (new) an automated scan of the Nasdaq splits calendar. Every order
+  — buy and sell, from every surface (CLI, TUI, MCP) — goes through the same
+  <code>ExecutionEngine</code> two-step propose/execute flow with per-leg
+  confirmation tokens bound to a single-target intent hash. There is no
+  single-call live order path. Code enforces safety; prompts do not.
 </p>
 
 <h2>By the numbers</h2>
 <div class="stats">
   <div class="stat"><div class="num">38/53</div><div class="label">ISCs locked</div></div>
-  <div class="stat"><div class="num">135</div><div class="label">tests, all green</div></div>
+  <div class="stat"><div class="num">301</div><div class="label">tests, all green</div></div>
   <div class="stat"><div class="num">13</div><div class="label">brokers integrated</div></div>
-  <div class="stat"><div class="num">8</div><div class="label">router MCP tools</div></div>
-  <div class="stat"><div class="num">~3,500</div><div class="label">LoC across agentic + enforcement</div></div>
-  <div class="stat"><div class="num">5</div><div class="label">execution surfaces (gated CLI, legacy CLI, TUI, MCP, subprocess)</div></div>
+  <div class="stat"><div class="num">12</div><div class="label">router MCP tools</div></div>
+  <div class="stat"><div class="num">1</div><div class="label">execution engine — every surface is a thin adapter</div></div>
+  <div class="stat"><div class="num">3</div><div class="label">signal tools (scan · dismiss · promote)</div></div>
 </div>
 
 <div class="progress-bar"><div class="progress-fill" style="width: 71.7%"></div></div>
 <p style="color: var(--muted); font-size: 0.85rem; margin-top: 0">
-  ISC progress — 38 of 53 criteria verified
+  ISC progress — 38 of 53 criteria verified (tracker last updated pre-ADR-0006; see <code>ISA.md</code>)
 </p>
 
 <h2>Architecture</h2>
 <p>
-  Three layers. The enforcement core is the gate. Per-broker MCPs are the
-  isolation boundary. The router is the agent's surface. CLI, TUI, gated CLI,
-  and MCP clients all route through the same gate.
+  ADR 0006 (accepted 2026-07-02) promoted the old agent-only <code>Router</code>
+  to <code>ExecutionEngine</code> — the one core every surface sits on top of.
+  CLI, TUI, gated CLI, and MCP clients all call the exact same
+  <code>propose_order</code> / <code>execute_order</code>, which runs through
+  the enforcement gate and fans out over a <code>BrokerPort</code> to
+  in-process or subprocess-isolated brokers. A new signals layer (Nasdaq
+  splits calendar) feeds candidate tickers into the same buy queue the human
+  recap parser already used.
 </p>
 
 <pre class="arch-diagram">
   ┌──────────────────────────────────────────────────────────────┐
-  │  AGENT  ─────────────►  ROUTER MCP  (8 tools)                │
-  │   ▲                       │                                  │
-  │   │                       ▼                                  │
-  │   │           ┌───────────────────────┐                      │
-  │   │           │   ENFORCEMENT CORE    │                      │
-  │   │           │  • per-leg tokens     │                      │
-  │   │           │  • intent-hash bind   │                      │
-  │   │           │  • $ limits           │                      │
-  │   │           │  • freeze list        │                      │
-  │   │           │  • circuit breaker    │                      │
-  │   │           │  • audit log (hashed) │                      │
-  │   │           └───────────┬───────────┘                      │
-  │   │                       ▼                                  │
+  │  NASDAQ CALENDAR ──► signals scan ──► calendar_signals        │
+  │                                          │ promote_signal      │
+  │                                          ▼                     │
+  │  CLI/TUI/AGENT  ─────────────►  buy_signals queue ─┐          │
+  │   ▲                                                 ▼          │
+  │   │                       ┌───────────────────────────────┐   │
+  │   │                       │   EXECUTIONENGINE (core)      │   │
+  │   │                       │  propose_order / execute_order│   │
+  │   │                       │  validate_targets / place_order│  │
+  │   │                       │  run_sweep / sell_arrived      │  │
+  │   │                       └───────────────┬───────────────┘   │
+  │   │                                       ▼                   │
+  │   │                       ┌───────────────────────┐           │
+  │   │                       │   ENFORCEMENT CORE    │           │
+  │   │                       │  • per-leg tokens     │           │
+  │   │                       │  • intent-hash bind   │           │
+  │   │                       │  • $ limits           │           │
+  │   │                       │  • freeze list        │           │
+  │   │                       │  • circuit breaker    │           │
+  │   │                       │  • audit log (hashed) │           │
+  │   │                       └───────────┬───────────┘           │
+  │   │                                   ▼                       │
+  │   │                  BrokerPort: InProcessBroker / Subprocess │
   │   │      ┌─────────┬──────┴──────┬─────────┐                 │
   │   │      ▼         ▼             ▼         ▼                 │
   │   │  ┌──────┐ ┌────────┐ ... ┌──────┐ ┌────────┐             │
-  │   └──┤BrokerMCP   BrokerMCP    BrokerMCP   BrokerMCP│        │
-  │      │ Robin │ │Tradier │     │ Fennel│ │ Schwab │  ... ×13  │
+  │   └──┤ Robin │ │Tradier │     │Fennel│ │ Schwab │  ... ×13   │
   │      └──┬───┘ └───┬────┘     └──┬───┘ └───┬────┘             │
   │         ▼         ▼              ▼         ▼                 │
   │      ┌─────────────────────────────────────────┐             │
   │      │  brokers/ — existing SDK integrations   │             │
   │      └─────────────────────────────────────────┘             │
   │                                                              │
-  │  Also reaches enforcement: legacy CLI, TUI, gated CLI        │
+  │  MCP tools: list_brokers · get_holdings · propose_order ·    │
+  │  execute_order · place_order · get_rsa_trade · run_sweep ·   │
+  │  sell_arrived · recap_ingest · scan_signals · dismiss_signal ·│
+  │  promote_signal   (12 total, ssg-router)                     │
+  │                                                              │
+  │  cli_bridge.py: deleted — one propose path for every caller  │
   └──────────────────────────────────────────────────────────────┘
 </pre>
 
@@ -300,52 +322,86 @@
   </div>
 
   <div class="card">
+    <h3>ExecutionEngine <code>src/execution/engine.py</code> <span class="tag good">ADR 0006</span></h3>
+    <p style="color: var(--muted); font-size: 0.88rem">
+      The core, promoted from the old agent-only <code>Router</code>
+      (accepted 2026-07-02). Every surface below is a thin adapter over this
+      one class.
+    </p>
+    <ul>
+      <li><code>propose_order</code>, <code>execute_order</code>, <code>place_order</code> (one-shot)</li>
+      <li><code>validate_targets</code> — pre-flight broker validation, moved off the old <code>cli_bridge</code></li>
+      <li><code>get_rsa_trade</code>, <code>run_sweep</code>, <code>sell_arrived</code></li>
+      <li><code>scan_signals</code>, <code>dismiss_signal</code>, <code>promote_signal</code> (new)</li>
+      <li>Imports only <code>enforcement/</code> + <code>brokers/</code> — never <code>agentic/</code>, layering-test-locked</li>
+    </ul>
+  </div>
+
+  <div class="card">
     <h3>Router MCP <code>src/agentic/router/</code></h3>
     <p style="color: var(--muted); font-size: 0.88rem">
-      The agent-facing fan-out surface. <code>python -m agentic.router</code>
-      starts the stdio MCP server.
+      The agent-facing FastMCP surface (<code>ssg-router</code>), now a pure
+      transport wrapper around <code>ExecutionEngine</code> — 12 tools total.
     </p>
     <ul>
       <li><code>list_brokers</code> — health + flags across all 13</li>
       <li><code>get_holdings</code> — fan-out holdings query (sanitized)</li>
       <li><code>propose_order</code>, <code>execute_order</code>, <code>place_order</code></li>
-      <li><code>get_rsa_trade</code>, <code>run_sweep</code> — RSA persistence + classification</li>
-      <li><code>sell_arrived</code> — one-shot propose-sells for ARRIVED legs</li>
+      <li><code>get_rsa_trade</code>, <code>run_sweep</code>, <code>sell_arrived</code>, <code>recap_ingest</code></li>
+      <li><code>scan_signals</code>, <code>dismiss_signal</code>, <code>promote_signal</code> — new, Nasdaq calendar signals</li>
     </ul>
   </div>
 
   <div class="card">
-    <h3>Gated CLI <code>src/agentic/cli.py</code></h3>
+    <h3>Signals <code>src/signals/</code> <span class="tag good">new</span></h3>
     <p style="color: var(--muted); font-size: 0.88rem">
-      Operator surface that routes every order through the gate. Parallel
-      to legacy main.py, becomes the documented default for new tooling.
+      Automated reverse-split detection, shipped 2026-07-02. Deterministic —
+      no LLM involved in what the data is, only in whether to play it.
     </p>
     <ul>
-      <li><code>list-brokers</code>, <code>holdings</code>, <code>dry-run</code></li>
-      <li><code>propose</code>, <code>execute</code> (two-step required for live)</li>
-      <li><code>audit-verify</code> — walks the audit hash chain</li>
-      <li>Static check fails the build on direct broker SDK calls</li>
+      <li><code>signals/nasdaq.py</code> — Nasdaq splits-calendar fetch + parse</li>
+      <li><code>calendar_signals</code> table in <code>AutomationRecapStore</code> — idempotent upsert, never resurrects terminal states</li>
+      <li>Worthwhile signals <code>promote</code> into the existing <code>buy_signals</code> queue — a second source next to chat recaps, not a parallel pipeline</li>
+      <li>CLI: <code>signals scan</code> / <code>signals list</code></li>
+      <li>NULL effective date = immediately due; promote refuses past-dated signals</li>
     </ul>
   </div>
 
   <div class="card">
-    <h3>Legacy CLI + TUI</h3>
+    <h3>CLI + TUI, all on the engine</h3>
     <p style="color: var(--muted); font-size: 0.88rem">
-      <code>main.py</code> + <code>tui/app.py</code> rewired to route every
-      execution through the Router via <code>execute_via_router</code>.
+      <code>main.py</code> + <code>tui/app.py</code> now call
+      <code>ExecutionEngine.propose_order</code> / <code>execute_order</code>
+      directly. <code>cli_bridge.py</code> is deleted — <code>grep -rn
+      cli_bridge src tests</code> returns zero.
     </p>
     <ul>
-      <li>All 5 sites gated: buy/sell, batch from-file, automate, TUI submit, TUI retry</li>
-      <li>Per-leg-token validation now active on the legacy path</li>
-      <li>Existing <code>--dry-run</code>, <code>--mock-brokers</code>, broker selection preserved</li>
-      <li>Backwards-compatible results shape for <code>compute_trade_exit_code</code></li>
+      <li>All sites on one path: buy/sell, batch, automate, TUI submit, TUI retry</li>
+      <li>Real per-account fan-out for every caller (was one synthetic "primary" leg pre-ADR-0006)</li>
+      <li><code>--dry-run</code> is now a full-pipeline rehearsal — limits/freeze/reconciliation/token-minting all run, nothing is placed</li>
+      <li><code>render_execution_result</code> / <code>aggregate_execution_results</code> (<code>cli/common.py</code>) replace the old hand-rolled reshape</li>
     </ul>
   </div>
 
   <div class="card">
-    <h3>Telemetry <code>src/agentic/_telemetry.py</code></h3>
+    <h3>Status feed <code>src/cli/status.py</code> <span class="tag good">new</span></h3>
     <p style="color: var(--muted); font-size: 0.88rem">
-      Structured logging wraps every router + broker MCP method. Audit-log
+      Read-only aggregate JSON snapshot for the PAI Pulse dashboard to poll —
+      shipped 2026-07-02 as the repo-side half of the agent-operated RSA
+      engine spec.
+    </p>
+    <ul>
+      <li><code>python3 main.py status</code> (via the global <code>--output json</code> flag)</li>
+      <li>Open trades + positions by sweep status</li>
+      <li>Signal-queue counts: <code>calendar_signals</code>, <code>buy_signals</code>, <code>pending_sell_triggers</code></li>
+      <li>Staged-proposal detail, execution history, per-play P&amp;L: not yet in the snapshot</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h3>Telemetry <code>src/execution/telemetry.py</code></h3>
+    <p style="color: var(--muted); font-size: 0.88rem">
+      Structured logging wraps every engine + broker method. Audit-log
       is separate (and tamper-evident); telemetry is for ops.
     </p>
     <ul>
@@ -435,6 +491,26 @@
       <td>Multi-account discovery (Fennel canonical), hetero-qty split, pytest dev dep</td>
       <td>Strengthens ISC-3.1; new tests</td>
     </tr>
+    <tr>
+      <td class="mono">2026-07-02</td>
+      <td><b>RSA signals detection</b> (PR #2, merged to main) — Nasdaq splits-calendar adapter, <code>calendar_signals</code> table with promote-into-<code>buy_signals</code>, <code>signals scan/list</code> + <code>status</code> CLI, 3 new router MCP tools</td>
+      <td>+43 tests (258 → 301 total after ADR 0006 work)</td>
+    </tr>
+    <tr>
+      <td class="mono">2026-07-02</td>
+      <td><b>ADR 0006 completion</b> (PR #3, open, this branch) — Router promoted to <code>ExecutionEngine</code>; CLI/TUI/batch/automate repointed off <code>cli_bridge</code> onto the engine; <code>--dry-run</code> is now a full-pipeline rehearsal; <code>cli_bridge.py</code> deleted; engine class body relocated to <code>execution/engine.py</code>, completing the import-direction flip; full-package layering lock</td>
+      <td>Resolves the "agentic router load-bearing for the non-agentic CLI" architecture tension</td>
+    </tr>
+    <tr>
+      <td class="mono">2026-07-02</td>
+      <td>Safety hardening from review — <code>account_scoped_dispatch_unsupported</code> guard (account-blind trade fns can't be double-dispatched per-account), Fennel pinned <code>multi_account=False</code>, incremental per-order signal marking in <code>automate</code> (mid-batch abort can't leave fills unmarked), execute-rejection → <code>FULL_BROKER_FAILURE</code> on CLI</td>
+      <td>Final-review findings C1, C2; fill-vs-marking crash window narrowed</td>
+    </tr>
+    <tr>
+      <td class="mono">2026-07-02</td>
+      <td>SoFi order-success detection fix (in-flight since June) — robust success parsing with regression tests</td>
+      <td>+2 tests</td>
+    </tr>
   </tbody>
 </table>
 
@@ -442,22 +518,31 @@
 <div class="grid-2">
 
   <div class="card">
-    <h3>Group 2 — Docs (~1 turn)</h3>
+    <h3>PR #3 — ADR 0006 completion <span class="tag warn">open</span></h3>
     <ul>
-      <li>README "Agentic mode" section (ISC-28)</li>
-      <li>ADR 0003 — per-broker MCPs + router + per-leg-tokens (ISC-29)</li>
-      <li>30-line copy-paste demo (ISC-37)</li>
-      <li>5-min fresh-clone-to-dry-run walkthrough (ISC-38)</li>
+      <li>All six migration steps shipped on this branch; full suite green (301 passing)</li>
+      <li>Docs pass (this page + <code>docs/architecture.html</code>) is the remaining item before merge</li>
+      <li>No further code changes planned unless review surfaces something</li>
     </ul>
   </div>
 
   <div class="card">
-    <h3>Verification ratifications (~6 ISCs)</h3>
+    <h3>Agent-operated RSA engine — Plan 2 (PAI-side)</h3>
     <ul>
-      <li>Brokers package import test (ISC-2)</li>
-      <li>Explicit anti-token tests (ISC-17, 18)</li>
-      <li>Legacy CLI/TUI smoke pins (ISC-25, 26)</li>
-      <li>Anti-broker-calls-in-tests check (ISC-33, 36)</li>
+      <li><code>RsaTrader</code> PAI skill (playbook) — not started</li>
+      <li>Scheduled routine (1–2x daily) + notification/approval flow, Phase 1 human-gated buys — not started</li>
+      <li>Pulse module polling <code>python3 main.py status</code> — not started (repo-side JSON emission already ships)</li>
+      <li>Auto-execute flag (Phase 2, earned after a clean Phase 1 track record) — deliberately deferred</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h3>Open questions from ADR 0006</h3>
+    <ul>
+      <li>Thread <code>account_id</code> through <code>TradeFn</code> — the real fix for account-scoped dispatch (today: guard-railed, not fully realized)</li>
+      <li>Fill-vs-marking crash window in <code>automate</code> — persisted <code>executing</code> state before dispatch, not yet built</li>
+      <li>Should <code>run_sweep</code>/<code>sell_arrived</code> move to an <code>rsa/</code> service layer instead of living on the engine?</li>
+      <li>Package name bikeshed: <code>execution/</code> (current) vs <code>core/</code></li>
     </ul>
   </div>
 
@@ -466,16 +551,7 @@
     <ul>
       <li>Verify session shape for: Robinhood, Schwab, Webull, Wells Fargo</li>
       <li>Wire <code>list_accounts_fn</code> on each as credentials allow</li>
-      <li>Fennel is the canonical pattern; others follow incrementally</li>
-    </ul>
-  </div>
-
-  <div class="card">
-    <h3>RSA workflow polish</h3>
-    <ul>
-      <li>F3 v0.5 — surface skipped/error legs in <code>sell_arrived</code> response</li>
-      <li>Sell-on-arrived integration test against legacy sweep state schema</li>
-      <li>Optional: confirmation-token TTL warning before expiry</li>
+      <li>Fennel is pinned <code>multi_account=False</code> until <code>TradeFn</code> gains an account parameter</li>
     </ul>
   </div>
 
@@ -484,15 +560,18 @@
 <h2>The mission statement</h2>
 <p style="font-style: italic; color: var(--muted); border-left: 3px solid var(--accent); padding-left: 16px">
   Code enforces safety; prompts do not. The agent decides which RSA opportunity
-  to enter, when to sweep, when a leg is ready to sell. The code decides
-  dollar limits, intent-hash binding, single-use tokens, the freeze list,
-  circuit breakers, audit-log integrity, and which actions require explicit
-  principal confirmation. The router is the agent's surface — one fan-out tool
-  across 13 brokers is strictly more useful than 13 separate broker MCPs.
+  to enter, when to sweep, when a leg is ready to sell — and now, which
+  calendar signal is worth playing. The code decides dollar limits,
+  intent-hash binding, single-use tokens, the freeze list, circuit breakers,
+  audit-log integrity, and which actions require explicit principal
+  confirmation. The <code>ExecutionEngine</code> is the core every surface —
+  human CLI, TUI, or agent — sits on top of as a thin adapter: one fan-out
+  path across 13 brokers, not thirteen separate implementations of the same
+  safety rules.
 </p>
 
 <div class="footer">
-  Generated 2026-05-27 — see <code>ISA.md</code> for the live system-of-record artifact
+  Generated 2026-05-27, updated 2026-07-02 — see <code>ISA.md</code> for the live system-of-record artifact
   and <code>docs/agentic/RSA_AGENT.md</code> for the agent workflow.
 </div>
 
