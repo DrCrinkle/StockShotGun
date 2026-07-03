@@ -16,7 +16,8 @@ src/
 ├── cli_runtime.py     # ExitCode, CliRuntimeError, ExecutionContext, JSON response envelopes
 ├── automation_recap.py# SQLite recap ingestion + due-buy/due-sell extraction helpers
 ├── setup.py           # Interactive credential wizard writing .env entries
-├── agentic/           # Router + per-broker MCP servers + cli_bridge (gate/execute path)
+├── execution/         # ExecutionEngine (engine.py) — the execution core; adapters sit on top (ADR 0006)
+├── agentic/           # FastMCP tool registration + subprocess broker transport (thin adapter over execution/)
 ├── enforcement/       # Order enforcement gate: limits, freeze, circuit breaker, audit
 ├── brokers/           # Broker adapter layer (see src/brokers/AGENTS.md)
 └── tui/               # urwid terminal interface (see src/tui/AGENTS.md)
@@ -26,11 +27,11 @@ src/
 | Task | Location | Notes |
 |------|----------|-------|
 | Add/change CLI action | `main.py` (`run_cli` dispatch) + `cli/` handler | Keep action routing + output envelope behavior aligned |
-| Buy/sell flow | `cli/trade.py` (`run_trade`) | Pre-flight → gate → execute via Router |
+| Buy/sell flow | `cli/trade.py` (`run_trade`) | `engine.validate_targets` → `engine.propose_order` → `engine.execute_order` |
 | Batch order file flow | `cli/batch.py` (`_validate_batch_orders`, `_run_batch_from_file`) | Validates schema and broker selection before execution |
 | Automation from recap | `cli/automate.py` (`_run_automate_from_recap`) + `automation_recap.py` | Recap parsing + due-signal execution path |
 | Runtime envelope/errors | `cli_runtime.py` | Source of truth for machine-readable CLI responses |
-| Order execution + gating | `agentic/cli_bridge.py` | `preflight_validate` → `apply_main_py_gate*` → `execute_via_router` |
+| Order execution + gating | `execution/engine.py` (`ExecutionEngine`), via `cli/common.py`'s `get_engine()` | `validate_targets` → `propose_order` → `execute_order`; enforcement gate runs inside propose/execute |
 | Setup credentials | `setup.py` | Writes `.env`; not packaging/build setup |
 
 ## CONVENTIONS (SRC-SPECIFIC)
@@ -38,7 +39,7 @@ src/
 - Route all CLI JSON output through `build_response_envelope` helpers.
 - Respect `ExecutionContext`: request IDs, non-interactive mode, output mode, and log file path.
 - When non-interactive mode is set, raise `CliRuntimeError` instead of blocking for user input.
-- Execute orders through the gate/Router path (`cli_bridge.preflight_validate` → `apply_main_py_gate*` → `execute_via_router`); the gate call MUST precede execution. Do not call broker SDKs directly from handlers.
+- Execute orders through the engine (`engine.validate_targets` → `engine.propose_order` → `engine.execute_order`, obtained via `cli/common.get_engine()`); propose/execute run the enforcement gate internally. A propose-time rejection raises `GateError`; an execute-time rejection returns a dict with `rejected: True` (`reason`/`detail`) instead of raising — callers must check `execution.get("rejected")` and raise `CliRuntimeError` themselves (see `cli/trade.py`). Do not call broker SDKs directly from handlers. See `docs/adr/0006-execution-engine-as-core.md`.
 - Keep broker function lookup centralized through `brokers/registry.py` (the single source of truth; ADR 0004). Resolve via `registry.resolve_trade/holdings/validate` or `registry.broker_functions_map()`.
 
 ## ANTI-PATTERNS (SRC LAYER)

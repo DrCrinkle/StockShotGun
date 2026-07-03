@@ -23,6 +23,64 @@
 
 ---
 
+## Execution deviations (as built)
+
+This plan shipped with a few departures from the task bodies below. The task
+steps are left as originally written (they're still an accurate record of the
+TDD process); this section is the correction layer.
+
+- **Rejection-branch addendum on every caller.** The task bodies describe the
+  happy path (propose → execute → render) but under-specify the rejection
+  path. As built, `cli/trade.py`, `cli/batch.py`, and `cli/automate.py` all
+  follow the same contract: a propose-time `GateError` and an execute-time
+  `execution.get("rejected")` both raise `CliRuntimeError` with
+  `ExitCode.FULL_BROKER_FAILURE` (or `gate_error_to_exit_code(gate_err)` for
+  the propose-time case), rendering zeros (`successful=0, failed=0`) rather
+  than reporting a rejection as any kind of success. `automate`'s rejection
+  additionally carries `completed_results`/`completed_orders` in
+  `details` so already-executed orders earlier in the same batch aren't
+  silently dropped from JSON error output.
+- **TUI rejection display parity, non-raising.** `tui/app.py` deliberately
+  breaks from the CLI/batch/automate pattern above: it must never raise on a
+  `rejected=True` execution (an uncaught exception would crash the TUI event
+  loop mid-session). Both entry points (`submit_all_orders`,
+  `retry_timed_out_brokers`) instead render the rejection as a `✗ Order
+  rejected by enforcement gate (...)` status line, matching the wording used
+  elsewhere, and continue running.
+- **Two-phase propose-all-then-execute-all in `automate`, with incremental
+  signal marking (mid-batch abort double-trade fix).** `cli/automate.py`
+  proposes every generated order first (Phase 1) — the first `GateError`
+  aborts the whole batch before anything executes, preserving
+  `apply_main_py_gate_batch`'s original all-or-nothing propose semantics —
+  then executes every gated proposal in order (Phase 2). Each order's
+  signal(s) are marked executed *immediately* after that order completes,
+  not in bulk after the full batch: a mid-batch abort on a later order must
+  not leave an earlier, already-filled order's signal sitting in `'pending'`
+  (it would re-execute — a double-trade — on the next `automate` run).
+  Dry-run rehearsals place nothing anywhere and therefore never mark
+  anything.
+- **Circular-import fix: PEP 562 interim, structural fix in Task 7.** Early
+  in the migration, `execution/engine.py` re-exported `ExecutionEngine` from
+  `agentic/router/_server.py` (a documented, temporary inversion — see ADR
+  0006 migration step 1). Task 7 relocated the class body itself into
+  `execution/engine.py`, which is the structural fix: the interim
+  re-export/shim is gone, and `agentic/router/_server.py` now imports
+  `ExecutionEngine` from `execution.engine` (never the reverse), completing
+  the import-direction flip the ADR calls for.
+- **Dry-run rehearsal replacing readiness checks (trade/batch/automate).**
+  All three surfaces retired their credentials-only `_build_dry_run_readiness`
+  short-circuit; `--dry-run` now flows through the same
+  `propose_order`/`execute_order` calls as a live order, both with
+  `dry_run=True`, so limits/freeze/reconciliation/token-minting all run and
+  nothing is placed. `_build_dry_run_readiness` has no remaining callers and
+  was deleted.
+- **`gate_error_to_exit_code` relocated to `cli/common.py`.** It originally
+  lived in `agentic/cli_bridge.py`; all three live callers (`cli/trade.py`,
+  `cli/batch.py`, `cli/automate.py`) now import it from `cli/common.py`,
+  which survives `cli_bridge.py`'s deletion in Task 6.
+
+---
+
 ## File structure
 
 | File | Change |

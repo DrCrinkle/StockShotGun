@@ -42,12 +42,14 @@ The application supports both CLI and TUI (Terminal User Interface) modes for fl
 - If arguments provided → CLI mode
 - If no arguments → TUI mode
 - Handles broker selection via `--broker` flag or defaults to all configured brokers
-- Uses `order_processor` for concurrent order execution
+- Dispatches to `cli/` handlers, which execute orders through `ExecutionEngine` (see below)
 
-**order_processor.py** - Shared order processing (used by both CLI and TUI)
-- `OrderBatchProcessor` - Processes orders in batches with concurrent broker execution
-- Handles error reporting per broker
-- Provides progress tracking and execution summaries
+**execution/engine.py** - `ExecutionEngine`, the execution core (ADR 0006)
+- Every surface — CLI (`trade`/`batch`/`automate`), TUI, and the agentic/MCP router — is a thin adapter over this one engine
+- Core API: `propose_order(...)` → `execute_order(proposal_id, ...)` (two-phase propose/execute), plus `validate_targets(...)` for pre-flight broker validation
+- Adapters reach it via `cli/common.py`'s `get_engine()` (lazy singleton) and render its native per-leg result via `render_execution_result()` / `aggregate_execution_results()`
+- `order_processor.py` is retired — the `OrderBatchProcessor` direct-broker fan-out is gone; only a `current_broker` context var survives (consumed by `tui/response_handler.py` to label output)
+- Full history and rationale: `docs/adr/0006-execution-engine-as-core.md` (Accepted)
 
 **setup.py** - Interactive credential setup wizard
 - Validates existing credentials before prompting for new ones
@@ -55,13 +57,14 @@ The application supports both CLI and TUI (Terminal User Interface) modes for fl
 
 ### Key Design Patterns
 
-1. **Async-First Architecture**: All broker operations use `asyncio` for concurrent execution. The `OrderBatchProcessor` handles concurrent execution across multiple brokers, ensuring trades are submitted simultaneously rather than sequentially.
+1. **Async-First Architecture**: All broker operations use `asyncio` for concurrent execution. `ExecutionEngine.execute_order` fans out per-account (not just per-broker — a broker with taxable + IRA accounts submits both legs concurrently), so trades are submitted simultaneously rather than sequentially.
 
-2. **Centralized Order Processing**: Both CLI and TUI modes use `order_processor.OrderBatchProcessor` for order execution. This provides:
-   - Concurrent broker execution (all brokers execute in parallel)
-   - Batch processing for multiple orders
-   - Consistent error handling and status reporting
-   - Progress tracking across all operations
+2. **Engine-as-Core, Adapters at the Edge (ADR 0006)**: CLI, TUI, and the agentic/MCP router are all thin clients of the same `ExecutionEngine` (`execution/engine.py`) — one propose path, one execute path, one result type. This provides:
+   - Real per-account fan-out for every caller, not just agents
+   - `--dry-run` as a full-pipeline rehearsal: `propose_order(dry_run=True)` + `execute_order(dry_run=True)` exercises limits, freeze list, reconciliation, and token minting with no orders placed — not a credentials-only readiness check
+   - Consistent error handling and status reporting via `render_execution_result` / `aggregate_execution_results` (`cli/common.py`)
+   - Enforcement gates (limits, freeze, circuit breaker, audit) run once, in `enforcement/`, for every surface
+   - See `docs/adr/0006-execution-engine-as-core.md` for the full before/after and migration history
 
 3. **Centralized Configuration**: `brokers/registry.py` is the single source of truth for broker identity and function bindings (ADR 0004). `BrokerConfig`, the session manager, the CLI/TUI function maps, and the agentic router all derive from it. When adding a new broker:
    - Create the broker module with trade/holdings/validate/get_session functions
@@ -70,7 +73,7 @@ The application supports both CLI and TUI (Terminal User Interface) modes for fl
 
 4. **Session Management**: The `BrokerSessionManager` handles authentication and session lifecycle. Sessions are lazy-loaded and cached to minimize login overhead.
 
-5. **Error Handling**: Individual broker failures don't halt the entire operation. The `OrderBatchProcessor` catches exceptions per broker and reports them independently, allowing successful brokers to complete while failed ones are logged.
+5. **Error Handling**: Individual broker (or per-account leg) failures don't halt the entire operation. `ExecutionEngine.execute_order` reports per-leg `ok`/`reason` results independently; `render_execution_result` renders those into `successful`/`failed`/`skipped` counts per leg, so some legs can complete while others fail without aborting the batch.
 
 ### Concurrency & Async Patterns
 
