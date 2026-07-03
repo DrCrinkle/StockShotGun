@@ -250,8 +250,19 @@ def test_static_main_py_uses_execute_via_router():
     assert total >= 3, f"cli/*.py have only {total} engine.execute_order calls"
 
 
-def test_static_tui_uses_execute_via_router():
+def test_static_tui_uses_engine_execute_order():
+    """Positive: confirm the TUI's `submit_orders_via_engine` helper calls
+    `engine.execute_order` directly — the TUI was repointed off the retired
+    `agentic.cli_bridge.execute_via_router` bridge function onto the
+    ExecutionEngine in ADR 0006 Task 5. `submit_all_orders` and
+    `retry_timed_out_brokers` both call the shared helper (2 call sites),
+    which itself calls `engine.execute_order` once (1 definition site)."""
     tui_src = (ROOT / "src" / "tui" / "app.py").read_text(encoding="utf-8")
-    matches = re.findall(r"execute_via_router\(", tui_src)
-    # submit_all_orders + retry_timed_out_brokers = 2 sites
-    assert len(matches) >= 2, f"tui has only {len(matches)} execute_via_router calls"
+    assert "execute_via_router(" not in tui_src, (
+        "tui/app.py must not call the retired cli_bridge.execute_via_router"
+    )
+    helper_matches = re.findall(r"submit_orders_via_engine\(", tui_src)
+    assert len(helper_matches) >= 2, (
+        f"tui has only {len(helper_matches)} submit_orders_via_engine call sites"
+    )
+    assert "engine.execute_order(" in tui_src

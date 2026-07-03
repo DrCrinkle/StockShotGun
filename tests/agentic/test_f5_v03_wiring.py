@@ -149,31 +149,45 @@ def test_static_main_py_automate_path_is_gated():
 
 
 def test_static_tui_submit_orders_path_is_gated():
-    """TUI's submit_all_orders MUST gate before process_orders."""
+    """TUI's submit_all_orders MUST propose (gate) via the ExecutionEngine
+    before executing (ADR 0006 Task 5 repointed the TUI off the retired
+    `agentic.cli_bridge` batch-gate/router-execute functions onto
+    `submit_orders_via_engine`, which calls `engine.propose_order` for
+    every order before calling `engine.execute_order` for any of them)."""
     tui_src = (ROOT / "src" / "tui" / "app.py").read_text(encoding="utf-8")
     fn_start = tui_src.find("async def submit_all_orders(")
     assert fn_start > 0
     # The next `async def` or `def` at the same indent terminates the function.
     fn_end = re.search(r"\n    (?:async )?def ", tui_src[fn_start + 1 :])
     body = tui_src[fn_start : fn_start + 1 + (fn_end.start() if fn_end else 0)]
-    assert "apply_main_py_gate_batch(" in body
-    gate_pos = body.find("apply_main_py_gate_batch(")
-    op_pos = body.find("execute_via_router(")
-    assert op_pos > 0
-    assert gate_pos < op_pos
+    assert "submit_orders_via_engine(" in body
 
 
 def test_static_tui_retry_path_is_gated():
-    """TUI's retry_timed_out_brokers MUST gate before process_orders."""
+    """TUI's retry_timed_out_brokers MUST propose (gate) via the
+    ExecutionEngine before executing — same helper as submit_all_orders."""
     tui_src = (ROOT / "src" / "tui" / "app.py").read_text(encoding="utf-8")
     fn_start = tui_src.find("async def retry_timed_out_brokers(")
     assert fn_start > 0
     fn_end = re.search(r"\n    (?:async )?def ", tui_src[fn_start + 1 :])
     body = tui_src[fn_start : fn_start + 1 + (fn_end.start() if fn_end else 0)]
-    assert "apply_main_py_gate_batch(" in body
-    gate_pos = body.find("apply_main_py_gate_batch(")
-    op_pos = body.find("execute_via_router(")
-    assert op_pos > 0
+    assert "submit_orders_via_engine(" in body
+
+
+def test_static_submit_orders_via_engine_proposes_before_executing():
+    """The shared helper itself must propose every order before executing
+    any of them — this is where the fail-fast-before-fan-out contract now
+    lives (it used to be `apply_main_py_gate_batch` -> `execute_via_router`
+    at each call site; ADR 0006 Task 5 centralizes it in one helper)."""
+    tui_src = (ROOT / "src" / "tui" / "app.py").read_text(encoding="utf-8")
+    fn_start = tui_src.find("async def submit_orders_via_engine(")
+    assert fn_start > 0
+    fn_end = re.search(r"\nasync def |\ndef ", tui_src[fn_start + 1 :])
+    body = tui_src[fn_start : fn_start + 1 + (fn_end.start() if fn_end else 0)]
+    assert "engine.propose_order(" in body
+    assert "engine.execute_order(" in body
+    gate_pos = body.find("engine.propose_order(")
+    op_pos = body.find("engine.execute_order(")
     assert gate_pos < op_pos
 
 
