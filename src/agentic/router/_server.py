@@ -25,7 +25,7 @@ from execution.engine import (  # noqa: F401 — re-exported for back-compat
     load_all_broker_specs,
     sanitize_holdings,
 )
-from enforcement import gate_order  # noqa: F401 — re-exported; tests monkeypatch this name
+from enforcement import gate_order  # noqa: F401 — back-compat re-export only; the engine's call site reads execution.engine.gate_order
 
 
 def build_router_fastmcp_server(router: ExecutionEngine) -> Any:
