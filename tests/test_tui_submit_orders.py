@@ -110,6 +110,43 @@ def _rejected_execution(reason: str = "breaker_open", detail: str = "circuit ope
     }
 
 
+def _failed_leg_execution(
+    ticker: str,
+    side: str,
+    brokers: list[str],
+    *,
+    reason: str | None = "broker_error",
+    detail: str | None = "insufficient funds",
+) -> dict[str, Any]:
+    """A NON-rejected execution whose individual legs came back ``ok=False``.
+
+    Distinct from ``_rejected_execution`` (gate refused the whole order before
+    any leg dispatched, ``results=[]``): here the order was executed and each
+    broker leg failed on its own, carrying a per-leg ``reason``/``detail``.
+    This is the shape the per-leg failure diagnostics (Fix 2a) read from.
+    """
+    return {
+        "ticker": ticker,
+        "side": side,
+        "qty": 1,
+        "dry_run": False,
+        "results": [
+            {
+                "broker": b,
+                "account_id": "primary",
+                "ok": False,
+                "dry_run": False,
+                "idempotency_key": f"idem-{b}",
+                "reason": reason,
+                "detail": detail,
+            }
+            for b in brokers
+        ],
+        "success_count": 0,
+        "failure_count": len(brokers),
+    }
+
+
 def _order(ticker: str, brokers: list[str], action: str = "buy") -> dict[str, Any]:
     return {
         "action": action,
@@ -232,3 +269,135 @@ def test_mixed_batch_one_ok_one_rejected_aggregates_correctly():
     assert len(results["statuses"]) == 2
     assert results["statuses"][0]["successful"] == ["Robinhood"]
     assert sorted(results["statuses"][1]["failed"]) == ["Fennel", "Public"]
+
+
+def test_rejected_first_then_success_continues_execution():
+    """Regression pin: a rejected order EARLIER in the batch must NOT abort
+    execution of orders that follow it. The rejected order is placed FIRST so
+    that a `break`-instead-of-`continue` regression in the execute loop is
+    caught — with the rejection last (as in the mixed-batch test above) an
+    early exit would leave nothing unexecuted to prove the loop kept going.
+
+    Uses the engine's own `calls` recorder as a call-recording execution stub:
+    we assert the SECOND (successful) order's `execute_order` actually ran, not
+    merely that its status appears in the aggregate.
+    """
+    orders = [
+        _order("TSLA", ["Robinhood"], action="sell"),  # rejected, FIRST
+        _order("AAPL", ["Public", "Fennel"]),           # ok, must still run
+    ]
+    engine = _FakeEngine(
+        executions={
+            "TSLA": _rejected_execution(reason="breaker_open", detail="circuit open"),
+            "AAPL": _ok_execution("AAPL", "buy", ["Public", "Fennel"]),
+        }
+    )
+    messages: list[str] = []
+
+    results = _run(
+        submit_orders_via_engine(orders, engine=engine, progress_fn=messages.append)
+    )
+
+    # The successful order's execution actually ran despite the earlier
+    # rejection — call-recording proof, not just a status snapshot.
+    assert "execute:prop-TSLA-1" in engine.calls
+    assert "execute:prop-AAPL-2" in engine.calls
+
+    # Both the rejected and the successful order's statuses are present.
+    assert len(results["statuses"]) == 2
+    tsla_status = next(s for s in results["statuses"] if s["ticker"] == "TSLA")
+    aapl_status = next(s for s in results["statuses"] if s["ticker"] == "AAPL")
+    assert sorted(tsla_status["failed"]) == ["Robinhood"]
+    assert tsla_status["successful"] == []
+    assert sorted(aapl_status["successful"]) == ["Fennel", "Public"]
+
+    # Aggregation reflects BOTH orders: 2 succeeded (AAPL legs) + 1 failed
+    # (TSLA's single rejected broker).
+    assert results["successful"] == 2
+    assert results["failed"] == 1
+
+
+def test_progress_fn_raising_never_aborts_batch():
+    """Fix 2b: UI progress callbacks are best-effort — a `progress_fn` that
+    throws on EVERY call must never abort order execution. Every order in the
+    batch must still execute and the aggregate result must be complete.
+    """
+    orders = [
+        _order("TSLA", ["Robinhood"]),
+        _order("AAPL", ["Public", "Fennel"]),
+    ]
+    engine = _FakeEngine(
+        executions={
+            "TSLA": _ok_execution("TSLA", "buy", ["Robinhood"]),
+            "AAPL": _ok_execution("AAPL", "buy", ["Public", "Fennel"]),
+        }
+    )
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("UI callback exploded")
+
+    results = _run(
+        submit_orders_via_engine(orders, engine=engine, progress_fn=_boom)
+    )
+
+    # Every order executed despite the throwing callback (call-recording proof).
+    assert "execute:prop-TSLA-1" in engine.calls
+    assert "execute:prop-AAPL-2" in engine.calls
+
+    # Aggregate is complete: all expected statuses present, counts correct.
+    assert results["successful"] == 3
+    assert results["failed"] == 0
+    assert results["skipped"] == 0
+    assert len(results["statuses"]) == 2
+    assert sorted(results["statuses"][0]["successful"]) == ["Robinhood"]
+    assert sorted(results["statuses"][1]["successful"]) == ["Fennel", "Public"]
+
+
+def test_per_leg_failure_message_includes_reason_and_detail():
+    """Fix 2a: per-leg failure messages restore the old bridge's
+    `✗ {broker}: {reason} - {detail}` diagnostics instead of a bare `failed`.
+    """
+    orders = [_order("TSLA", ["Robinhood"])]
+    engine = _FakeEngine(
+        executions={
+            "TSLA": _failed_leg_execution(
+                "TSLA", "buy", ["Robinhood"],
+                reason="broker_error", detail="insufficient funds",
+            )
+        }
+    )
+    messages: list[str] = []
+
+    results = _run(
+        submit_orders_via_engine(orders, engine=engine, progress_fn=messages.append)
+    )
+
+    assert results["failed"] == 1
+    assert any(
+        "Robinhood: broker_error - insufficient funds" in m for m in messages
+    )
+
+
+def test_per_leg_failure_message_falls_back_to_failed_when_no_reason():
+    """Fix 2a fallback: when a failed leg carries neither reason nor detail,
+    the message degrades gracefully to `✗ {broker}: failed` — no dangling
+    `- ` and no `None` text.
+    """
+    orders = [_order("TSLA", ["Robinhood"])]
+    engine = _FakeEngine(
+        executions={
+            "TSLA": _failed_leg_execution(
+                "TSLA", "buy", ["Robinhood"], reason=None, detail=None,
+            )
+        }
+    )
+    messages: list[str] = []
+
+    _run(submit_orders_via_engine(orders, engine=engine, progress_fn=messages.append))
+
+    failure_msgs = [m for m in messages if "Robinhood" in m and "✗" in m]
+    assert failure_msgs, "expected a per-leg failure message for Robinhood"
+    assert any(m.rstrip().endswith("Robinhood: failed") for m in failure_msgs)
+    for m in failure_msgs:
+        assert "None" not in m
+        assert not m.rstrip().endswith("-")

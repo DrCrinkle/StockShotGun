@@ -21,6 +21,7 @@ from tui.input_handler import (
     restore_original_input,
 )
 from cli.common import (
+    _leg_label,
     aggregate_execution_results,
     get_engine,
     render_execution_result,
@@ -64,6 +65,18 @@ async def submit_orders_via_engine(
       synthetic all-failed status is built here rather than in the shared
       renderer.
     """
+    def _progress(*args: Any, **kwargs: Any) -> None:
+        """Best-effort UI update. The progress callback is purely cosmetic
+        (it writes to the TUI response panel); a throwing callback must NEVER
+        abort order execution or corrupt the aggregate result, so every
+        invocation is swallowed — mirroring the retired bridge's try/except
+        around each `progress_fn` call.
+        """
+        try:
+            progress_fn(*args, **kwargs)
+        except Exception:
+            pass
+
     proposals: list[dict[str, Any]] = []
     for order in orders:
         proposal = await engine.propose_order(
@@ -83,7 +96,7 @@ async def submit_orders_via_engine(
         qty = order["quantity"]
         order_brokers = [str(b) for b in order.get("selected_brokers", [])]
 
-        progress_fn(
+        _progress(
             f"[tui] executing proposal {proposal['proposal_id'][:12]}… for "
             f"{action} {qty} {ticker} ({proposal['leg_count']} leg(s))"
         )
@@ -94,7 +107,7 @@ async def submit_orders_via_engine(
         )
 
         if execution.get("rejected"):
-            progress_fn(
+            _progress(
                 f"✗ Order rejected by enforcement gate "
                 f"({execution.get('reason')}): {execution.get('detail')}"
             )
@@ -116,11 +129,27 @@ async def submit_orders_via_engine(
             }
         else:
             rendered = render_execution_result(execution)
-            for status in rendered["statuses"]:
-                for broker in status["successful"]:
-                    progress_fn(f"✓ {broker}: placed")
-                for broker in status["failed"]:
-                    progress_fn(f"✗ {broker}: failed")
+            # Emit per-leg progress from the raw execution legs (not the
+            # rendered status, which collapses legs to bare broker labels and
+            # discards each leg's reason/detail). This restores the retired
+            # bridge's `✗ {broker}: {reason} - {detail}` diagnostics, with a
+            # graceful fallback to `✗ {broker}: failed` when a failed leg
+            # carries neither reason nor detail (no dangling `- ` or `None`).
+            for leg in execution.get("results") or []:
+                label = _leg_label(leg.get("broker", ""), leg.get("account_id"))
+                if leg.get("ok"):
+                    _progress(f"✓ {label}: {leg.get('detail') or 'placed'}")
+                else:
+                    reason = leg.get("reason")
+                    detail = leg.get("detail")
+                    if reason and detail:
+                        _progress(f"✗ {label}: {reason} - {detail}")
+                    elif reason:
+                        _progress(f"✗ {label}: {reason}")
+                    elif detail:
+                        _progress(f"✗ {label}: {detail}")
+                    else:
+                        _progress(f"✗ {label}: failed")
 
         rendered_results.append(rendered)
 
