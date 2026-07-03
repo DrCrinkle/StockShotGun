@@ -1,6 +1,7 @@
 """Integration: pre-flight validation actually drops a failing broker BEFORE
-the enforcement gate in the real (non-mock) trade path, and surfaces it as
-skipped. Guards against the re-homed pre-flight being silently bypassed.
+the engine propose/execute path, and surfaces it as skipped. Guards against
+the re-homed pre-flight (now `engine.validate_targets`, ADR 0006) being
+silently bypassed.
 """
 
 from __future__ import annotations
@@ -16,10 +17,39 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-def test_failing_broker_dropped_before_gate(monkeypatch):
-    gate_calls: list[list[str]] = []
-    exec_orders: list[dict] = []
+class _FakeEngine:
+    """Stub ExecutionEngine recording validate/propose/execute calls."""
 
+    def __init__(self, *, validated, skipped, execution):
+        self._validated = validated
+        self._skipped = skipped
+        self._execution = execution
+        self.validate_calls: list[dict] = []
+        self.propose_calls: list[dict] = []
+        self.execute_calls: list[dict] = []
+
+    async def validate_targets(self, **kwargs):
+        self.validate_calls.append(kwargs)
+        return self._validated, self._skipped
+
+    async def propose_order(self, **kwargs):
+        self.propose_calls.append(kwargs)
+        return {
+            "proposal_id": "p1",
+            "estimated_usd": 1.0,
+            "leg_count": len(kwargs.get("brokers") or []),
+            "accounts_by_broker": {
+                b: ["primary"] for b in (kwargs.get("brokers") or [])
+            },
+            "skipped_brokers": [],
+        }
+
+    async def execute_order(self, **kwargs):
+        self.execute_calls.append(kwargs)
+        return self._execution
+
+
+def test_failing_broker_dropped_before_gate(monkeypatch):
     async def ok_validate(*a):
         return (True, "")
 
@@ -37,43 +67,33 @@ def test_failing_broker_dropped_before_gate(monkeypatch):
     async def fake_init(brokers):
         return None
 
-    async def fake_gate(*, action, quantity, ticker, price, brokers_to_use):
-        gate_calls.append(list(brokers_to_use))
-        return {
-            "proposal_id": "p1",
-            "estimated_usd": 1.0,
-            "leg_count": len(brokers_to_use),
-            "skipped_brokers": [],
-        }
-
-    async def fake_exec(*, proposals, orders, dry_run, progress_fn=None):
-        exec_orders.extend(orders)
-        return {
-            "successful": 1,
-            "failed": 0,
-            "skipped": 0,
-            "statuses": [
-                {
-                    "ticker": "ABC",
-                    "action": "sell",
-                    "successful": ["Good"],
-                    "failed": [],
-                    "skipped": [],
-                }
+    engine = _FakeEngine(
+        validated=["Good"],
+        skipped=[("Bad", "Insufficient shares (0 available)")],
+        execution={
+            "ticker": "ABC",
+            "side": "sell",
+            "qty": 5,
+            "dry_run": False,
+            "results": [
+                {"broker": "Good", "account_id": "primary", "ok": True,
+                 "dry_run": False, "idempotency_key": "k1", "reason": None,
+                 "detail": "placed"},
             ],
-        }
+            "success_count": 1,
+            "failure_count": 0,
+        },
+    )
 
-    async def fake_record(**kwargs):
-        return None
+    async def fake_get_engine():
+        return engine
 
     monkeypatch.setattr(trade_mod, "BROKER_FUNCTIONS", fake_broker_functions)
     monkeypatch.setattr(
         trade_mod, "session_manager",
         SimpleNamespace(initialize_selected_sessions=fake_init),
     )
-    monkeypatch.setattr(trade_mod, "apply_main_py_gate", fake_gate)
-    monkeypatch.setattr(trade_mod, "execute_via_router", fake_exec)
-    monkeypatch.setattr(trade_mod, "record_main_py_outcome", fake_record)
+    monkeypatch.setattr(trade_mod, "get_engine", fake_get_engine)
 
     args = SimpleNamespace(
         action="sell", quantity=5, ticker="ABC", price=1.0, broker=["Good", "Bad"]
@@ -84,10 +104,9 @@ def test_failing_broker_dropped_before_gate(monkeypatch):
 
     exit_code, data = _run(run_trade(args, parser=None, context=context))
 
-    # The gate ran with ONLY the validated broker — "Bad" was dropped pre-gate.
-    assert gate_calls == [["Good"]]
-    # The executed order carried only the survivor.
-    assert exec_orders and exec_orders[0]["selected_brokers"] == ["Good"]
+    # The engine was proposed to with ONLY the validated broker — "Bad" was
+    # dropped pre-propose.
+    assert engine.propose_calls and engine.propose_calls[0]["brokers"] == ["Good"]
     # "Bad" is reported as a validation skip, folded into results.
     assert data["validation_skipped"] == [
         {"broker": "Bad", "reason": "Insufficient shares (0 available)"}
@@ -97,8 +116,6 @@ def test_failing_broker_dropped_before_gate(monkeypatch):
 
 
 def test_all_brokers_failing_skips_gate_entirely(monkeypatch):
-    gate_calls: list[list[str]] = []
-
     async def bad_validate(*a):
         return (False, "nope")
 
@@ -108,9 +125,10 @@ def test_all_brokers_failing_skips_gate_entirely(monkeypatch):
     async def fake_init(brokers):
         return None
 
-    async def fake_gate(**kwargs):
-        gate_calls.append(list(kwargs.get("brokers_to_use", [])))
-        return {"proposal_id": "p", "estimated_usd": 0.0, "leg_count": 0, "skipped_brokers": []}
+    engine = _FakeEngine(validated=[], skipped=[("Bad", "nope")], execution={})
+
+    async def fake_get_engine():
+        return engine
 
     monkeypatch.setattr(
         trade_mod, "BROKER_FUNCTIONS",
@@ -120,7 +138,7 @@ def test_all_brokers_failing_skips_gate_entirely(monkeypatch):
         trade_mod, "session_manager",
         SimpleNamespace(initialize_selected_sessions=fake_init),
     )
-    monkeypatch.setattr(trade_mod, "apply_main_py_gate", fake_gate)
+    monkeypatch.setattr(trade_mod, "get_engine", fake_get_engine)
 
     args = SimpleNamespace(
         action="sell", quantity=5, ticker="ABC", price=1.0, broker=["Bad"]
@@ -129,7 +147,7 @@ def test_all_brokers_failing_skips_gate_entirely(monkeypatch):
 
     exit_code, data = _run(run_trade(args, parser=None, context=context))
 
-    # Gate was never called — nothing survived pre-flight.
-    assert gate_calls == []
+    # propose_order was never called — nothing survived pre-flight.
+    assert engine.propose_calls == []
     assert data["results"]["successful"] == 0
     assert data["validation_skipped"] == [{"broker": "Bad", "reason": "nope"}]

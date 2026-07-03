@@ -1,15 +1,10 @@
-"""Buy/sell trade handler extracted from main.run_cli. Gates the order through
-the enforcement gate, then executes it via the Router."""
+"""Buy/sell trade handler extracted from main.run_cli. Proposes and executes
+the order through the ExecutionEngine (ADR 0006) — one propose path, one
+execute path, shared by the CLI, TUI, operator CLI, and MCP server."""
 
 from typing import Any
 
-from agentic.cli_bridge import (
-    apply_main_py_gate,
-    execute_via_router,
-    gate_error_to_exit_code,
-    preflight_validate,
-    record_main_py_outcome,
-)
+from agentic.cli_bridge import gate_error_to_exit_code
 from enforcement import GateError
 from cli_runtime import (  # type: ignore[import-untyped]
     CliRuntimeError,
@@ -25,9 +20,10 @@ from brokers.registry import broker_functions_map  # type: ignore[import-untyped
 BROKER_FUNCTIONS = broker_functions_map()
 
 from cli.common import (
-    _build_dry_run_readiness,
     _mock_batch_results,
     _raise_parser_error,
+    get_engine,
+    render_execution_result,
 )
 
 
@@ -60,13 +56,8 @@ async def run_trade(args, parser, context) -> tuple[ExitCode, dict[str, Any]]:
                 ExitCode.CONFIG_CREDENTIAL_MISSING,
             )
 
-    # Build trade functions dict for order processor
-    trade_functions = {
-        broker_name: BROKER_FUNCTIONS[broker_name]["trade"]
-        for broker_name in brokers_to_use
-        if broker_name in BROKER_FUNCTIONS and "trade" in BROKER_FUNCTIONS[broker_name]
-    }
-    # Create order for the processor
+    # Order dict retained for the mock path + envelope shape (legacy shape,
+    # not consumed by the engine — propose_order takes explicit kwargs).
     order = {
         "action": args.action,
         "quantity": args.quantity,
@@ -90,33 +81,6 @@ async def run_trade(args, parser, context) -> tuple[ExitCode, dict[str, Any]]:
             "messages": ["Mock mode: no live broker calls were executed"],
         }
 
-    if context.dry_run:
-        readiness, ready_brokers = _build_dry_run_readiness(
-            {"selected_brokers": brokers_to_use}, trade_functions
-        )
-
-        if context.output_format != "json":
-            print(
-                f"\nDRY RUN {args.action.upper()} {args.quantity} {args.ticker} @ ${args.price if args.price else 'market'}"
-            )
-            print(
-                f"Preflight across {len(brokers_to_use)} broker(s): {', '.join(brokers_to_use)}"
-            )
-            for broker in readiness:
-                status = "READY" if broker["ready"] else "NOT READY"
-                print(f"  - {broker['broker']}: {status}")
-
-        exit_code = (
-            ExitCode.SUCCESS if ready_brokers else ExitCode.CONFIG_CREDENTIAL_MISSING
-        )
-        return exit_code, {
-            "mock": context.mock_brokers,
-            "dry_run": True,
-            "order": order,
-            "ready_brokers": ready_brokers,
-            "readiness": readiness,
-        }
-
     try:
         # Initialize only the brokers we're going to use
         await session_manager.initialize_selected_sessions(brokers_to_use)
@@ -127,17 +91,19 @@ async def run_trade(args, parser, context) -> tuple[ExitCode, dict[str, Any]]:
             details={"brokers": brokers_to_use},
         ) from exc
 
-    # Pre-flight: validate each broker can take the order BEFORE gating/fan-out,
-    # so an infeasible leg (e.g. insufficient shares) fails fast instead of
-    # being discovered mid-execution. Brokers that fail are dropped and reported
-    # as skipped; only survivors are gated and executed.
+    engine = await get_engine()
+
+    # Pre-flight: validate each broker can take the order BEFORE proposing/
+    # fan-out, so an infeasible leg (e.g. insufficient shares) fails fast
+    # instead of being discovered mid-execution. Brokers that fail are
+    # dropped and reported as skipped; only survivors are proposed/executed.
     validate_functions = {
         broker_name: BROKER_FUNCTIONS[broker_name]["validate"]
         for broker_name in brokers_to_use
         if broker_name in BROKER_FUNCTIONS
         and "validate" in BROKER_FUNCTIONS.get(broker_name, {})
     }
-    validated, validation_skipped = await preflight_validate(
+    validated, validation_skipped = await engine.validate_targets(
         selected_brokers=brokers_to_use,
         action=args.action,
         quantity=args.quantity,
@@ -174,17 +140,21 @@ async def run_trade(args, parser, context) -> tuple[ExitCode, dict[str, Any]]:
     brokers_to_use = validated
     order["selected_brokers"] = validated
 
-    # F5 v0.2 — route through enforcement gate BEFORE order_processor fans out.
-    # The gate runs: per-order limit (ISC-13), per-day limit (ISC-14), freeze
-    # list (ISC-42), circuit breaker (ISC-43), and writes a propose audit entry
-    # (ISC-45). A rejection here means the order MUST NOT proceed.
+    is_rehearsal = bool(context.dry_run)
+
+    # ADR 0006 — one propose path for every caller (CLI, TUI, operator CLI,
+    # MCP). `--dry-run` is now a FULL-PIPELINE REHEARSAL: propose_order and
+    # execute_order both run with dry_run=True end to end (limits, freeze
+    # list, reconciliation, token minting all run; no orders are placed).
+    # This replaces the old credentials-only readiness short-circuit.
     try:
-        gate_proposal = await apply_main_py_gate(
-            action=args.action,
-            quantity=args.quantity,
+        proposal = await engine.propose_order(
             ticker=args.ticker,
+            qty=args.quantity,
+            side=args.action,
+            brokers=brokers_to_use,
             price=args.price,
-            brokers_to_use=brokers_to_use,
+            dry_run=is_rehearsal,
         )
     except GateError as gate_err:
         raise CliRuntimeError(
@@ -200,15 +170,21 @@ async def run_trade(args, parser, context) -> tuple[ExitCode, dict[str, Any]]:
             },
         ) from gate_err
 
-    # Use order processor for concurrent execution with better error handling
     if context.output_format != "json":
-        print(
-            f"\n{args.action.upper()} {args.quantity} {args.ticker} @ ${args.price if args.price else 'market'}"
+        header = (
+            f"\nDRY RUN {args.action.upper()} {args.quantity} {args.ticker} @ "
+            f"${args.price if args.price else 'market'}"
+            if is_rehearsal
+            else f"\n{args.action.upper()} {args.quantity} {args.ticker} @ "
+            f"${args.price if args.price else 'market'}"
         )
+        print(header)
+        if is_rehearsal:
+            print("DRY RUN — full pipeline rehearsal, no orders placed")
         print(
-            f"Gate: proposal_id={gate_proposal['proposal_id']} "
-            f"estimated_usd=${gate_proposal['estimated_usd']:.2f} "
-            f"leg_count={gate_proposal['leg_count']}"
+            f"Proposal: proposal_id={proposal['proposal_id']} "
+            f"estimated_usd=${proposal['estimated_usd']:.2f} "
+            f"leg_count={proposal['leg_count']}"
         )
         print(
             f"Executing across {len(brokers_to_use)} broker(s): {', '.join(brokers_to_use)}\n"
@@ -226,15 +202,37 @@ async def run_trade(args, parser, context) -> tuple[ExitCode, dict[str, Any]]:
         else:
             print(message)
 
-    # F5 v0.4 — execute via Router (per-leg-token-validated) instead of
-    # order_processor (direct broker SDK fan-out). Same broker SDKs run; the
-    # gate now enforces ISC-11/12/39/40 on the legacy path too.
-    results = await execute_via_router(
-        proposals=[gate_proposal],
-        orders=[order],
-        dry_run=False,
-        progress_fn=cli_response_fn,
+    if is_rehearsal:
+        cli_response_fn("DRY RUN — full pipeline rehearsal, no orders placed")
+
+    execution = await engine.execute_order(
+        proposal_id=proposal["proposal_id"],
+        dry_run=is_rehearsal,
     )
+
+    # A rejection at execute time (expired proposal, dry_run mismatch,
+    # proposal not found) means nothing was placed anywhere — this must NOT
+    # read as success. Mirrors the old gate-rejection -> CliRuntimeError
+    # translation above, using the same all-failed exit code the bridge path
+    # produced when a rejection meant every selected broker failed.
+    if execution.get("rejected"):
+        raise CliRuntimeError(
+            f"Execution rejected by enforcement gate ({execution.get('reason')}): "
+            f"{execution.get('detail')}",
+            ExitCode.FULL_BROKER_FAILURE,
+            details={
+                "reason": execution.get("reason"),
+                "detail": execution.get("detail"),
+                "proposal_id": proposal["proposal_id"],
+                "brokers": brokers_to_use,
+                "ticker": args.ticker,
+                "qty": args.quantity,
+                "price": args.price,
+                "action": args.action,
+            },
+        )
+
+    results = render_execution_result(execution)
 
     # Fold pre-flight skips into the reported results so the envelope reflects
     # every broker the user selected (executed + validation-skipped).
@@ -242,15 +240,6 @@ async def run_trade(args, parser, context) -> tuple[ExitCode, dict[str, Any]]:
         results["skipped"] += 1
         if results["statuses"]:
             results["statuses"][0]["skipped"].append(broker)
-
-    await record_main_py_outcome(
-        proposal_id=gate_proposal["proposal_id"],
-        action=args.action,
-        quantity=args.quantity,
-        ticker=args.ticker,
-        price=args.price,
-        results=results,
-    )
 
     # Print summary
     if context.output_format != "json":
@@ -264,6 +253,7 @@ async def run_trade(args, parser, context) -> tuple[ExitCode, dict[str, Any]]:
 
     return compute_trade_exit_code(results), {
         "mock": context.mock_brokers,
+        "dry_run": is_rehearsal,
         "order": {
             "action": args.action,
             "quantity": args.quantity,

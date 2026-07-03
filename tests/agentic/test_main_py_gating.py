@@ -171,50 +171,45 @@ def test_record_main_py_outcome_marks_partial_on_failures(router: Router):
 
 
 def test_static_main_py_imports_the_gate_bridge():
-    """Belt-and-suspenders: confirm the buy/sell handler imports the gate
-    bridge AND calls `apply_main_py_gate` before execution. The buy/sell path
-    was extracted from main.run_cli into cli/trade.py during the main.py split,
-    so this guard now reads that module. If a future edit removes the gate,
-    this test fails before the change can ship."""
+    """Belt-and-suspenders: confirm the buy/sell handler proposes THEN
+    executes through the ExecutionEngine (ADR 0006 Task 3). The buy/sell path
+    was repointed from `agentic.cli_bridge` onto `engine.propose_order` +
+    `engine.execute_order` — one propose path, one execute path, shared by
+    every caller. If a future edit removes the propose step, this test fails
+    before the change can ship."""
     trade_src = (ROOT / "src" / "cli" / "trade.py").read_text(encoding="utf-8")
-    assert "from agentic.cli_bridge import" in trade_src
-    assert "apply_main_py_gate" in trade_src
-    assert "record_main_py_outcome" in trade_src
-    # Gate call must appear BEFORE the buy/sell `execute_via_router(...)` call
-    # (F5 v0.4 replaced `order_processor.process_orders([order]` with
-    # `execute_via_router(proposals=[gate_proposal], ...)`)
-    gate_pos = trade_src.find("apply_main_py_gate(")
-    op_match = re.search(
-        r"execute_via_router\(\s*proposals=\[gate_proposal\]", trade_src
-    )
-    assert gate_pos > 0
-    assert op_match is not None
-    assert gate_pos < op_match.start(), (
-        "apply_main_py_gate must run BEFORE execute_via_router"
+    assert "get_engine" in trade_src
+    assert "engine.propose_order(" in trade_src
+    assert "engine.execute_order(" in trade_src
+    # Propose call must appear BEFORE the buy/sell `engine.execute_order(...)`
+    # call (ADR 0006 Task 3 replaced `apply_main_py_gate` +
+    # `execute_via_router` with `engine.propose_order` + `engine.execute_order`).
+    propose_pos = trade_src.find("engine.propose_order(")
+    exec_match = re.search(r"engine\.execute_order\(", trade_src)
+    assert propose_pos > 0
+    assert exec_match is not None
+    assert propose_pos < exec_match.start(), (
+        "engine.propose_order must run BEFORE engine.execute_order"
     )
 
 
 def test_static_main_py_buy_sell_path_has_no_unguarded_broker_call():
     """Scoped negative check: in the buy/sell handler body, every block that
-    reaches `execute_via_router` must be preceded by `apply_main_py_gate`. We
-    approximate this by asserting that within the handler, the FIRST
-    `execute_via_router` call is preceded by an `apply_main_py_gate` call in
-    the same function body.
+    reaches `engine.execute_order` must be preceded by `engine.propose_order`.
+    We approximate this by asserting that within the handler, the FIRST
+    `engine.execute_order` call is preceded by an `engine.propose_order` call
+    in the same function body.
 
-    The buy/sell handler was extracted from main.run_cli into
-    `cli/trade.py::run_trade` during the main.py split, so this guard now reads
-    that module and locates `async def run_trade(`.
+    The buy/sell handler lives in `cli/trade.py::run_trade`; ADR 0006 Task 3
+    repointed it onto the ExecutionEngine, so this guard reads that module.
     """
     trade_src = (ROOT / "src" / "cli" / "trade.py").read_text(encoding="utf-8")
     run_trade_start = trade_src.find("async def run_trade(")
     assert run_trade_start > 0
     body = trade_src[run_trade_start:]
-    # F5 v0.4 replaced process_orders([order] with execute_via_router(proposals=[gate_proposal])
-    op = re.search(
-        r"execute_via_router\(\s*proposals=\[gate_proposal\]", body
-    )
-    assert op is not None, "buy/sell execute_via_router call not found"
+    op = re.search(r"engine\.execute_order\(", body)
+    assert op is not None, "buy/sell engine.execute_order call not found"
     upstream = body[: op.start()]
-    assert "apply_main_py_gate(" in upstream, (
-        "buy/sell path must call apply_main_py_gate BEFORE execute_via_router"
+    assert "engine.propose_order(" in upstream, (
+        "buy/sell path must call engine.propose_order BEFORE engine.execute_order"
     )

@@ -5,6 +5,7 @@ those plus the inline handlers left in main.run_cli) lives here so the handler
 modules never need to import from each other in a way that creates a cycle.
 """
 
+import asyncio
 import os
 import sys
 from typing import Any, NoReturn
@@ -18,6 +19,33 @@ from cli_runtime import (  # type: ignore[import-untyped]
     CliRuntimeError,
     ExitCode,
 )
+
+_engine: Any = None
+_engine_lock = asyncio.Lock()
+
+
+async def get_engine() -> Any:
+    """Lazy singleton ExecutionEngine for the CLI (ADR 0006).
+
+    Mirrors `agentic.cli_bridge.get_router`'s lazy-singleton-with-lock
+    pattern: built on demand so import-time side effects stay zero — CLI
+    importers that never run a buy/sell don't pay the broker-discovery cost.
+    Imported from `execution`, not `agentic`, per the ADR's canonical home.
+    """
+    global _engine
+    async with _engine_lock:
+        if _engine is None:
+            from execution import ExecutionEngine
+
+            _engine = ExecutionEngine.from_all_brokers()
+        return _engine
+
+
+def reset_engine() -> None:
+    """Tests call this between cases to force a fresh engine. Not part of the
+    documented CLI path."""
+    global _engine
+    _engine = None
 
 
 def _raise_parser_error(parser, message, context) -> NoReturn:

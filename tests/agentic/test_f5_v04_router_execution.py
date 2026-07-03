@@ -228,16 +228,31 @@ def test_static_tui_no_longer_calls_order_processor_process_orders():
 
 
 def test_static_main_py_uses_execute_via_router():
-    """Positive: confirm execute_via_router is called for the single-order,
-    batch, and automate paths. After the main.py split these calls live in the
-    `cli/` handler modules (trade.py, batch.py, automate.py), so count across
-    main.py PLUS all cli/*.py files."""
-    sources = [ROOT / "src" / "main.py", *sorted((ROOT / "src" / "cli").glob("*.py"))]
+    """Positive: confirm execute_via_router is still called for the batch and
+    automate paths (not yet repointed — ADR 0006 Task 4), and that the
+    buy/sell path (trade.py) uses `engine.execute_order` directly (repointed
+    onto the ExecutionEngine in ADR 0006 Task 3 — one propose path, one
+    execute path, no bridge reshaping)."""
+    trade_src = (ROOT / "src" / "cli" / "trade.py").read_text(encoding="utf-8")
+    assert "engine.execute_order(" in trade_src, (
+        "trade.py must call engine.execute_order directly (ADR 0006 Task 3)"
+    )
+    assert "execute_via_router(" not in trade_src, (
+        "trade.py must not call the retired cli_bridge.execute_via_router"
+    )
+
+    other_sources = [
+        ROOT / "src" / "main.py",
+        *sorted(
+            p for p in (ROOT / "src" / "cli").glob("*.py") if p.name != "trade.py"
+        ),
+    ]
     total = 0
-    for path in sources:
+    for path in other_sources:
         total += len(re.findall(r"execute_via_router\(", path.read_text(encoding="utf-8")))
-    # buy/sell (trade.py) + from_file batch (batch.py) + automate (automate.py)
-    assert total >= 3, f"main.py + cli/*.py have only {total} execute_via_router calls"
+    # from_file batch (batch.py) + automate (automate.py) — still bridge-based
+    # until ADR 0006 Task 4 repoints them.
+    assert total >= 2, f"main.py + cli/*.py (excl. trade.py) have only {total} execute_via_router calls"
 
 
 def test_static_tui_uses_execute_via_router():
