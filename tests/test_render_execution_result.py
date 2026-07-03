@@ -340,3 +340,73 @@ def test_all_failed_execution_yields_full_broker_failure_exit_code():
     rendered = render_execution_result(execution)
 
     assert compute_trade_exit_code(rendered) == ExitCode.FULL_BROKER_FAILURE
+
+
+def test_rejection_render_alone_maps_to_success_exit_code_hence_callers_must_branch():
+    """Pins the footgun documented in `render_execution_result`'s docstring
+    §4: an all-zeros rendering (successful=0, failed=0, skipped=0) is
+    indistinguishable from "nothing to do, all good" as far as
+    `compute_trade_exit_code` is concerned — it returns SUCCESS. Callers
+    (see `run_trade`) MUST check `execution["rejected"]` and raise BEFORE
+    calling `render_execution_result`, never rely on the rendered/exit-code
+    layer to surface a rejection. If this test starts failing, either the
+    exit-code computation changed (update the docstring contract) or someone
+    "fixed" this by inventing a fabricated non-zero count (don't).
+    """
+    execution = {
+        "proposal_id": "prop-123",
+        "dry_run": False,
+        "results": [],
+        "success_count": 0,
+        "failure_count": 0,
+        "rejected": True,
+        "reason": "proposal_not_found",
+        "detail": "no proposal with id prop-123",
+    }
+
+    rendered = render_execution_result(execution)
+
+    assert compute_trade_exit_code(rendered) == ExitCode.SUCCESS
+
+
+# --------------------------------------------------------------------------
+# Edge cases: empty results without rejection, unknown extra keys ignored
+# --------------------------------------------------------------------------
+
+
+def test_empty_results_without_rejected_flag_renders_zeros():
+    execution = {
+        "ticker": "X",
+        "side": "buy",
+        "results": [],
+        "success_count": 0,
+        "failure_count": 0,
+    }
+
+    rendered = render_execution_result(execution)
+
+    assert rendered["successful"] == 0
+    assert rendered["failed"] == 0
+    assert rendered["skipped"] == 0
+    status = rendered["statuses"][0]
+    assert status["successful"] == []
+    assert status["failed"] == []
+    assert status["skipped"] == []
+    assert "reason" not in status
+
+
+def test_unknown_extra_keys_are_ignored():
+    execution = {
+        "ticker": "TSLA",
+        "side": "buy",
+        "qty": 1,
+        "dry_run": False,
+        "results": [_leg("Public", "primary", ok=True)],
+        "success_count": 1,
+        "failure_count": 0,
+    }
+    execution_with_extra = dict(execution, warnings=["some warning"])
+
+    assert render_execution_result(execution_with_extra) == render_execution_result(
+        execution
+    )

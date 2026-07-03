@@ -107,6 +107,11 @@ def test_failing_broker_dropped_before_gate(monkeypatch):
     # The engine was proposed to with ONLY the validated broker — "Bad" was
     # dropped pre-propose.
     assert engine.propose_calls and engine.propose_calls[0]["brokers"] == ["Good"]
+    # The execute call chains to the SAME proposal propose_order returned —
+    # confirms run_trade doesn't re-derive or drop the proposal_id between
+    # the two engine calls (`_FakeEngine.propose_order` always returns
+    # `proposal_id: "p1"`).
+    assert engine.execute_calls and engine.execute_calls[0]["proposal_id"] == "p1"
     # "Bad" is reported as a validation skip, folded into results.
     assert data["validation_skipped"] == [
         {"broker": "Bad", "reason": "Insufficient shares (0 available)"}

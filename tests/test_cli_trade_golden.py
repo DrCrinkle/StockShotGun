@@ -311,3 +311,68 @@ def test_execute_rejection_is_not_success(two_brokers, stub_session_init, monkey
 
     assert excinfo.value.exit_code == ExitCode.FULL_BROKER_FAILURE
     assert excinfo.value.exit_code != ExitCode.SUCCESS
+
+
+# --------------------------------------------------------------------------
+# Dry-run + no ready brokers — dry-run and live must agree on exit code
+# (rehearsal-world equivalent of the deleted
+# test_dry_run_no_ready_brokers_maps_to_credential_exit, which pinned the
+# old credentials-only readiness short-circuit. That path is retired by ADR
+# 0006 Task 3; pre-flight validation is now the single gate for both dry-run
+# and live. Mirrors
+# tests/agentic/test_preflight_integration.py::test_all_brokers_failing_skips_gate_entirely.)
+# --------------------------------------------------------------------------
+def test_dry_run_no_ready_brokers_matches_live_exit_code(stub_session_init, monkeypatch):
+    async def bad_validate(*a):
+        return (False, "nope")
+
+    def _make_engine():
+        engine = _StubEngine()
+
+        async def validate_targets_all_fail(**kwargs):
+            return [], [(b, "nope") for b in kwargs["selected_brokers"]]
+
+        engine.validate_targets = validate_targets_all_fail
+        return engine
+
+    monkeypatch.setattr(
+        trade_mod, "BROKER_FUNCTIONS",
+        {"Public": {"trade": _some_trade, "validate": bad_validate}},
+    )
+
+    args = SimpleNamespace(
+        action="buy", quantity=1, ticker="XYZ", price=None, broker=["Public"],
+    )
+
+    # Live path: no brokers survive pre-flight -> propose_order never called.
+    live_engine = _make_engine()
+
+    async def fake_get_engine_live():
+        return live_engine
+
+    monkeypatch.setattr(trade_mod, "get_engine", fake_get_engine_live)
+    exit_code_live, data_live = _run(
+        run_trade(args, parser=None, context=_ctx(dry_run=False))
+    )
+    assert live_engine.propose_calls == []
+    assert data_live["results"]["successful"] == 0
+
+    # Dry-run path: same pre-flight gate, same outcome — no brokers survive,
+    # so propose/execute never run even under rehearsal.
+    dry_engine = _make_engine()
+
+    async def fake_get_engine_dry():
+        return dry_engine
+
+    monkeypatch.setattr(trade_mod, "get_engine", fake_get_engine_dry)
+    exit_code_dry, data_dry = _run(
+        run_trade(args, parser=None, context=_ctx(dry_run=True))
+    )
+    assert dry_engine.propose_calls == []
+    assert data_dry["results"]["successful"] == 0
+
+    # Dry-run and live now agree on the exit code (both hit the same
+    # pre-flight-exhausted branch) — this is the behavior ADR 0006 Task 3
+    # unified; assert the SAME constant, not just "both non-success".
+    assert exit_code_dry == exit_code_live
+    assert exit_code_live == ExitCode.CONFIG_CREDENTIAL_MISSING

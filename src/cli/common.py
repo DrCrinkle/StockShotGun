@@ -183,7 +183,10 @@ def render_execution_result(execution: dict[str, Any]) -> dict[str, Any]:
        broker/account list to derive a fabricated skip count from, so we
        render the honest zero rather than inventing one. `reason` (and
        `detail`) are carried into the single status entry instead, so callers
-       can still surface *why* nothing happened.
+       can still surface *why* nothing happened. Note: the all-zeros
+       rendering means `compute_trade_exit_code` would return SUCCESS for a
+       bare rejection — callers MUST branch on `execution['rejected']` and
+       raise before rendering (see run_trade for the pattern).
     5. `ok=True` legs -> `successful`; `ok=False` legs -> `failed`. The engine
        has no third "skipped" leg state at execute time — leg failures
        (breaker-open, gate rejection, broker error) all come back as
