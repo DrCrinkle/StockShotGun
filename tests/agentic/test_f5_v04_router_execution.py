@@ -228,31 +228,26 @@ def test_static_tui_no_longer_calls_order_processor_process_orders():
 
 
 def test_static_main_py_uses_execute_via_router():
-    """Positive: confirm execute_via_router is still called for the batch and
-    automate paths (not yet repointed — ADR 0006 Task 4), and that the
-    buy/sell path (trade.py) uses `engine.execute_order` directly (repointed
-    onto the ExecutionEngine in ADR 0006 Task 3 — one propose path, one
-    execute path, no bridge reshaping)."""
-    trade_src = (ROOT / "src" / "cli" / "trade.py").read_text(encoding="utf-8")
-    assert "engine.execute_order(" in trade_src, (
-        "trade.py must call engine.execute_order directly (ADR 0006 Task 3)"
-    )
-    assert "execute_via_router(" not in trade_src, (
-        "trade.py must not call the retired cli_bridge.execute_via_router"
+    """Positive: confirm the buy/sell (trade.py), from-file batch (batch.py),
+    and automate (automate.py) paths all call `engine.execute_order` directly
+    — repointed onto the ExecutionEngine in ADR 0006 Task 3 (trade.py) and
+    Task 4 (batch.py, automate.py). No CLI handler calls the retired
+    `cli_bridge.execute_via_router` bridge function anymore."""
+    cli_sources = sorted((ROOT / "src" / "cli").glob("*.py"))
+    main_src = (ROOT / "src" / "main.py").read_text(encoding="utf-8")
+    assert "execute_via_router(" not in main_src, (
+        "main.py must not call the retired cli_bridge.execute_via_router"
     )
 
-    other_sources = [
-        ROOT / "src" / "main.py",
-        *sorted(
-            p for p in (ROOT / "src" / "cli").glob("*.py") if p.name != "trade.py"
-        ),
-    ]
     total = 0
-    for path in other_sources:
-        total += len(re.findall(r"execute_via_router\(", path.read_text(encoding="utf-8")))
-    # from_file batch (batch.py) + automate (automate.py) — still bridge-based
-    # until ADR 0006 Task 4 repoints them.
-    assert total >= 2, f"main.py + cli/*.py (excl. trade.py) have only {total} execute_via_router calls"
+    for path in cli_sources:
+        src = path.read_text(encoding="utf-8")
+        assert "execute_via_router(" not in src, (
+            f"{path} must not call the retired cli_bridge.execute_via_router"
+        )
+        total += len(re.findall(r"engine\.execute_order\(", src))
+    # trade.py + batch.py + automate.py — all on the engine now.
+    assert total >= 3, f"cli/*.py have only {total} engine.execute_order calls"
 
 
 def test_static_tui_uses_execute_via_router():

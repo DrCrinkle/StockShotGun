@@ -1,17 +1,11 @@
 """`automate` command handler: ingest a chat recap, derive due buy/sell orders,
-gate them, and execute via the Router."""
+propose and execute them through the ExecutionEngine (ADR 0006)."""
 
 import json
 from datetime import datetime
 from typing import Any
 
-from agentic.cli_bridge import (
-    apply_main_py_gate_batch,
-    execute_via_router,
-    gate_error_to_exit_code,
-    preflight_validate,
-    record_main_py_outcome_batch,
-)
+from agentic.cli_bridge import gate_error_to_exit_code
 from enforcement import GateError
 from cli_runtime import (  # type: ignore[import-untyped]
     CliRuntimeError,
@@ -26,10 +20,12 @@ from brokers.registry import broker_functions_map  # type: ignore[import-untyped
 BROKER_FUNCTIONS = broker_functions_map()
 
 from cli.common import (
-    _build_dry_run_readiness,
     _default_brokers_for_trade,
     _mock_batch_results,
     _raise_parser_error,
+    aggregate_execution_results,
+    get_engine,
+    render_execution_result,
 )
 from cli.sweep import _resolve_today_date, _sum_holdings_quantity
 
@@ -181,12 +177,6 @@ async def _run_automate_from_recap(args, parser, context):
                 "generated_orders": 0,
             }
 
-        trade_functions = {
-            broker_name: BROKER_FUNCTIONS[broker_name]["trade"]
-            for broker_name in available_brokers
-            if broker_name in BROKER_FUNCTIONS
-            and "trade" in BROKER_FUNCTIONS[broker_name]
-        }
         if context.mock_brokers:
             mock_results = _mock_batch_results(orders)
             return ExitCode.SUCCESS, {
@@ -198,34 +188,7 @@ async def _run_automate_from_recap(args, parser, context):
                 "results": mock_results,
             }
 
-        if context.dry_run:
-            dry_run_orders = []
-            total_ready = 0
-            for order in orders:
-                readiness, ready_brokers = _build_dry_run_readiness(
-                    order, trade_functions
-                )
-                total_ready += len(ready_brokers)
-                dry_run_orders.append(
-                    {
-                        "order": order,
-                        "ready_brokers": ready_brokers,
-                        "readiness": readiness,
-                    }
-                )
-            exit_code = (
-                ExitCode.SUCCESS
-                if total_ready > 0
-                else ExitCode.CONFIG_CREDENTIAL_MISSING
-            )
-            return exit_code, {
-                "automation": True,
-                "dry_run": True,
-                "ingestion": ingestion,
-                "today_mmdd": today_mmdd,
-                "generated_orders": len(orders),
-                "orders": dry_run_orders,
-            }
+        is_rehearsal = bool(context.dry_run)
 
         brokers_to_initialize = sorted(
             {
@@ -243,8 +206,10 @@ async def _run_automate_from_recap(args, parser, context):
                 ExitCode.AUTH_SESSION_FAILURE,
             ) from exc
 
-        # Pre-flight each generated order BEFORE gating; drop legs that fail
-        # validation and any order left with no executable broker. Keep
+        engine = await get_engine()
+
+        # Pre-flight each generated order BEFORE proposing; drop legs that
+        # fail validation and any order left with no executable broker. Keep
         # `orders` and `order_sources` index-aligned so the post-execution
         # buy/sell attribution below stays correct.
         validation_skipped: list[tuple[str, str]] = []
@@ -256,7 +221,7 @@ async def _run_automate_from_recap(args, parser, context):
                 for b in order_brokers
                 if b in BROKER_FUNCTIONS and "validate" in BROKER_FUNCTIONS.get(b, {})
             }
-            validated, skipped = await preflight_validate(
+            validated, skipped = await engine.validate_targets(
                 selected_brokers=order_brokers,
                 action=order["action"],
                 quantity=order["quantity"],
@@ -302,38 +267,97 @@ async def _run_automate_from_recap(args, parser, context):
             else:
                 print(message)
 
-        # F5 v0.3 — gate the automation-generated orders before fan-out.
-        try:
-            automation_proposals = await apply_main_py_gate_batch(orders)
-        except GateError as gate_err:
-            raise CliRuntimeError(
-                f"Automation batch rejected by enforcement gate "
-                f"({gate_err.reason}): {gate_err}",
-                ExitCode(gate_error_to_exit_code(gate_err)),
-                details={
-                    "reason": gate_err.reason,
-                    "order_count": len(orders),
-                    "automation": True,
-                },
-            ) from gate_err
+        if is_rehearsal:
+            automation_response_fn(
+                "DRY RUN — full pipeline rehearsal, no orders placed"
+            )
 
-        # F5 v0.4 — Router-driven per-leg-token execution for automation.
-        results = await execute_via_router(
-            proposals=automation_proposals,
-            orders=orders,
-            dry_run=False,
-            progress_fn=automation_response_fn,
-        )
+        # ADR 0006 — one propose path for every caller. Two phases, mirroring
+        # `apply_main_py_gate_batch` -> `execute_via_router`:
+        #
+        #   Phase 1 — propose EVERY generated order first. The first
+        #   GateError raises and aborts the whole automation batch BEFORE any
+        #   order is executed (load-bearing: gating every order ahead of any
+        #   fan-out is what `apply_main_py_gate_batch` did).
+        #
+        #   Phase 2 — execute every gated proposal in order. `--dry-run` is a
+        #   full-pipeline rehearsal — propose and execute both run with
+        #   dry_run=True end to end.
+        automation_proposals: list[dict[str, Any]] = []
+        for order in orders:
+            try:
+                proposal = await engine.propose_order(
+                    ticker=str(order["ticker"]),
+                    qty=order["quantity"],
+                    side=str(order["action"]),
+                    brokers=list(order["selected_brokers"]),
+                    price=order.get("price"),
+                    dry_run=is_rehearsal,
+                )
+            except GateError as gate_err:
+                raise CliRuntimeError(
+                    f"Automation batch rejected by enforcement gate "
+                    f"({gate_err.reason}): {gate_err}",
+                    ExitCode(gate_error_to_exit_code(gate_err)),
+                    details={
+                        "reason": gate_err.reason,
+                        "order_count": len(orders),
+                        "automation": True,
+                        "ticker": order["ticker"],
+                        "qty": order["quantity"],
+                        "action": order["action"],
+                    },
+                ) from gate_err
+            automation_proposals.append(proposal)
+
+        rendered_results = []
+        for order, proposal in zip(orders, automation_proposals):
+            ticker = str(order["ticker"])
+            action = str(order["action"])
+            qty = order["quantity"]
+            order_brokers = list(order["selected_brokers"])
+
+            automation_response_fn(
+                f"[automate] executing proposal {proposal['proposal_id'][:12]}… "
+                f"for {action} {qty} {ticker} ({proposal['leg_count']} leg(s))"
+            )
+
+            execution = await engine.execute_order(
+                proposal_id=proposal["proposal_id"],
+                dry_run=is_rehearsal,
+            )
+
+            # A rejection at execute time means nothing was placed anywhere
+            # for this order — this must NOT read as success.
+            if execution.get("rejected"):
+                raise CliRuntimeError(
+                    f"Execution rejected by enforcement gate "
+                    f"({execution.get('reason')}): {execution.get('detail')}",
+                    ExitCode.FULL_BROKER_FAILURE,
+                    details={
+                        "reason": execution.get("reason"),
+                        "detail": execution.get("detail"),
+                        "proposal_id": proposal["proposal_id"],
+                        "brokers": order_brokers,
+                        "ticker": ticker,
+                        "qty": qty,
+                        "action": action,
+                    },
+                )
+
+            rendered = render_execution_result(execution)
+            for status in rendered["statuses"]:
+                for broker in status["successful"]:
+                    automation_response_fn(f"[automate] ✓ {broker}: placed")
+                for broker in status["failed"]:
+                    automation_response_fn(f"[automate] ✗ {broker}: failed")
+            rendered_results.append(rendered)
+
+        results = aggregate_execution_results(rendered_results)
 
         # Fold pre-flight skips into the aggregate skip count.
         if validation_skipped:
             results["skipped"] += len(validation_skipped)
-
-        await record_main_py_outcome_batch(
-            proposals=automation_proposals,
-            orders=orders,
-            results=results,
-        )
 
         successful_buy_ids = set()
         successful_sell_ids = set()
@@ -369,6 +393,7 @@ async def _run_automate_from_recap(args, parser, context):
 
         return compute_trade_exit_code(results), {
             "automation": True,
+            "dry_run": is_rehearsal,
             "ingestion": ingestion,
             "today_mmdd": today_mmdd,
             "generated_orders": len(orders),

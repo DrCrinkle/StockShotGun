@@ -115,33 +115,35 @@ def _scan_call_sites(text: str, pattern: str) -> list[int]:
 
 
 def test_static_main_py_batch_path_is_gated():
-    """The from-file batch path's execute_via_router MUST be preceded by
-    apply_main_py_gate_batch in the same function body. The batch handler was
-    moved from main.py into cli/batch.py during the main.py split."""
+    """The from-file batch path's `engine.execute_order` calls MUST be
+    preceded by `engine.propose_order` calls in the same function body (ADR
+    0006 Task 4 repointed batch.py from the `agentic.cli_bridge` bridge
+    functions onto the ExecutionEngine directly — one propose path, one
+    execute path, per order)."""
     batch_src = (ROOT / "src" / "cli" / "batch.py").read_text(encoding="utf-8")
     fn_start = batch_src.find("async def _run_batch_from_file(")
     assert fn_start > 0
     fn_end = batch_src.find("\nasync def ", fn_start + 1)
     body = batch_src[fn_start:fn_end if fn_end > 0 else None]
-    assert "apply_main_py_gate_batch(" in body
-    assert "execute_via_router(" in body
-    gate_pos = body.find("apply_main_py_gate_batch(")
-    op_pos = body.find("execute_via_router(")
+    assert "engine.propose_order(" in body
+    assert "engine.execute_order(" in body
+    gate_pos = body.find("engine.propose_order(")
+    op_pos = body.find("engine.execute_order(")
     assert gate_pos < op_pos
 
 
 def test_static_main_py_automate_path_is_gated():
-    """The automate path's execute_via_router MUST be preceded by
-    apply_main_py_gate_batch. The automate handler was moved from main.py into
-    cli/automate.py during the main.py split."""
+    """The automate path's `engine.execute_order` calls MUST be preceded by
+    `engine.propose_order` calls (ADR 0006 Task 4 repointed automate.py onto
+    the ExecutionEngine directly)."""
     automate_src = (ROOT / "src" / "cli" / "automate.py").read_text(encoding="utf-8")
     fn_start = automate_src.find("async def _run_automate_from_recap(")
     assert fn_start > 0
     fn_end = automate_src.find("\nasync def ", fn_start + 1)
     body = automate_src[fn_start:fn_end if fn_end > 0 else None]
-    assert "apply_main_py_gate_batch(" in body
-    gate_pos = body.find("apply_main_py_gate_batch(")
-    op_pos = body.find("execute_via_router(")
+    assert "engine.propose_order(" in body
+    gate_pos = body.find("engine.propose_order(")
+    op_pos = body.find("engine.execute_order(")
     assert op_pos > 0
     assert gate_pos < op_pos
 
