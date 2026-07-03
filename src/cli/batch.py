@@ -311,7 +311,10 @@ async def _run_batch_from_file(args, parser, context):
 
         # A rejection at execute time means nothing was placed anywhere for
         # this order — this must NOT read as success. Aborts the whole batch,
-        # same as a propose-time GateError.
+        # same as a propose-time GateError. Orders that already executed
+        # earlier in this loop are not lost — their rendered results ride
+        # along in `details` so JSON error output isn't silently missing
+        # completed work.
         if execution.get("rejected"):
             raise CliRuntimeError(
                 f"Execution rejected by enforcement gate "
@@ -325,6 +328,8 @@ async def _run_batch_from_file(args, parser, context):
                     "ticker": ticker,
                     "qty": qty,
                     "action": action,
+                    "completed_results": aggregate_execution_results(rendered_results),
+                    "completed_orders": len(rendered_results),
                 },
             )
 

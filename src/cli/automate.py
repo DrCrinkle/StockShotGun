@@ -310,8 +310,26 @@ async def _run_automate_from_recap(args, parser, context):
                 ) from gate_err
             automation_proposals.append(proposal)
 
+        # A sell trigger may be split across multiple orders (one per
+        # broker — see the pending_sells loop above), so the full expected
+        # broker set per source is only knowable by scanning ALL sources
+        # up front. Buy signals are always exactly one order = one source.
+        # Computing this before the execute loop lets us mark each source
+        # incrementally, immediately after the order(s) that complete it
+        # finish executing — not in bulk after the whole batch.
+        expected_brokers_by_source: dict[tuple[str, int], set[str]] = {}
+        for source in order_sources:
+            source_key = (source["type"], source["id"])
+            expected_brokers_by_source.setdefault(source_key, set()).update(
+                source["expected_brokers"]
+            )
+        completed_brokers_by_source: dict[tuple[str, int], set[str]] = {}
+        marked_sources: set[tuple[str, int]] = set()
+        successful_buy_ids: set[int] = set()
+        successful_sell_ids: set[int] = set()
+
         rendered_results = []
-        for order, proposal in zip(orders, automation_proposals):
+        for order, proposal, source in zip(orders, automation_proposals, order_sources):
             ticker = str(order["ticker"])
             action = str(order["action"])
             qty = order["quantity"]
@@ -328,7 +346,12 @@ async def _run_automate_from_recap(args, parser, context):
             )
 
             # A rejection at execute time means nothing was placed anywhere
-            # for this order — this must NOT read as success.
+            # for this order — this must NOT read as success. Orders that
+            # already executed earlier in this loop are not lost: their
+            # signals were already marked executed immediately after they
+            # completed (below), and their rendered results ride along in
+            # `details` so JSON error output isn't silently missing
+            # completed work.
             if execution.get("rejected"):
                 raise CliRuntimeError(
                     f"Execution rejected by enforcement gate "
@@ -342,6 +365,10 @@ async def _run_automate_from_recap(args, parser, context):
                         "ticker": ticker,
                         "qty": qty,
                         "action": action,
+                        "completed_results": aggregate_execution_results(
+                            rendered_results
+                        ),
+                        "completed_orders": len(rendered_results),
                     },
                 )
 
@@ -353,30 +380,22 @@ async def _run_automate_from_recap(args, parser, context):
                     automation_response_fn(f"[automate] ✗ {broker}: failed")
             rendered_results.append(rendered)
 
-        results = aggregate_execution_results(rendered_results)
-
-        # Fold pre-flight skips into the aggregate skip count.
-        if validation_skipped:
-            results["skipped"] += len(validation_skipped)
-
-        successful_buy_ids = set()
-        successful_sell_ids = set()
-        completed_brokers_by_source: dict[tuple[str, int], set[str]] = {}
-        expected_brokers_by_source: dict[tuple[str, int], set[str]] = {}
-        for idx, status in enumerate(results.get("statuses", [])):
-            if idx >= len(order_sources):
+            # Mark this order's signal(s) executed IMMEDIATELY — a mid-batch
+            # abort on a later order must not leave an already-filled
+            # order's signal in 'pending' (it would re-execute — a
+            # double-trade — on the next automate run). Dry-run rehearsals
+            # place nothing anywhere, so they must never mark anything.
+            if is_rehearsal:
                 continue
-            source = order_sources[idx]
-            source_key = (source["type"], source["id"])
-            expected_brokers_by_source.setdefault(source_key, set()).update(
-                source["expected_brokers"]
-            )
-            completed_brokers_by_source.setdefault(source_key, set()).update(
-                status.get("successful", [])
-            )
 
-        for source_key, expected_brokers in expected_brokers_by_source.items():
-            if not expected_brokers:
+            source_key = (source["type"], source["id"])
+            for status in rendered["statuses"]:
+                completed_brokers_by_source.setdefault(source_key, set()).update(
+                    status.get("successful", [])
+                )
+
+            expected_brokers = expected_brokers_by_source.get(source_key, set())
+            if not expected_brokers or source_key in marked_sources:
                 continue
             completed_brokers = completed_brokers_by_source.get(source_key, set())
             if completed_brokers != expected_brokers:
@@ -384,12 +403,18 @@ async def _run_automate_from_recap(args, parser, context):
 
             source_type, source_id = source_key
             if source_type == "buy":
+                store.mark_buy_signals_executed([source_id], now)
                 successful_buy_ids.add(source_id)
-            if source_type == "sell":
+            elif source_type == "sell":
+                store.mark_sell_triggers_executed([source_id], now)
                 successful_sell_ids.add(source_id)
+            marked_sources.add(source_key)
 
-        store.mark_buy_signals_executed(sorted(successful_buy_ids), now)
-        store.mark_sell_triggers_executed(sorted(successful_sell_ids), now)
+        results = aggregate_execution_results(rendered_results)
+
+        # Fold pre-flight skips into the aggregate skip count.
+        if validation_skipped:
+            results["skipped"] += len(validation_skipped)
 
         return compute_trade_exit_code(results), {
             "automation": True,

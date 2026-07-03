@@ -352,3 +352,55 @@ def test_batch_dry_run_is_full_pipeline_rehearsal(
     assert trade_called == []
     assert exit_code == ExitCode.SUCCESS
     assert data["results"]["successful"] == 1
+
+
+# --------------------------------------------------------------------------
+# Mid-batch execute rejection must carry the already-completed orders'
+# rendered results in `details`, not just the rejected order's fields.
+# --------------------------------------------------------------------------
+def test_batch_execute_rejection_carries_completed_results_in_details(
+    tmp_path, two_brokers, stub_session_init, monkeypatch
+):
+    rejection = {
+        "proposal_id": "p2",
+        "dry_run": False,
+        "results": [],
+        "success_count": 0,
+        "failure_count": 0,
+        "rejected": True,
+        "reason": "proposal_not_found",
+        "detail": "no proposal with id p2",
+    }
+    engine = _StubEngine(
+        proposals=[_proposal("p1"), _proposal("p2")],
+        executions=[
+            _execution("p1", "TSLA", "buy", ok=True),
+            rejection,
+        ],
+    )
+
+    async def fake_get_engine():
+        return engine
+
+    monkeypatch.setattr(batch_mod, "get_engine", fake_get_engine)
+
+    from_file = _write_batch_file(
+        tmp_path,
+        [
+            {"action": "buy", "quantity": 1, "ticker": "TSLA", "brokers": ["Public"]},
+            {"action": "sell", "quantity": 1, "ticker": "AAPL", "brokers": ["Public"]},
+        ],
+    )
+    args = SimpleNamespace(action="buy", from_file=from_file, broker=None)
+
+    with pytest.raises(batch_mod.CliRuntimeError) as excinfo:
+        _run(_run_batch_from_file(args, parser=None, context=_ctx()))
+
+    assert excinfo.value.exit_code == ExitCode.FULL_BROKER_FAILURE
+    details = excinfo.value.details
+    assert details["completed_orders"] == 1
+    assert details["completed_results"]["successful"] >= 1
+    assert details["completed_results"]["failed"] == 0
+    # Existing fields must still be present.
+    assert details["reason"] == "proposal_not_found"
+    assert details["proposal_id"] == "p2"

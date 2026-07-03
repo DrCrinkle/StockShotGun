@@ -160,10 +160,21 @@ class _FakeStore:
         return []
 
     def mark_buy_signals_executed(self, ids, now):
-        self.marked_buys = list(ids)
+        # Real store's mark_*_executed is a per-call UPDATE ... WHERE id IN
+        # (...) — additive across calls, not a wholesale replace. Accumulate
+        # here so incremental (per-order) marking is observable in tests.
+        if not ids:
+            return
+        for signal_id in ids:
+            if signal_id not in self.marked_buys:
+                self.marked_buys.append(signal_id)
 
     def mark_sell_triggers_executed(self, ids, now):
-        self.marked_sells = list(ids)
+        if not ids:
+            return
+        for trigger_id in ids:
+            if trigger_id not in self.marked_sells:
+                self.marked_sells.append(trigger_id)
 
     def close(self):
         self.closed = True
@@ -175,6 +186,27 @@ def fake_store(monkeypatch):
 
     def factory(db_path):
         store = _FakeStore(db_path)
+        store_holder["store"] = store
+        return store
+
+    monkeypatch.setattr(automate_mod, "AutomationRecapStore", factory)
+    return store_holder
+
+
+class _TwoBuysFakeStore(_FakeStore):
+    """Two due buy signals — used to test incremental per-order marking on a
+    mid-batch execute rejection."""
+
+    def get_due_buy_signals(self, today_date):
+        return [{"id": 1, "ticker": "TSLA"}, {"id": 2, "ticker": "AAPL"}]
+
+
+@pytest.fixture
+def fake_store_two_buys(monkeypatch):
+    store_holder = {}
+
+    def factory(db_path):
+        store = _TwoBuysFakeStore(db_path)
         store_holder["store"] = store
         return store
 
@@ -339,3 +371,91 @@ def test_automate_dry_run_is_full_pipeline_rehearsal(
     assert trade_called == []
     assert exit_code == ExitCode.SUCCESS
     assert data["results"]["successful"] == 1
+    # Dry-run rehearsal must not mark anything executed — no orders were
+    # actually placed anywhere.
+    assert fake_store["store"].marked_buys == []
+    assert fake_store["store"].marked_sells == []
+
+
+# --------------------------------------------------------------------------
+# Mid-batch execute rejection: order 1 already executed successfully before
+# order 2's execution comes back rejected. This must NOT be a double-trade
+# risk on the next automate run — order 1's buy signal must already be
+# marked executed by the time the CliRuntimeError is raised, and the
+# rejection's details must carry order 1's completed rendered results.
+# --------------------------------------------------------------------------
+def test_automate_marks_completed_signal_before_mid_batch_abort(
+    tmp_path, one_broker, stub_session_init, stub_default_brokers,
+    stub_recap_parsing, fake_store_two_buys, recap_file, monkeypatch,
+):
+    rejection = {
+        "proposal_id": "p2",
+        "dry_run": False,
+        "results": [],
+        "success_count": 0,
+        "failure_count": 0,
+        "rejected": True,
+        "reason": "proposal_not_found",
+        "detail": "no proposal with id p2",
+    }
+    engine = _StubEngine(
+        proposals=[_proposal("p1"), _proposal("p2")],
+        executions=[
+            _execution("p1", "TSLA", "buy", ok=True),
+            rejection,
+        ],
+    )
+
+    async def fake_get_engine():
+        return engine
+
+    monkeypatch.setattr(automate_mod, "get_engine", fake_get_engine)
+
+    args = _args(recap_file, str(tmp_path / "automation.sqlite"))
+    with pytest.raises(automate_mod.CliRuntimeError) as excinfo:
+        _run(_run_automate_from_recap(args, parser=None, context=_ctx()))
+
+    assert excinfo.value.exit_code == ExitCode.FULL_BROKER_FAILURE
+    details = excinfo.value.details
+    assert details["completed_orders"] == 1
+    assert details["completed_results"]["successful"] >= 1
+    assert details["completed_results"]["failed"] == 0
+
+    store = fake_store_two_buys["store"]
+    # Order 1's signal (id 1) already executed live — must be marked so it
+    # doesn't re-execute on the next automate run. Order 2's signal (id 2)
+    # never executed — must NOT be marked.
+    assert store.marked_buys == [1]
+    assert 2 not in store.marked_buys
+
+
+# --------------------------------------------------------------------------
+# All-success path: same marks, same timing — bulk marking after the loop
+# and incremental marking inside the loop must agree when nothing aborts.
+# --------------------------------------------------------------------------
+def test_automate_marks_all_signals_executed_on_full_success(
+    tmp_path, one_broker, stub_session_init, stub_default_brokers,
+    stub_recap_parsing, fake_store_two_buys, recap_file, monkeypatch,
+):
+    engine = _StubEngine(
+        proposals=[_proposal("p1"), _proposal("p2")],
+        executions=[
+            _execution("p1", "TSLA", "buy", ok=True),
+            _execution("p2", "AAPL", "buy", ok=True),
+        ],
+    )
+
+    async def fake_get_engine():
+        return engine
+
+    monkeypatch.setattr(automate_mod, "get_engine", fake_get_engine)
+
+    args = _args(recap_file, str(tmp_path / "automation.sqlite"))
+    exit_code, data = _run(
+        _run_automate_from_recap(args, parser=None, context=_ctx())
+    )
+
+    assert exit_code == ExitCode.SUCCESS
+    assert data["executed_buy_signals"] == [1, 2]
+    store = fake_store_two_buys["store"]
+    assert sorted(store.marked_buys) == [1, 2]
