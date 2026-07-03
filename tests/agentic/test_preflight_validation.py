@@ -1,10 +1,7 @@
-"""Pre-flight broker validation re-homed into the Router/gate path.
+"""Pre-flight broker validation on the ExecutionEngine.
 
-When the legacy path migrated from `order_processor.process_orders`
-(which ran `_validate_brokers` before fan-out) to the Router via
-`execute_via_router`, broker pre-flight validation was dropped. These tests
-pin the re-homed `preflight_validate` helper, which preserves the original
-semantics:
+`validate_targets` (ADR 0006: preflight moves onto the engine) preserves the
+original `_validate_brokers` / `cli_bridge.preflight_validate` semantics:
 
   - a broker with no validate fn passes through (validated)
   - validate fn returning (True, _)  -> validated
@@ -17,17 +14,38 @@ semantics:
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
-from agentic.cli_bridge import preflight_validate
+import pytest
+
+from agentic.router import NullAccountStatusProvider, Router
+from enforcement import AuditLog, EnforcementCore, ProposalStore
+from enforcement.circuit_breaker import CircuitBreaker
+
+
+@pytest.fixture
+def engine(tmp_path: Path) -> Router:
+    core = EnforcementCore(
+        proposal_store=ProposalStore(tmp_path / "proposals.sqlite"),
+        audit=AuditLog(tmp_path / "audit.jsonl"),
+        breaker=CircuitBreaker(threshold=3, cooldown_seconds=10.0),
+        proposal_ttl_seconds=60.0,
+    )
+    return Router(
+        broker_servers={},
+        core=core,
+        provider=NullAccountStatusProvider(),
+        automation_store_path=str(tmp_path / "automation.sqlite3"),
+    )
 
 
 def _run(coro):
     return asyncio.run(coro)
 
 
-def test_no_validate_fn_passes_through():
+def test_no_validate_fn_passes_through(engine: Router):
     validated, skipped = _run(
-        preflight_validate(
+        engine.validate_targets(
             selected_brokers=["Alpha", "Beta"],
             action="buy",
             quantity=1,
@@ -40,7 +58,7 @@ def test_no_validate_fn_passes_through():
     assert skipped == []
 
 
-def test_true_and_none_pass_false_is_skipped():
+def test_true_and_none_pass_false_is_skipped(engine: Router):
     async def ok(*a):
         return (True, "")
 
@@ -51,7 +69,7 @@ def test_true_and_none_pass_false_is_skipped():
         return (False, "Insufficient shares (0 available)")
 
     validated, skipped = _run(
-        preflight_validate(
+        engine.validate_targets(
             selected_brokers=["Good", "NoCreds", "Bad"],
             action="buy",
             quantity=1,
@@ -64,12 +82,12 @@ def test_true_and_none_pass_false_is_skipped():
     assert skipped == [("Bad", "Insufficient shares (0 available)")]
 
 
-def test_exception_is_skipped_with_message():
+def test_exception_is_skipped_with_message(engine: Router):
     async def boom(*a):
         raise RuntimeError("broker exploded\nsecond line")
 
     validated, skipped = _run(
-        preflight_validate(
+        engine.validate_targets(
             selected_brokers=["Boom"],
             action="buy",
             quantity=1,
@@ -87,13 +105,13 @@ def test_exception_is_skipped_with_message():
     assert "\n" not in reason
 
 
-def test_timeout_is_skipped():
+def test_timeout_is_skipped(engine: Router):
     async def slow(*a):
         await asyncio.sleep(1.0)
         return (True, "")
 
     validated, skipped = _run(
-        preflight_validate(
+        engine.validate_targets(
             selected_brokers=["Slow"],
             action="buy",
             quantity=1,
@@ -107,7 +125,7 @@ def test_timeout_is_skipped():
     assert skipped == [("Slow", "Validation timed out")]
 
 
-def test_validations_run_concurrently():
+def test_validations_run_concurrently(engine: Router):
     # Two validators that each sleep; total wall time should be ~one sleep,
     # not the sum, proving concurrency.
     order_seen = []
@@ -122,7 +140,7 @@ def test_validations_run_concurrently():
 
     async def build_and_run():
         vf = {"A": await slowish("A"), "B": await slowish("B")}
-        return await preflight_validate(
+        return await engine.validate_targets(
             selected_brokers=["A", "B"],
             action="buy",
             quantity=1,

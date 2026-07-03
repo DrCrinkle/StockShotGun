@@ -229,62 +229,19 @@ async def preflight_validate(
 ) -> tuple[list[str], list[tuple[str, str]]]:
     """Run broker pre-flight validation concurrently BEFORE gating/fan-out.
 
-    Restores the fail-fast pre-flight that was dropped when the legacy path
-    moved from `order_processor.process_orders` (which ran `_validate_brokers`)
-    to `execute_via_router`. Bad legs are caught before any broker executes
-    instead of mid-fan-out. Semantics mirror the original `_validate_brokers`:
-
-      - broker with no validate fn  -> validated (pass through)
-      - validate fn -> (True, _)    -> validated
-      - validate fn -> (None, _)    -> validated (no creds; the trade fn handles it)
-      - validate fn -> (False, r)   -> skipped (broker, r)
-      - validate fn raises          -> skipped (broker, first-line message, <=100 chars)
-      - validate fn times out       -> skipped (broker, "Validation timed out")
-
-    `validate_functions` maps broker name -> async fn(action, qty, ticker, price).
-    Returns (validated, skipped); both preserve `selected_brokers` order.
-    `skipped` is a list of (broker, reason) tuples.
+    # delegation shim — dies with this module (ADR 0006 step 5)
     """
-    validated_set: set[str] = set()
-    skipped_map: dict[str, str] = {}
-
-    to_validate: dict[str, Any] = {}
-    for broker in selected_brokers:
-        fn = validate_functions.get(broker)
-        if fn is None:
-            validated_set.add(broker)
-        else:
-            to_validate[broker] = fn
-
-    async def _run_one(fn: Any) -> tuple[Any, str]:
-        try:
-            return await asyncio.wait_for(
-                fn(action, quantity, ticker, price), timeout=timeout
-            )
-        except asyncio.TimeoutError:
-            return (False, "Validation timed out")
-        except Exception as exc:  # noqa: BLE001 — any broker error means "can't validate"
-            return (False, str(exc).split("\n")[0][:100])
-
-    if to_validate:
-        brokers = list(to_validate)
-        results = await asyncio.gather(*(_run_one(to_validate[b]) for b in brokers))
-        for broker, result in zip(brokers, results):
-            verdict = result[0]
-            if verdict is True or verdict is None:
-                validated_set.add(broker)
-            else:
-                reason = result[1] if len(result) > 1 else "validation failed"
-                skipped_map[broker] = reason
-                if progress_fn is not None:
-                    try:
-                        progress_fn(f"[preflight] ⚠ {broker}: {reason}")
-                    except Exception:
-                        pass
-
-    validated = [b for b in selected_brokers if b in validated_set]
-    skipped = [(b, skipped_map[b]) for b in selected_brokers if b in skipped_map]
-    return validated, skipped
+    router = await get_router()
+    return await router.validate_targets(
+        selected_brokers=selected_brokers,
+        action=action,
+        quantity=quantity,
+        ticker=ticker,
+        price=price,
+        validate_functions=validate_functions,
+        timeout=timeout,
+        progress_fn=progress_fn,
+    )
 
 
 async def execute_via_router(
