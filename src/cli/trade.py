@@ -4,7 +4,6 @@ execute path, shared by the CLI, TUI, operator CLI, and MCP server."""
 
 from typing import Any
 
-from agentic.cli_bridge import gate_error_to_exit_code
 from enforcement import GateError
 from cli_runtime import (  # type: ignore[import-untyped]
     CliRuntimeError,
@@ -22,6 +21,7 @@ BROKER_FUNCTIONS = broker_functions_map()
 from cli.common import (
     _mock_batch_results,
     _raise_parser_error,
+    gate_error_to_exit_code,
     get_engine,
     render_execution_result,
 )

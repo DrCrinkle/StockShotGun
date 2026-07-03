@@ -12,6 +12,7 @@ from typing import Any, NoReturn
 
 from brokers import session_manager, BrokerConfig  # type: ignore[import-untyped]
 from brokers.registry import broker_functions_map  # type: ignore[import-untyped]
+from enforcement import GateError
 
 # Per-broker functions derived from the broker registry (ADR 0004).
 BROKER_FUNCTIONS = broker_functions_map()
@@ -27,10 +28,9 @@ _engine_lock = asyncio.Lock()
 async def get_engine() -> Any:
     """Lazy singleton ExecutionEngine for the CLI (ADR 0006).
 
-    Mirrors `agentic.cli_bridge.get_router`'s lazy-singleton-with-lock
-    pattern: built on demand so import-time side effects stay zero — CLI
-    importers that never run a buy/sell don't pay the broker-discovery cost.
-    Imported from `execution`, not `agentic`, per the ADR's canonical home.
+    Built on demand so import-time side effects stay zero — CLI importers
+    that never run a buy/sell don't pay the broker-discovery cost. Imported
+    from `execution`, not `agentic`, per the ADR's canonical home.
     """
     global _engine
     async with _engine_lock:
@@ -73,33 +73,6 @@ def _credentials_present_for_broker(broker_name: str) -> bool:
 
     required_env_vars = BrokerConfig.get_env_vars(broker_name)
     return all(os.getenv(var) for var in required_env_vars)
-
-
-def _build_dry_run_readiness(order, trade_functions):
-    readiness = []
-    ready_brokers = []
-    for broker_name in order["selected_brokers"]:
-        has_trade_function = broker_name in trade_functions
-        credentials_present = _credentials_present_for_broker(broker_name)
-        session_key = BrokerConfig.get_session_key(broker_name)
-        session_initialized = bool(
-            session_key and session_manager.sessions.get(session_key) is not None
-        )
-        broker_ready = has_trade_function and credentials_present
-        if broker_ready:
-            ready_brokers.append(broker_name)
-
-        readiness.append(
-            {
-                "broker": broker_name,
-                "has_trade_function": has_trade_function,
-                "credentials_present": credentials_present,
-                "session_initialized": session_initialized,
-                "ready": broker_ready,
-            }
-        )
-
-    return readiness, ready_brokers
 
 
 def _mock_order_status(order):
@@ -228,6 +201,17 @@ def render_execution_result(execution: dict[str, Any]) -> dict[str, Any]:
         "skipped": len(skipped),
         "statuses": [status],
     }
+
+
+def gate_error_to_exit_code(e: GateError) -> int:
+    """Map a GateError reason to a stable exit code for main.py. Codes match
+    the `cli_runtime.ExitCode` enum where possible.
+    """
+    # INVALID_ARGS = 2 in cli_runtime — that's where every gate rejection
+    # currently lands. Per-reason mapping (per-day limit vs per-order vs
+    # freeze) can be enriched in v0.3 if the operator needs more granular
+    # exit codes.
+    return 2
 
 
 def aggregate_execution_results(rendered: list[dict[str, Any]]) -> dict[str, Any]:

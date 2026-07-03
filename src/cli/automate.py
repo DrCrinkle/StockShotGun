@@ -5,7 +5,6 @@ import json
 from datetime import datetime
 from typing import Any
 
-from agentic.cli_bridge import gate_error_to_exit_code
 from enforcement import GateError
 from cli_runtime import (  # type: ignore[import-untyped]
     CliRuntimeError,
@@ -24,6 +23,7 @@ from cli.common import (
     _mock_batch_results,
     _raise_parser_error,
     aggregate_execution_results,
+    gate_error_to_exit_code,
     get_engine,
     render_execution_result,
 )

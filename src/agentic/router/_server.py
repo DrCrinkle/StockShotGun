@@ -767,8 +767,8 @@ class ExecutionEngine:
         against each broker's own validation function so bad legs are caught
         before a proposal is even minted, instead of surfacing mid-fan-out.
 
-        Semantics mirror the original `_validate_brokers` /
-        `cli_bridge.preflight_validate`:
+        Semantics mirror the original `_validate_brokers` (retired in the F5
+        v0.4 migration to the Router):
 
           - broker with no validate fn  -> validated (pass through)
           - validate fn -> (True, _)    -> validated
@@ -1088,8 +1088,8 @@ class ExecutionEngine:
 
 
 # Back-compat alias (ADR 0006): the class was renamed Router → ExecutionEngine.
-# Callers (cli_bridge, agentic.cli, tests, the MCP entrypoint) still import
-# `Router`; this keeps them working until they are repointed in later steps.
+# Callers (agentic.cli, tests, the MCP entrypoint) still import `Router`;
+# this keeps them working until they are repointed in later steps.
 Router = ExecutionEngine
 
 
