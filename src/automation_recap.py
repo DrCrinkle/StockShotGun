@@ -7,6 +7,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
+from typing import Any, Protocol
 
 
 BROKER_ALIAS_MAP = {
@@ -288,6 +289,17 @@ def _extract_brokers(detail: str) -> list[str]:
     return found
 
 
+class CalendarSignalLike(Protocol):
+    """Structural contract for calendar-signal ingestion. Deliberately a
+    local Protocol rather than an import from `signals` — the store must
+    not depend on source-adapter packages."""
+
+    ticker: str
+    ratio: str
+    effective_date: str | None
+    raw: dict[str, Any]
+
+
 class AutomationRecapStore:
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -358,6 +370,21 @@ class AutomationRecapStore:
                 status TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 promoted_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS calendar_signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                ratio TEXT NOT NULL,
+                effective_date TEXT,
+                source TEXT NOT NULL,
+                raw_json TEXT NOT NULL,
+                signal_key TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL,
+                dismissed_reason TEXT,
+                promoted_buy_signal_id INTEGER REFERENCES buy_signals(id),
+                first_seen TEXT NOT NULL,
+                last_seen TEXT NOT NULL
             );
             """
         )
@@ -588,6 +615,198 @@ class AutomationRecapStore:
             (now.isoformat(), *trigger_ids),
         )
         self.conn.commit()
+
+    # --- calendar signals (automated source feed, e.g. Nasdaq calendar) ---
+
+    def upsert_calendar_signals(
+        self,
+        signals: list[CalendarSignalLike],
+        source: str,
+        now: datetime,
+    ) -> dict[str, int]:
+        """Idempotent ingest of CalendarSignal objects. New rows get status
+        'new'; existing rows (any status) only bump last_seen — terminal
+        states (dismissed/promoted/expired) are never resurrected."""
+        now_iso = now.isoformat()
+        new = 0
+        seen = 0
+        for signal in signals:
+            key = _line_hash(
+                f"{source}|{signal.ticker}|{signal.ratio}|{signal.effective_date}"
+            )
+            # SELECT-then-INSERT (not ON CONFLICT) because the new/seen count
+            # split needs to know existence up front; fine at calendar scale.
+            exists = self.conn.execute(
+                "SELECT 1 FROM calendar_signals WHERE signal_key = ?", (key,)
+            ).fetchone()
+            if exists:
+                self.conn.execute(
+                    "UPDATE calendar_signals SET last_seen = ? WHERE signal_key = ?",
+                    (now_iso, key),
+                )
+                seen += 1
+            else:
+                self.conn.execute(
+                    """
+                    INSERT INTO calendar_signals(
+                        ticker, ratio, effective_date, source, raw_json,
+                        signal_key, status, first_seen, last_seen
+                    ) VALUES (?, ?, ?, ?, ?, ?, 'new', ?, ?)
+                    """,
+                    (
+                        signal.ticker,
+                        signal.ratio,
+                        signal.effective_date,
+                        source,
+                        json.dumps(signal.raw),
+                        key,
+                        now_iso,
+                        now_iso,
+                    ),
+                )
+                new += 1
+        self.conn.commit()
+        return {"new": new, "seen": seen}
+
+    def list_calendar_signals(self, status: str | None = None) -> list[sqlite3.Row]:
+        if status is None:
+            return self.conn.execute(
+                "SELECT * FROM calendar_signals "
+                "ORDER BY effective_date IS NULL, effective_date, ticker"
+            ).fetchall()
+        return self.conn.execute(
+            "SELECT * FROM calendar_signals WHERE status = ? "
+            "ORDER BY effective_date IS NULL, effective_date, ticker",
+            (status,),
+        ).fetchall()
+
+    def dismiss_calendar_signal(self, signal_id: int, reason: str, now: datetime) -> None:
+        """Dismiss a 'new' calendar signal. Raises `ValueError` if the signal
+        doesn't exist, and raises `ValueError` if it isn't in 'new' status —
+        in particular this prevents dismissing an already-'promoted' signal,
+        which would orphan its pending buy_signals row."""
+        with self.conn:
+            row = self.conn.execute(
+                "SELECT * FROM calendar_signals WHERE id = ?", (signal_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"calendar signal {signal_id} not found")
+            if row["status"] != "new":
+                raise ValueError(
+                    f"calendar signal {signal_id} is '{row['status']}', not 'new'"
+                )
+            self.conn.execute(
+                "UPDATE calendar_signals SET status = 'dismissed', "
+                "dismissed_reason = ?, last_seen = ? WHERE id = ?",
+                (reason, now.isoformat(), signal_id),
+            )
+
+    def promote_calendar_signal(self, signal_id: int, now: datetime) -> int:
+        """Promote a 'new' calendar signal into the actionable buy_signals
+        queue (consumed by the automate due-buy path). Returns buy_signal id.
+
+        If the signal's `effective_date` is None, the created buy_signals row
+        gets `target_date` NULL — and `_is_due_buy_signal` treats a NULL
+        target as immediately due, so a date-less promotion becomes an
+        immediately-due buy in the automate path.
+
+        Refuses to promote a signal whose `effective_date` has already
+        passed: buy_signals only stores MM/DD (no year), so the due-buy
+        resolver would reconstruct a passed date as next year's occurrence,
+        mis-scheduling a real buy ~1 year out. With this guard in place, the
+        MM/DD `target_date` produced below always resolves to the correct
+        next occurrence. NULL effective_date stays allowed — that's the
+        documented immediately-due behavior above."""
+        with self.conn:
+            row = self.conn.execute(
+                "SELECT * FROM calendar_signals WHERE id = ?", (signal_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"calendar signal {signal_id} not found")
+            if row["status"] != "new":
+                raise ValueError(
+                    f"calendar signal {signal_id} is '{row['status']}', not 'new'"
+                )
+            if (
+                row["effective_date"] is not None
+                and row["effective_date"] < now.date().isoformat()
+            ):
+                raise ValueError(
+                    f"calendar signal {signal_id} effective date "
+                    f"{row['effective_date']} has passed — expire or re-scan "
+                    "instead of promoting"
+                )
+
+            target_mmdd = None
+            if row["effective_date"]:
+                iso = datetime.strptime(row["effective_date"], "%Y-%m-%d")
+                target_mmdd = iso.strftime("%m/%d")
+
+            key = _line_hash(f"calendar_promote|{row['signal_key']}")
+            cursor = self.conn.execute(
+                """
+                INSERT INTO buy_signals(
+                    ticker, target_date, ratio, round_num, notes,
+                    signal_key, status, created_at
+                ) VALUES (?, ?, ?, NULL, ?, ?, 'pending', ?)
+                """,
+                (
+                    row["ticker"],
+                    target_mmdd,
+                    row["ratio"],
+                    f"promoted from calendar_signals #{signal_id} ({row['source']})",
+                    key,
+                    now.isoformat(),
+                ),
+            )
+            buy_id = cursor.lastrowid
+            assert buy_id is not None
+            self.conn.execute(
+                "UPDATE calendar_signals SET status = 'promoted', "
+                "promoted_buy_signal_id = ?, last_seen = ? WHERE id = ?",
+                (buy_id, now.isoformat(), signal_id),
+            )
+        return buy_id
+
+    def expire_stale_calendar_signals(self, today: date, now: datetime) -> int:
+        """Mark 'new' signals whose effective date has passed as expired.
+        Signals with a NULL effective_date are never touched — there is no
+        date to compare against, so they can't be considered stale."""
+        with self.conn:
+            cursor = self.conn.execute(
+                "UPDATE calendar_signals SET status = 'expired', last_seen = ? "
+                "WHERE status = 'new' AND effective_date IS NOT NULL "
+                "AND effective_date < ?",
+                (now.isoformat(), today.isoformat()),
+            )
+        return cursor.rowcount
+
+    def _count_by(self, table: str, column: str) -> dict[str, int]:
+        # table/column are trusted literals, never caller/user input — do not widen.
+        # Assumes a NOT NULL status column on `table`.
+        rows = self.conn.execute(
+            f"SELECT {column} AS k, COUNT(*) AS n FROM {table} GROUP BY {column}"
+        ).fetchall()
+        return {row["k"]: row["n"] for row in rows}
+
+    def status_counts(self) -> dict[str, dict[str, int]]:
+        """Read-only status-count snapshot across the three signal/trigger
+        tables the `status` CLI command reports on. Guarantees the stable
+        default keys the CLI relies on even against an empty database."""
+        calendar_signals = self._count_by("calendar_signals", "status")
+        calendar_signals.setdefault("new", 0)
+
+        buy_signals = self._count_by("buy_signals", "status")
+        buy_signals.setdefault("pending", 0)
+
+        pending_sell_triggers = self._count_by("pending_sell_triggers", "status")
+        pending_sell_triggers.setdefault("pending", 0)
+
+        return {
+            "calendar_signals": calendar_signals,
+            "buy_signals": buy_signals,
+            "pending_sell_triggers": pending_sell_triggers,
+        }
 
     def close(self) -> None:
         self.conn.close()

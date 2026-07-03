@@ -32,6 +32,9 @@ EXPECTED_ROUTER_TOOLS = {
     "run_sweep",
     "sell_arrived",
     "recap_ingest",
+    "scan_signals",
+    "dismiss_signal",
+    "promote_signal",
 }
 
 

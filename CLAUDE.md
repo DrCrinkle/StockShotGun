@@ -162,6 +162,13 @@ python3 main.py buy 10 TSLA --broker Fennel --broker Public  # Specific brokers
 
 # View holdings
 python3 main.py holdings TSLA --broker Fennel
+
+# Scan the Nasdaq splits calendar for reverse-split signals, then list what's staged
+python3 main.py signals scan
+python3 main.py signals list --status new
+
+# Aggregate JSON snapshot of RSA state (trades + positions + signal counts) for Pulse polling
+python3 main.py status
 ```
 
 ### Type Checking and Linting

@@ -74,7 +74,7 @@ The skill embeds the per-broker settlement-tier knowledge (clearing firm, proces
 
 ## Component 4: Pulse feed
 
-Small status emitter pushing to the local Pulse instance (`localhost:31337`): open trades, positions by sweep status, staged proposals awaiting approval, recent executions, realized P&L per play. Read-only, derived entirely from the SQLite store: a `stockshotgun status --json` command that a Pulse module polls. Polling over push keeps the repo free of any Pulse dependency — StockShotGun exposes JSON, PAI consumes it.
+Small status emitter pushing to the local Pulse instance (`localhost:31337`): open trades, positions by sweep status, staged proposals awaiting approval, recent executions, realized P&L per play. Read-only, derived entirely from the SQLite store: originally specced as `stockshotgun status --json`; shipped as `python3 main.py status` (JSON emission goes through main.py's global `--output json` flag, not a per-command `--json` flag — see the CLI envelope deviation in `specs/rsa-signals-detection-plan.md`) that a Pulse module polls. As shipped, the snapshot covers open trades + positions by sweep status and signal-queue counts (`calendar_signals`, `buy_signals`, `pending_sell_triggers`) — staged-proposal detail, recent-execution history, and realized P&L per play are not yet in the snapshot and remain future work. Polling over push keeps the repo free of any Pulse dependency — StockShotGun exposes JSON, PAI consumes it.
 
 ## Safety invariants
 
@@ -94,11 +94,16 @@ Small status emitter pushing to the local Pulse instance (`localhost:31337`): op
 
 ## Build order
 
-1. `signals` module + `rsa_signals` table + CLI command
-2. `scan_signals` / `dismiss_signal` MCP tools
-3. PAI skill (playbook)
-4. Scheduled routine + notification/approval flow (Phase 1)
-5. Pulse status feed
-6. (Later, earned) auto-execute flag — Phase 2
+1. `signals` module + `rsa_signals` table + CLI command — ✅ shipped (feat/rsa-signals-detection)
+2. `scan_signals` / `dismiss_signal` MCP tools — ✅ shipped (feat/rsa-signals-detection) — also shipped `promote_signal`, not originally itemized here but part of the same detection layer (see Component 1)
+3. PAI skill (playbook) — not started
+4. Scheduled routine + notification/approval flow (Phase 1) — not started
+5. Pulse status feed — ✅ shipped (feat/rsa-signals-detection) — the repo-side half only: `python3 main.py status` now emits the aggregate JSON snapshot described in Component 4. The Pulse-side module that polls it (PAI repo, not this one) is not started.
+6. (Later, earned) auto-execute flag — Phase 2 — not started
 
 Each step is independently shippable and useful: after step 1 the signals scan is a useful human tool on its own; after step 4 the system is live in human-gated mode.
+
+Remaining work (items 3, 4, 6) is PAI-side or config-only: the `RsaTrader` skill
+and scheduled routine consuming the MCP tools shipped in items 1/2/5, plus the
+auto-execute flag once Phase 1 earns a track record. See Plan 2 (not yet
+written, per the scope note in `specs/rsa-signals-detection-plan.md`).

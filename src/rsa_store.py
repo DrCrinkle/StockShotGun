@@ -160,6 +160,12 @@ class RsaStore:
             (trade_id,),
         ).fetchone()
 
+    def list_trades(self) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            "SELECT id, ticker, split_ratio, expected_split_date, signal_id, notes, created_at "
+            "FROM rsa_trades ORDER BY id DESC"
+        ).fetchall()
+
     def get_raw_positions(self, trade_id: int) -> list[sqlite3.Row]:
         return self.conn.execute(
             "SELECT id, trade_id, broker, account_id, pre_split_qty, created_at "

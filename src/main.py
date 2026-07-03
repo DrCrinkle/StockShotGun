@@ -29,6 +29,8 @@ from cli_runtime import (  # type: ignore[import-untyped]
 
 from cli.common import _credentials_present_for_broker, _raise_parser_error
 from cli.automate import _run_automate_from_recap
+from cli.signals import _run_signals
+from cli.status import _run_status
 from cli.sweep import _run_sweep
 from cli.batch import _run_batch_from_file
 from cli.trade import run_trade
@@ -54,7 +56,17 @@ def _extract_option_value(argv, option_name):
 
 
 def _extract_action_from_argv(argv):
-    known_actions = {"buy", "sell", "setup", "holdings", "health", "automate", "sweep"}
+    known_actions = {
+        "buy",
+        "sell",
+        "setup",
+        "holdings",
+        "health",
+        "automate",
+        "sweep",
+        "signals",
+        "status",
+    }
     for token in argv:
         if token in known_actions:
             return token
@@ -278,6 +290,12 @@ async def run_cli(args, parser, context) -> tuple[ExitCode, dict[str, Any]]:
 
     if args.action == "sweep":
         return await _run_sweep(args, parser, context)
+
+    if args.action == "signals":
+        return await _run_signals(args, parser, context)
+
+    if args.action == "status":
+        return await _run_status(args, parser, context)
 
     if args.from_file:
         return await _run_batch_from_file(args, parser, context)
@@ -620,6 +638,31 @@ def _build_parser():
         help="Load ticker, ratio, expected_split_date, and per-broker positions from rsa_trades by id",
     )
     sweep_parser.set_defaults(quantity=None, price=None)
+
+    signals_parser = subparsers.add_parser(
+        "signals",
+        parents=[shared_parent],
+        help="Scan/list reverse-split signals from the Nasdaq calendar",
+    )
+    signals_parser.add_argument(
+        "signals_action",
+        choices=["scan", "list"],
+        help="scan: poll the calendar and persist; list: read staged signals",
+    )
+    signals_parser.add_argument(
+        "--status",
+        default=None,
+        choices=["new", "promoted", "dismissed", "expired"],
+        help="Filter listed signals by status (new, promoted, dismissed, expired)",
+    )
+    signals_parser.set_defaults(quantity=None, ticker=None, price=None)
+
+    status_parser = subparsers.add_parser(
+        "status",
+        parents=[shared_parent],
+        help="Aggregate JSON snapshot of RSA state (for Pulse/monitoring)",
+    )
+    status_parser.set_defaults(quantity=None, ticker=None, price=None)
 
     return parser
 

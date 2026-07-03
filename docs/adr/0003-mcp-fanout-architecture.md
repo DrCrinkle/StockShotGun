@@ -55,11 +55,12 @@ tool surface is identical for every broker; the implementation differs.
 
 ### Router MCP
 
-`python -m agentic.router` is the **agent-facing surface**. It exposes 9
+`python -m agentic.router` is the **agent-facing surface**. It exposes 12
 fan-out tools (`list_brokers`, `get_holdings`, `propose_order`,
 `execute_order`, `place_order`, `get_rsa_trade`, `run_sweep`, `sell_arrived`,
-`recap_ingest`). The agent never talks to a per-broker MCP directly in the
-documented contract — though nothing prevents it for debugging.
+`recap_ingest`, `scan_signals`, `dismiss_signal`, `promote_signal`). The
+agent never talks to a per-broker MCP directly in the documented contract —
+though nothing prevents it for debugging.
 
 The router holds either:
 

@@ -175,6 +175,18 @@ real observations rather than hardcoded estimates.
 The D-suffix appears in the community's own vocabulary (e.g., `VIVK(D)`), not just
 internally in the sweep code.
 
+### Calendar Signal
+A second, independent signal source alongside Recaps: the Nasdaq corporate-actions
+splits calendar (`src/signals/nasdaq.py`), polled via `python3 main.py signals scan`
+and stored in the `calendar_signals` table (`automation_recap.py`). Reverse splits
+only (forward splits are filtered out at parse time). Fields: `ticker`, `ratio`
+(`N:D`), `effective_date`, `source`, `status` (`new` → `promoted` | `dismissed` |
+`expired`). Idempotent — rescanning bumps `last_seen` on existing rows without
+resurrecting terminal states. A `new` signal is promoted into the same `buy_signals`
+queue that Recap-derived Upcoming Buys use — the calendar is a second feed into one
+queue, not a parallel execution path. A signal promoted with no `effective_date`
+becomes immediately due on the next `automate` run.
+
 ---
 
 ## Ticker Rules (planned, see `specs/ticker-rules-workshop.md`)
