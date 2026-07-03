@@ -77,9 +77,14 @@ def engine(tmp_path: Path) -> Router:
 
 @pytest.fixture
 def capture_gate(monkeypatch, engine: Router):
-    """Patch `gate_order` inside the router module so `propose_order` runs the
+    """Patch `gate_order` inside the engine module so `propose_order` runs the
     real account-discovery + intent-building path but the gate itself is a
-    spy — same technique the old cli_bridge golden test used."""
+    spy — same technique the old cli_bridge golden test used.
+
+    ADR 0006 step 2: the `ExecutionEngine` class body (and its `gate_order`
+    call site) moved from `agentic.router._server` to `execution.engine`, so
+    the patch target follows it there.
+    """
     captured: dict = {}
 
     def fake_gate_order(core, intent, provider, *, ref_price):
@@ -94,9 +99,9 @@ def capture_gate(monkeypatch, engine: Router):
         decision = SimpleNamespace(skipped_brokers=[])
         return proposal, decision
 
-    import agentic.router._server as server_mod
+    import execution.engine as engine_mod
 
-    monkeypatch.setattr(server_mod, "gate_order", fake_gate_order)
+    monkeypatch.setattr(engine_mod, "gate_order", fake_gate_order)
     return captured
 
 
