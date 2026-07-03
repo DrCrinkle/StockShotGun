@@ -20,7 +20,6 @@ import re
 ROOT = pathlib.Path(__file__).resolve().parents[1] / "src"
 EXEC_DIR = ROOT / "execution"
 ENFORCEMENT_DIR = ROOT / "enforcement"
-AGENTIC_FREE = ("telemetry.py", "in_process.py", "ports.py", "engine.py")
 _AGENTIC_IMPORT = re.compile(r"^\s*(?:from|import)\s+agentic\b", re.MULTILINE)
 
 
@@ -34,9 +33,14 @@ def _find_agentic_imports(path: pathlib.Path) -> list[str]:
 
 
 def test_neutral_execution_modules_do_not_import_agentic():
+    # Glob, not an allowlist (final-review M2): EVERY module under
+    # execution/ — including files added after this test was written — must
+    # stay agentic-free, or the layering silently inverts for the new file.
+    paths = sorted(EXEC_DIR.glob("*.py"))
+    assert paths, f"no modules found under {EXEC_DIR}"
     offenders: list[str] = []
-    for name in AGENTIC_FREE:
-        offenders.extend(_find_agentic_imports(EXEC_DIR / name))
+    for path in paths:
+        offenders.extend(_find_agentic_imports(path))
     assert offenders == [], f"execution/ must not import agentic/: {offenders}"
 
 

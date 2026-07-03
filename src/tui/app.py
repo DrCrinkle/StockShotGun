@@ -20,6 +20,7 @@ from tui.input_handler import (
     setup_tui_input_interception,
     restore_original_input,
 )
+from brokers import session_manager
 from cli.common import (
     _leg_label,
     aggregate_execution_results,
@@ -443,6 +444,34 @@ def run_tui():
         ]
 
         try:
+            # Initialize broker sessions BEFORE any engine call — the same
+            # step every CLI path takes (cli/trade.py, cli/batch.py,
+            # cli/automate.py). Without it, `propose_order`'s account
+            # discovery reads `session_manager.sessions` cold (empty on the
+            # first submission), and only the trade fns' lazy `get_session`
+            # calls populate it — so discovery would silently differ between
+            # the first and later submissions (final-review I2). Nothing else
+            # in the TUI guarantees this: `session_cache` only *reads*
+            # session status, and the holdings screen initializes lazily via
+            # the broker fns themselves.
+            brokers_to_initialize = sorted(
+                {
+                    broker
+                    for order in orders
+                    for broker in order.get("selected_brokers", [])
+                }
+            )
+            try:
+                await session_manager.initialize_selected_sessions(
+                    brokers_to_initialize
+                )
+            except Exception as exc:
+                response_box.add_response(
+                    f"✗ Failed to initialize broker sessions: {exc}",
+                    force_redraw=True,
+                )
+                return
+
             # Pre-flight each order before proposing; drop legs that fail
             # broker validation and any order left with no executable broker.
             engine = await get_engine()
@@ -567,6 +596,22 @@ def run_tui():
         }
 
         try:
+            # Re-initialize sessions for the retried brokers (same
+            # final-review I2 rationale as submit_all_orders): a broker that
+            # timed out during the original submission likely has no usable
+            # cached session, and `initialize_selected_sessions` is
+            # idempotent for brokers whose session is already live.
+            try:
+                await session_manager.initialize_selected_sessions(
+                    sorted(timed_out_brokers)
+                )
+            except Exception as exc:
+                response_box.add_response(
+                    f"✗ Failed to initialize broker sessions: {exc}",
+                    force_redraw=True,
+                )
+                return
+
             # Pre-flight the retried orders before proposing, same as submit.
             engine = await get_engine()
             executable_retry = []

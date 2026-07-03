@@ -842,7 +842,11 @@ class ExecutionEngine:
             if isinstance(r, Exception):
                 continue
             name, accounts = r
-            out[name] = list(accounts) if accounts else [DEFAULT_PLACEHOLDER_ACCOUNT_ID]
+            # Order-preserving dedup (final-review I3): a broker session that
+            # reports the same account_id twice must not produce two legs —
+            # two legs = two orders on the same account.
+            deduped = list(dict.fromkeys(str(a) for a in accounts or []))
+            out[name] = deduped if deduped else [DEFAULT_PLACEHOLDER_ACCOUNT_ID]
         return out
 
     def _build_intent(
@@ -1003,19 +1007,34 @@ class ExecutionEngine:
                 ),
             }
 
+        async def _place_leg(leg: Any) -> Any:
+            # A proposal can outlive the broker set that minted it (broker
+            # SDK import failure on restart, subprocess crash). A missing
+            # broker server is a per-leg failure, not a raw KeyError that
+            # aborts the whole fan-out (final-review M1).
+            server = self.broker_servers.get(leg.broker)
+            if server is None:
+                return {
+                    "broker": leg.broker,
+                    "account_id": leg.account_id,
+                    "ok": False,
+                    "dry_run": dry_run,
+                    "idempotency_key": "",
+                    "reason": "broker_unavailable",
+                    "detail": f"no broker server registered for {leg.broker!r}",
+                }
+            return await server.place_at_broker(
+                ticker=ticker,
+                qty=qty,
+                side=side,
+                price=price,
+                account_id=leg.account_id,
+                dry_run=dry_run,
+                confirmation_token=leg.token,
+            )
+
         legs = await asyncio.gather(
-            *(
-                self.broker_servers[leg.broker].place_at_broker(
-                    ticker=ticker,
-                    qty=qty,
-                    side=side,
-                    price=price,
-                    account_id=leg.account_id,
-                    dry_run=dry_run,
-                    confirmation_token=leg.token,
-                )
-                for leg in proposal.legs
-            ),
+            *(_place_leg(leg) for leg in proposal.legs),
             return_exceptions=True,
         )
         results: list[dict[str, Any]] = []
@@ -1024,7 +1043,25 @@ class ExecutionEngine:
         for leg_proposal, leg in zip(proposal.legs, legs):
             name = leg_proposal.broker
             if isinstance(leg, Exception):
-                results.append({"broker": name, "ok": False, "error": str(leg)})
+                # Exception legs keep the full leg shape (final-review M1):
+                # account_id + reason + detail, so renderers and completion
+                # tracking treat them like any other failed leg.
+                results.append(
+                    {
+                        "broker": name,
+                        "account_id": leg_proposal.account_id,
+                        "ok": False,
+                        "dry_run": dry_run,
+                        "idempotency_key": "",
+                        "reason": "exception",
+                        "detail": str(leg),
+                        "error": str(leg),  # back-compat key
+                    }
+                )
+                failure_count += 1
+            elif isinstance(leg, dict):
+                # broker_unavailable leg from _place_leg — already leg-shaped.
+                results.append(leg)
                 failure_count += 1
             else:
                 r = {

@@ -78,6 +78,62 @@ TDD process); this section is the correction layer.
   lived in `agentic/cli_bridge.py`; all three live callers (`cli/trade.py`,
   `cli/batch.py`, `cli/automate.py`) now import it from `cli/common.py`,
   which survives `cli_bridge.py`'s deletion in Task 6.
+- **Final-review C1 — account-blind trade fns x per-account legs = N² live
+  orders.** `TradeFn(side, qty, ticker, price)` has no account parameter, so
+  every broker's trade fn is account-blind; Fennel's additionally fans out
+  internally over ALL session accounts (`brokers/fennel.py`). Fennel was the
+  only `multi_account=True` spec, so per-account fan-out (this branch) gave
+  it N legs, each triggering the internal N-account loop — 2 accounts = 4
+  live orders. Two-part fix: (a) Fennel flipped to `multi_account=False`
+  (verified: `build_broker_mcp_spec` maps the flag to the session-driven
+  `make_session_accounts_fn` discovery closure vs `_default_single_account`,
+  so the flip provably yields one `"primary"` leg — pinned by
+  `test_fennel_spec_discovers_single_primary_leg`); (b) a structural guard
+  in `InProcessBroker.place_at_broker`: a leg addressed to a real
+  (non-`"primary"`) account id on a spec without the new
+  `BrokerMCPSpec.account_scoped_trade` flag fails per leg with
+  `reason="account_scoped_dispatch_unsupported"` before the SDK is touched
+  (dry-run legs too, for rehearsal parity). The guard keys on the flag —
+  never set by `build_broker_mcp_spec` while `TradeFn` is account-blind —
+  rather than on `multi_account` or leg counts, because every real leg
+  today is `"primary"` (all discovery fallbacks assign the placeholder), so
+  the guard is provably inert for all current brokers and fires exactly
+  when a future `multi_account=True` + blind-fn combination would
+  double-buy. Tests that intentionally place legs at real account ids set
+  `account_scoped_trade=True` on their fakes (simulating the future
+  account-scoped broker) — each carries a justification comment.
+- **Final-review C2 — automate completion tracking compared rendered labels
+  against bare broker names.** `completed_brokers_by_source` accumulated
+  `status["successful"]` (rendered `_leg_label` output, `"Broker:acct"` for
+  real account ids) while `expected_brokers_by_source` held bare broker
+  names — under multi-account fan-out the sets could never match, so
+  `mark_buy_signals_executed` never fired and the signal re-executed on
+  every automate run (double-trade). Fixed: completion now reads bare
+  `leg["broker"]` names from the RAW execution legs (`ok=True` only), and
+  the mark condition is `expected ⊆ completed`. **Decided multi-leg
+  semantics:** a broker counts as completed when **≥ 1 of its legs
+  succeeded** — closest parity with the old internal-fan-out behavior,
+  where the broker call's overall success (e.g. Fennel returns True if at
+  least one account succeeded) marked the signal. A source is marked only
+  when EVERY expected broker completed (unchanged). Sell triggers split
+  into one order per broker share a source key; their per-order legs
+  accumulate into the same completed set, so the equality-to-subset change
+  is behavior-preserving for them.
+- **Final-review M4 finding — only `batch.py` duplicated the DRY RUN
+  banner.** Text mode printed it in the header block AND via
+  `cli_response_fn`; deduped exactly like `cli/trade.py` (response-fn call
+  gated to JSON mode). `automate.py` — cited in the review — emits the
+  banner exactly once in text mode (verified empirically and pinned by
+  `test_automate_dry_run_banner_prints_once_in_text_mode`); no change made
+  there.
+- **Final-review I2 — TUI session-init drift.** `submit_all_orders` (and
+  `retry_timed_out_brokers`) never initialized broker sessions, so engine
+  account discovery read `session_manager.sessions` cold on the first
+  submission and warm afterwards. Nothing else in the TUI guarantees init
+  (`tui/session_cache.py` only reads status; the holdings screen relies on
+  the broker fns' lazy `get_session`). Both entry points now call
+  `initialize_selected_sessions` before `validate_targets`, mirroring the
+  CLI paths, with non-raising error display (TUI must not crash).
 
 ---
 

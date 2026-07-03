@@ -388,17 +388,32 @@ async def _run_automate_from_recap(args, parser, context):
             if is_rehearsal:
                 continue
 
+            # Completion is tracked with BARE broker names read from the RAW
+            # execution legs, never from the rendered statuses: `rendered`
+            # labels legs via `_leg_label` ("Broker:acct" for real account
+            # ids), which can never equal the bare names in
+            # `expected_brokers_by_source` — under multi-account fan-out that
+            # mismatch left signals unmarked forever, re-executing them on
+            # every automate run (final-review C2, a double-trade bug).
+            # Decided semantics: a broker counts as completed when >= 1 of
+            # its legs succeeded — parity with the old internal-fan-out
+            # behavior where the broker call's overall success (e.g. Fennel:
+            # True if at least one account succeeded) marked the signal.
             source_key = (source["type"], source["id"])
-            for status in rendered["statuses"]:
-                completed_brokers_by_source.setdefault(source_key, set()).update(
-                    status.get("successful", [])
-                )
+            succeeded_brokers = {
+                str(leg.get("broker"))
+                for leg in execution.get("results") or []
+                if leg.get("ok")
+            }
+            completed_brokers_by_source.setdefault(source_key, set()).update(
+                succeeded_brokers
+            )
 
             expected_brokers = expected_brokers_by_source.get(source_key, set())
             if not expected_brokers or source_key in marked_sources:
                 continue
             completed_brokers = completed_brokers_by_source.get(source_key, set())
-            if completed_brokers != expected_brokers:
+            if not expected_brokers.issubset(completed_brokers):
                 continue
 
             source_type, source_id = source_key

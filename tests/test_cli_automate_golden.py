@@ -125,6 +125,38 @@ def _execution(pid: str, ticker: str, side: str, broker: str = "Public", ok: boo
     }
 
 
+def _multi_leg_execution(
+    pid: str,
+    ticker: str,
+    side: str,
+    legs: list[tuple[str, str, bool]],
+) -> dict:
+    """Engine execution whose legs carry REAL account ids (broker, account_id,
+    ok) — the multi-account fan-out shape (ADR 0001) that broke completion
+    tracking (final-review C2: labels vs bare broker names)."""
+    return {
+        "proposal_id": pid,
+        "ticker": ticker,
+        "side": side,
+        "qty": 1,
+        "dry_run": False,
+        "results": [
+            {
+                "broker": broker,
+                "account_id": account_id,
+                "ok": ok,
+                "dry_run": False,
+                "idempotency_key": f"k-{pid}-{account_id}",
+                "reason": None if ok else "boom",
+                "detail": "placed" if ok else "broker error",
+            }
+            for broker, account_id, ok in legs
+        ],
+        "success_count": sum(1 for *_x, ok in legs if ok),
+        "failure_count": sum(1 for *_x, ok in legs if not ok),
+    }
+
+
 @pytest.fixture
 def recap_file(tmp_path):
     path = tmp_path / "recap.txt"
@@ -427,6 +459,151 @@ def test_automate_marks_completed_signal_before_mid_batch_abort(
     # never executed — must NOT be marked.
     assert store.marked_buys == [1]
     assert 2 not in store.marked_buys
+
+
+# --------------------------------------------------------------------------
+# Final-review M4 follow-up: unlike batch.py (which printed the DRY RUN
+# banner twice in text mode — header block + response fn), automate.py emits
+# it through `automation_response_fn` only. Pin the single occurrence so a
+# future header block doesn't reintroduce the batch bug here.
+# --------------------------------------------------------------------------
+def test_automate_dry_run_banner_prints_once_in_text_mode(
+    tmp_path, one_broker, stub_session_init, stub_default_brokers,
+    stub_recap_parsing, fake_store, recap_file, monkeypatch, capsys,
+):
+    engine = _StubEngine(
+        proposals=[_proposal("p1")],
+        executions=[
+            {
+                "proposal_id": "p1",
+                "ticker": "TSLA",
+                "side": "buy",
+                "qty": 1,
+                "dry_run": True,
+                "results": [
+                    {"broker": "Public", "account_id": "primary", "ok": True,
+                     "dry_run": True, "idempotency_key": "k1", "reason": None,
+                     "detail": "dry-run ok"},
+                ],
+                "success_count": 1,
+                "failure_count": 0,
+            }
+        ],
+    )
+
+    async def fake_get_engine():
+        return engine
+
+    monkeypatch.setattr(automate_mod, "get_engine", fake_get_engine)
+
+    args = _args(recap_file, str(tmp_path / "automation.sqlite"))
+    _run(
+        _run_automate_from_recap(
+            args, parser=None, context=_ctx(dry_run=True, output_format="text")
+        )
+    )
+
+    out = capsys.readouterr().out
+    banner = "DRY RUN — full pipeline rehearsal, no orders placed"
+    assert out.count(banner) == 1, out
+
+
+# --------------------------------------------------------------------------
+# Final-review C2: completion tracking must compare bare broker names from
+# the RAW execution legs, not rendered `_leg_label` output ("Broker:acct").
+# With per-account fan-out (real account ids on the legs), the rendered
+# labels never equal the expected broker names, so signals were never marked
+# executed and re-executed on every automate run — a double-trade bug.
+# --------------------------------------------------------------------------
+def test_automate_marks_signal_executed_when_legs_carry_real_account_ids(
+    tmp_path, one_broker, stub_session_init, stub_default_brokers,
+    stub_recap_parsing, fake_store, recap_file, monkeypatch,
+):
+    """Multi-account fan-out: both of Public's legs succeed under real
+    account ids. The buy signal MUST be marked executed — the broker
+    completed, regardless of how its legs render."""
+    engine = _StubEngine(
+        proposals=[_proposal("p1", leg_count=2)],
+        executions=[
+            _multi_leg_execution(
+                "p1", "TSLA", "buy",
+                legs=[("Public", "acctA", True), ("Public", "acctB", True)],
+            )
+        ],
+    )
+
+    async def fake_get_engine():
+        return engine
+
+    monkeypatch.setattr(automate_mod, "get_engine", fake_get_engine)
+
+    args = _args(recap_file, str(tmp_path / "automation.sqlite"))
+    exit_code, data = _run(
+        _run_automate_from_recap(args, parser=None, context=_ctx())
+    )
+
+    assert exit_code == ExitCode.SUCCESS
+    assert data["executed_buy_signals"] == [1]
+    assert fake_store["store"].marked_buys == [1]
+
+
+def test_automate_does_not_mark_signal_when_all_real_account_legs_failed(
+    tmp_path, one_broker, stub_session_init, stub_default_brokers,
+    stub_recap_parsing, fake_store, recap_file, monkeypatch,
+):
+    """Inverse: every leg failed → the broker did NOT complete → the signal
+    must stay pending (it should re-execute on the next automate run)."""
+    engine = _StubEngine(
+        proposals=[_proposal("p1", leg_count=2)],
+        executions=[
+            _multi_leg_execution(
+                "p1", "TSLA", "buy",
+                legs=[("Public", "acctA", False), ("Public", "acctB", False)],
+            )
+        ],
+    )
+
+    async def fake_get_engine():
+        return engine
+
+    monkeypatch.setattr(automate_mod, "get_engine", fake_get_engine)
+
+    args = _args(recap_file, str(tmp_path / "automation.sqlite"))
+    exit_code, data = _run(
+        _run_automate_from_recap(args, parser=None, context=_ctx())
+    )
+
+    assert data["executed_buy_signals"] == []
+    assert fake_store["store"].marked_buys == []
+
+
+def test_automate_marks_signal_when_at_least_one_leg_succeeded(
+    tmp_path, one_broker, stub_session_init, stub_default_brokers,
+    stub_recap_parsing, fake_store, recap_file, monkeypatch,
+):
+    """Decided semantics (final-review C2): a broker counts as completed when
+    >= 1 of its legs succeeded — parity with the old internal-fan-out
+    behavior, where the broker call's overall success (Fennel: 'True if at
+    least one account succeeded') marked the signal."""
+    engine = _StubEngine(
+        proposals=[_proposal("p1", leg_count=2)],
+        executions=[
+            _multi_leg_execution(
+                "p1", "TSLA", "buy",
+                legs=[("Public", "acctA", True), ("Public", "acctB", False)],
+            )
+        ],
+    )
+
+    async def fake_get_engine():
+        return engine
+
+    monkeypatch.setattr(automate_mod, "get_engine", fake_get_engine)
+
+    args = _args(recap_file, str(tmp_path / "automation.sqlite"))
+    _run(_run_automate_from_recap(args, parser=None, context=_ctx()))
+
+    assert fake_store["store"].marked_buys == [1]
 
 
 # --------------------------------------------------------------------------

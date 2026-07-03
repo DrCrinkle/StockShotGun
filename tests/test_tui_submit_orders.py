@@ -378,6 +378,58 @@ def test_per_leg_failure_message_includes_reason_and_detail():
     )
 
 
+def test_tui_submit_initializes_sessions_before_validation():
+    """Final-review I2: `submit_all_orders` must initialize broker sessions
+    BEFORE `validate_targets`/`propose_order`, like every CLI path — engine
+    account discovery reads `session_manager.sessions` cold, so skipping the
+    init step makes discovery silently differ between the first and later
+    submissions. `submit_all_orders` is a closure inside `run_tui` (no
+    seam to call it headlessly), so this is a static-source pin — the same
+    technique tests/agentic/test_f5_v04_router_execution.py uses.
+    """
+    import inspect
+    import re
+
+    import tui.app as app_mod
+
+    src = inspect.getsource(app_mod.run_tui)
+    submit_match = re.search(r"async def submit_all_orders\(", src)
+    assert submit_match, "submit_all_orders not found in run_tui"
+    # Slice out just the submit_all_orders body (up to the next def at the
+    # same nesting depth).
+    rest = src[submit_match.start():]
+    next_def = re.search(r"\n    (?:async )?def (?!submit_all_orders)", rest)
+    body = rest[: next_def.start()] if next_def else rest
+    init_pos = body.find("initialize_selected_sessions(")
+    validate_pos = body.find("validate_targets(")
+    assert init_pos != -1, "submit_all_orders must initialize broker sessions"
+    assert validate_pos != -1
+    assert init_pos < validate_pos, (
+        "session init must run BEFORE validate_targets/propose_order"
+    )
+
+
+def test_tui_retry_initializes_sessions_before_validation():
+    """Same I2 pin for `retry_timed_out_brokers`: a broker that timed out
+    during the original submission likely has no usable session."""
+    import inspect
+    import re
+
+    import tui.app as app_mod
+
+    src = inspect.getsource(app_mod.run_tui)
+    retry_match = re.search(r"async def retry_timed_out_brokers\(", src)
+    assert retry_match, "retry_timed_out_brokers not found in run_tui"
+    rest = src[retry_match.start():]
+    next_def = re.search(r"\n    (?:async )?def (?!retry_timed_out_brokers)", rest)
+    body = rest[: next_def.start()] if next_def else rest
+    init_pos = body.find("initialize_selected_sessions(")
+    validate_pos = body.find("validate_targets(")
+    assert init_pos != -1
+    assert validate_pos != -1
+    assert init_pos < validate_pos
+
+
 def test_per_leg_failure_message_falls_back_to_failed_when_no_reason():
     """Fix 2a fallback: when a failed leg carries neither reason nor detail,
     the message degrades gracefully to `✗ {broker}: failed` — no dangling

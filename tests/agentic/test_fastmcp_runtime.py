@@ -39,10 +39,15 @@ def _fake_spec() -> BrokerMCPSpec:
     async def fake_holdings(ticker: str | None = None) -> Any:
         return {ticker or "ALL": 0.0}
 
+    # account_scoped_trade=True: the place_at_broker round-trip below places
+    # a leg at the real account id "acc1" — simulating a future
+    # account-scoped broker. The account-blind dispatch guard (final-review
+    # C1) is covered in tests/agentic/test_broker_mcp_server.py.
     return BrokerMCPSpec(
         name="FakeBroker",
         trade_fn=fake_trade,
         holdings_fn=fake_holdings,
+        account_scoped_trade=True,
     )
 
 

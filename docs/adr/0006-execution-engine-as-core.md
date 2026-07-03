@@ -261,3 +261,20 @@ migrate. No data migration — proposals remain ephemeral (ADR 0005).
   the MCP boundary (callables don't serialize), so it can't simply move into the
   engine as-is. Candidate follow-up: when `validate_functions` is `None`, resolve
   validators from `brokers/registry.py` directly inside `validate_targets`.
+- Threading `account_id` through `TradeFn` is the real long-term fix for
+  account-scoped dispatch. Today `TradeFn(side, qty, ticker, price)` is
+  account-blind, so per-account legs cannot be honored: Fennel is pinned to
+  `multi_account=False` (its trade fn fans out internally over all session
+  accounts — per-account legs would multiply orders, final-review C1), and
+  `InProcessBroker.place_at_broker` fails any real-account-id leg on a spec
+  without `account_scoped_trade` (`reason="account_scoped_dispatch_unsupported"`).
+  Once `TradeFn` gains an account parameter, `build_broker_mcp_spec` can set
+  `account_scoped_trade=True` per broker, flip `multi_account=True` in the
+  registry, and true per-account fan-out (ADR 0001) becomes safe end to end.
+- Fill-vs-marking crash window (final-review I1): `automate` marks a signal
+  executed immediately AFTER its order's `execute_order` returns — a crash
+  between the broker fill and `mark_buy_signals_executed` leaves a filled
+  order's signal `pending`, re-executing it (double-trade) on the next run.
+  Candidate fix: a persisted `executing` signal state written BEFORE
+  dispatch, so a crashed run surfaces as "needs manual reconciliation"
+  rather than silently re-executing.

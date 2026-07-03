@@ -44,7 +44,17 @@ def _holdings_spec(name: str, qty_map: dict[str, float]) -> BrokerMCPSpec:
             return qty_map
         return {ticker: qty_map.get(ticker, 0.0)}
 
-    return BrokerMCPSpec(name=name, trade_fn=fake_trade, holdings_fn=fake_holdings)
+    # account_scoped_trade=True: the RSA fixtures record positions under the
+    # real account id "acc1", and sell_arrived mints legs from those ids —
+    # these tests simulate a future account-scoped broker so the end-to-end
+    # sell can execute. The account-blind dispatch guard (final-review C1)
+    # is covered in tests/agentic/test_broker_mcp_server.py / test_router.py.
+    return BrokerMCPSpec(
+        name=name,
+        trade_fn=fake_trade,
+        holdings_fn=fake_holdings,
+        account_scoped_trade=True,
+    )
 
 
 @pytest.fixture

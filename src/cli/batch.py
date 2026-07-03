@@ -251,7 +251,10 @@ async def _run_batch_from_file(args, parser, context):
         else:
             print(message)
 
-    if is_rehearsal:
+    if is_rehearsal and context.output_format == "json":
+        # Text mode already printed this in the header block above; only
+        # the JSON envelope's `messages` list still needs it (dedup fix,
+        # same as cli/trade.py).
         cli_response_fn("DRY RUN — full pipeline rehearsal, no orders placed")
 
     # ADR 0006 — one propose path for every caller. Two phases, mirroring the

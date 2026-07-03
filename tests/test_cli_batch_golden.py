@@ -355,6 +355,84 @@ def test_batch_dry_run_is_full_pipeline_rehearsal(
 
 
 # --------------------------------------------------------------------------
+# Final-review M4: text mode printed the DRY RUN banner twice (header block
+# + cli_response_fn). Pin exactly one occurrence, and that JSON mode still
+# carries it in `messages` (the same dedup cli/trade.py uses).
+# --------------------------------------------------------------------------
+def _dry_run_engine():
+    return _StubEngine(
+        proposals=[_proposal("p1")],
+        executions=[
+            {
+                "proposal_id": "p1",
+                "ticker": "TSLA",
+                "side": "buy",
+                "qty": 1,
+                "dry_run": True,
+                "results": [
+                    {"broker": "Public", "account_id": "primary", "ok": True,
+                     "dry_run": True, "idempotency_key": "k1", "reason": None,
+                     "detail": "dry-run ok"},
+                ],
+                "success_count": 1,
+                "failure_count": 0,
+            }
+        ],
+    )
+
+
+def test_batch_dry_run_banner_prints_once_in_text_mode(
+    tmp_path, two_brokers, stub_session_init, monkeypatch, capsys
+):
+    engine = _dry_run_engine()
+
+    async def fake_get_engine():
+        return engine
+
+    monkeypatch.setattr(batch_mod, "get_engine", fake_get_engine)
+
+    from_file = _write_batch_file(
+        tmp_path,
+        [{"action": "buy", "quantity": 1, "ticker": "TSLA", "brokers": ["Public"]}],
+    )
+    args = SimpleNamespace(action="buy", from_file=from_file, broker=None)
+
+    _run(
+        _run_batch_from_file(
+            args, parser=None, context=_ctx(dry_run=True, output_format="text")
+        )
+    )
+
+    out = capsys.readouterr().out
+    banner = "DRY RUN — full pipeline rehearsal, no orders placed"
+    assert out.count(banner) == 1, out
+
+
+def test_batch_dry_run_banner_lands_in_json_messages_once(
+    tmp_path, two_brokers, stub_session_init, monkeypatch
+):
+    engine = _dry_run_engine()
+
+    async def fake_get_engine():
+        return engine
+
+    monkeypatch.setattr(batch_mod, "get_engine", fake_get_engine)
+
+    from_file = _write_batch_file(
+        tmp_path,
+        [{"action": "buy", "quantity": 1, "ticker": "TSLA", "brokers": ["Public"]}],
+    )
+    args = SimpleNamespace(action="buy", from_file=from_file, broker=None)
+
+    _, data = _run(
+        _run_batch_from_file(args, parser=None, context=_ctx(dry_run=True))
+    )
+
+    banner = "DRY RUN — full pipeline rehearsal, no orders placed"
+    assert data["messages"].count(banner) == 1
+
+
+# --------------------------------------------------------------------------
 # Mid-batch execute rejection must carry the already-completed orders'
 # rendered results in `details`, not just the rejected order's fields.
 # --------------------------------------------------------------------------

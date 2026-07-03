@@ -46,10 +46,18 @@ class BrokerSpec:
     validate: Optional[str] = None  # None when the broker has no validate fn
     requires_mfa: bool = False
     supports_fractional: bool = False
-    # True only for brokers whose session payload exposes real per-account
-    # ids for fan-out (today: Fennel). The agentic layer maps this flag to the
-    # session_manager_accounts closure; everyone else fans out a single
-    # "primary" leg. Kept as a flag so this module imports no agentic internals.
+    # True only for brokers whose TRADE FN can place on one specific account
+    # per leg AND whose session payload exposes real per-account ids for
+    # fan-out. The execution layer maps this flag to the
+    # session_manager_accounts discovery closure (one leg per account_id);
+    # everyone else fans out a single "primary" leg. Today NO broker
+    # qualifies: `TradeFn(side, qty, ticker, price)` has no account
+    # parameter, so every trade fn is account-blind — per-account legs on an
+    # account-blind fn multiply orders (N accounts -> N legs x internal
+    # fan-out = N^2 live orders; final-review C1). Do not flip this to True
+    # for any broker until account_id is threaded through TradeFn (see ADR
+    # 0006 open questions). Kept as a flag so this module imports no
+    # execution internals.
     multi_account: bool = False
     enabled: bool = True
     notes: str = ""
@@ -117,7 +125,13 @@ _SPECS: tuple[BrokerSpec, ...] = (
         trade="brokers.fennel:fennelTrade",
         holdings="brokers.fennel:fennelGetHoldings",
         session_getter="brokers.fennel:get_fennel_session",
-        multi_account=True,
+        # multi_account=False on purpose: fennelTrade fans out internally
+        # over ALL session account_ids (brokers/fennel.py). Per-account legs
+        # would each trigger that internal loop — 2 accounts = 2 legs x 2
+        # internal orders = 4 live orders, a double-place (final-review C1).
+        # One "primary" leg + internal fan-out is the correct dispatch shape
+        # until account_id is threaded through TradeFn.
+        multi_account=False,
         notes="Personal access token",
     ),
     BrokerSpec(

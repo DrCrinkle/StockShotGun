@@ -114,6 +114,17 @@ class BrokerMCPSpec:
     list_accounts_fn: ListAccountsFn = _default_single_account
     requires_mfa: bool = False
     supports_fractional: bool = False
+    # True only when `trade_fn` can place on ONE specific account per call.
+    # `TradeFn(side, qty, ticker, price)` has no account parameter, so every
+    # real broker spec today is account-blind and this stays False —
+    # `build_broker_mcp_spec` never sets it. Dispatching a leg with a real
+    # (non-"primary") account_id to an account-blind trade fn cannot target
+    # that account, and for internally-fanning fns (Fennel) it multiplies
+    # orders (final-review C1). `place_at_broker` fails such legs loudly with
+    # reason="account_scoped_dispatch_unsupported" instead of placing blind.
+    # Flip to True only once account_id is threaded through TradeFn (ADR 0006
+    # open questions); tests may set it on fakes that simulate that future.
+    account_scoped_trade: bool = False
     notes: str = ""
 
 
@@ -124,6 +135,11 @@ def build_broker_mcp_spec(spec: "registry.BrokerSpec") -> BrokerMCPSpec:
     spec imports only that broker, not all thirteen (ADR 0004). The registry's
     ``multi_account`` flag maps to the session-manager-backed account discovery
     closure; everyone else fans out a single ``"primary"`` leg.
+
+    ``account_scoped_trade`` is deliberately NEVER set here: registry trade
+    fns share the account-blind ``TradeFn(side, qty, ticker, price)``
+    signature, so no real broker can honor a per-account leg today
+    (final-review C1). It stays at the dataclass default (False).
     """
     return BrokerMCPSpec(
         name=spec.name,
@@ -227,6 +243,34 @@ class InProcessBroker:
         Subprocess isolation works through this same path — the trust model
         is the SAME for in-process and subprocess callers.
         """
+        # Account-scoped dispatch guard (final-review C1). A leg addressed to
+        # a REAL account (not the "primary" placeholder every single-account
+        # discovery path assigns) cannot be honored by an account-blind
+        # trade_fn: the fn can't target that account, and internally-fanning
+        # fns (Fennel) would place once per session account PER LEG —
+        # N accounts x N legs = N^2 live orders. Fail the leg loudly instead
+        # of silently placing account-blind. Applies to dry-run legs too so
+        # rehearsals predict live behavior. Today every real spec is
+        # account-blind (TradeFn has no account param), and every real leg is
+        # "primary" (all registry specs have multi_account=False), so this
+        # never fires in production — it exists to make any future
+        # multi_account=True + blind-fn combination fail per leg rather than
+        # double-buy.
+        if account_id and account_id != "primary" and not self.spec.account_scoped_trade:
+            return PlaceResult(
+                ok=False,
+                broker=self.spec.name,
+                account_id=account_id,
+                idempotency_key="",
+                dry_run=dry_run,
+                reason="account_scoped_dispatch_unsupported",
+                detail=(
+                    f"{self.spec.name}'s trade fn is account-blind (no account "
+                    f"parameter); refusing to place leg for account "
+                    f"{account_id!r} — it would dispatch to the broker's "
+                    f"default/all accounts, not this one"
+                ),
+            )
         intent = OrderIntent(
             ticker=ticker,
             side=OrderSide(side),
