@@ -33,10 +33,22 @@ ORDER_STATUS_URL = f"{_SVC}/servicing/inquiry-maintenance/digital-trade-orders/v
 # unsold shares as sold and double-sell / skip re-checking them.
 _CHASE_FILLED_STATUSES = {"FULLY_EXECUTED", "PARTIALLY_EXECUTED"}
 
+# Statuses at which polling can stop: a fill or a hard cancel. OPEN is
+# deliberately NOT terminal — a freshly submitted order often passes through
+# OPEN before it fills, so we must keep polling (up to the timeout) instead of
+# bailing early and reporting the leg unfilled (which would make the sweep
+# retry and double-sell).
+_CHASE_TERMINAL_STATUSES = _CHASE_FILLED_STATUSES | {"CANCELLED"}
+
 
 def _chase_order_filled(status_code) -> bool:
     """True only when ``status_code`` indicates the order actually executed."""
     return status_code in _CHASE_FILLED_STATUSES
+
+
+def _chase_status_is_terminal(status_code) -> bool:
+    """True when polling can stop (order filled or hard-cancelled)."""
+    return status_code in _CHASE_TERMINAL_STATUSES
 
 # Trade UI entry point (still used to establish authenticated fetch context)
 TRADE_ENTRY_URL = "https://secure.chase.com/web/auth/dashboard#/dashboard/oi-trade/equity/entry"
@@ -1021,11 +1033,9 @@ class ChaseClient:
                     f"{ORDER_STATUS_URL}"
                     f"?account-identifier={account_id}&order-identifier={order_id}"
                 )
-                terminal_statuses = {"FULLY_EXECUTED", "OPEN", "PARTIALLY_EXECUTED", "CANCELLED"}
-
                 async def _check_status():
                     st = await self._call_chase_api(status_url, method="GET")
-                    return bool(st and "error" not in st and st.get("orderStatusCode") in terminal_statuses)
+                    return bool(st and "error" not in st and _chase_status_is_terminal(st.get("orderStatusCode")))
 
                 await poll_for_condition(_check_status, timeout=30, interval=2)
                 final_status = await self._call_chase_api(status_url, method="GET")
