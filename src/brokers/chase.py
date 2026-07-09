@@ -27,6 +27,17 @@ SELL_VALIDATE_URL = f"{_SVC}/servicing/investor-servicing/digital-equity-trades/
 SELL_ORDERS_URL = f"{_SVC}/servicing/investor-servicing/digital-equity-trades/v1/sell-orders"
 ORDER_STATUS_URL = f"{_SVC}/servicing/inquiry-maintenance/digital-trade-orders/v1/statuses"
 
+# Chase orderStatusCode values that mean the order actually executed. Anything
+# else — OPEN (accepted but unfilled), CANCELLED, UNKNOWN, or a missing status —
+# must NOT be counted as a completed trade, or the downstream sweep will treat
+# unsold shares as sold and double-sell / skip re-checking them.
+_CHASE_FILLED_STATUSES = {"FULLY_EXECUTED", "PARTIALLY_EXECUTED"}
+
+
+def _chase_order_filled(status_code) -> bool:
+    """True only when ``status_code`` indicates the order actually executed."""
+    return status_code in _CHASE_FILLED_STATUSES
+
 # Trade UI entry point (still used to establish authenticated fetch context)
 TRADE_ENTRY_URL = "https://secure.chase.com/web/auth/dashboard#/dashboard/oi-trade/equity/entry"
 logger = logging.getLogger(__name__)
@@ -1021,11 +1032,26 @@ class ChaseClient:
                 status_code = (final_status or {}).get("orderStatusCode", "UNKNOWN")
 
                 action_str = "Bought" if side == "buy" else "Sold"
-                broker_event(
-                    f"✓ {action_str} {qty} × {ticker} on {account_name} — {status_code}",
-                    logger=logger,
-                )
-                success_count += 1
+                if _chase_order_filled(status_code):
+                    broker_event(
+                        f"✓ {action_str} {qty} × {ticker} on {account_name} — {status_code}",
+                        logger=logger,
+                    )
+                    success_count += 1
+                elif status_code == "OPEN":
+                    broker_event(
+                        f"Order OPEN (unfilled) for {account_name} — not counting as "
+                        f"{action_str.lower()} of {qty} × {ticker}",
+                        level="warning",
+                        logger=logger,
+                    )
+                else:
+                    broker_event(
+                        f"Order NOT filled for {account_name}: {status_code} "
+                        f"(attempted {action_str.lower()} {qty} × {ticker})",
+                        level="error",
+                        logger=logger,
+                    )
 
             except Exception as e:
                 broker_event(

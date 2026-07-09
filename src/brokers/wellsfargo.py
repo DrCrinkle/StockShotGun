@@ -19,6 +19,66 @@ from .browser_utils import (
 )
 from .base import rate_limiter, broker_event
 
+
+# Unambiguous confirmation phrases. Deliberately excludes generic strings like
+# "order status" / "order detail" — a REJECTED order sits on those same pages.
+_WF_CONFIRM_TOKENS = (
+    "order has been placed",
+    "order has been submitted",
+    "order has been received",
+    "order confirmation",
+    "trade confirmation",
+    "order accepted",
+)
+# Rejection phrases force failure even if a confirmation phrase also appears.
+_WF_REJECT_TOKENS = (
+    "rejected",
+    "not eligible",
+    "not currently eligible",
+    "cannot be placed",
+    "could not be placed",
+    "was not placed",
+    "unable to place",
+    "order failed",
+    "declined",
+)
+# URL markers that indicate confirmation. Excludes orderstatus/orderdetail —
+# a rejected order's status/detail URL is not a success signal.
+_WF_CONFIRM_URL_MARKERS = ("confirmation", "orderack", "ackreceipt")
+
+
+def _wellsfargo_trade_succeeded(page_text, url) -> bool:
+    """Whether a Wells Fargo order actually succeeded, from the post-submit page.
+
+    Fail-closed: any rejection phrase forces False even alongside a confirmation
+    phrase. HEURISTIC — validate against a captured real WF rejected-order page
+    before relying on it for live trading.
+    """
+    text = (page_text or "").lower()
+    if any(t in text for t in _WF_REJECT_TOKENS):
+        return False
+    if any(t in text for t in _WF_CONFIRM_TOKENS):
+        return True
+    url_lower = (url or "").lower()
+    return any(m in url_lower for m in _WF_CONFIRM_URL_MARKERS)
+
+
+def _wellsfargo_parse_price(raw):
+    """Parse the last-price field to a positive float, or None when it can't be
+    determined. Callers MUST skip the account on None rather than fabricate a
+    price — a fabricated price forces a mispriced limit order that never fills.
+    """
+    if not isinstance(raw, str):
+        return None
+    stripped = raw.strip()
+    if not stripped:
+        return None
+    try:
+        value = float(stripped)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
 logger = logging.getLogger(__name__)
 
 
@@ -776,16 +836,24 @@ class WellsFargoClient:
                         _raw_price = await self._page.evaluate(
                             "document.getElementById('last')?.value"
                         )
-                        last_price_str = _raw_price if isinstance(_raw_price, str) else None
-                        if last_price_str and last_price_str.strip():
-                            price_for_account = float(last_price_str.strip())
-                            logger.debug("Current stock price: $%s", price_for_account)
-                        else:
-                            logger.debug("Could not get price from page, defaulting to $1")
-                            price_for_account = 1.00
                     except Exception as e:
-                        logger.debug("Error getting price: %s", e)
-                        price_for_account = 1.00
+                        broker_event(
+                            f"Error reading price for {account_name}: {e} — "
+                            "skipping to avoid a mispriced order",
+                            level="error",
+                            logger=logger,
+                        )
+                        continue
+                    price_for_account = _wellsfargo_parse_price(_raw_price)
+                    if price_for_account is None:
+                        broker_event(
+                            f"Could not read a valid price for {account_name} — "
+                            "skipping to avoid a mispriced order",
+                            level="error",
+                            logger=logger,
+                        )
+                        continue
+                    logger.debug("Current stock price: $%s", price_for_account)
 
                 # Determine order type
                 use_limit_order = False
@@ -991,32 +1059,9 @@ class WellsFargoClient:
                     _raw_page = await self._page.evaluate("(document.body && document.body.textContent) || ''")
                     page_text = _raw_page if isinstance(_raw_page, str) else ""
 
-                    success_patterns = [
-                        "order has been placed",
-                        "successfully",
-                        "confirmed",
-                        "order number",
-                        "has been received",
-                        "acknowledgment",
-                        "acknowledgement",
-                        "order received",
-                        "order submitted",
-                        "order accepted",
-                        "order status",
-                        "order detail",
-                        "trade confirmation",
-                    ]
-
                     page_text_lower = (page_text or "").lower()
-                    is_success = any(p in page_text_lower for p in success_patterns)
-
                     final_url = await get_page_url(self._page)
-                    url_lower = final_url.lower()
-                    if any(m in url_lower for m in (
-                        "confirmation", "orderack", "orderstatus",
-                        "orderdetail", "ackreceipt",
-                    )):
-                        is_success = True
+                    is_success = _wellsfargo_trade_succeeded(page_text, final_url)
 
                     # Log for debugging what's on the page
                     logger.debug(

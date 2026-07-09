@@ -251,6 +251,11 @@ def _check_result_allows_order(check_result):
     if not isinstance(check_result, dict):
         return (False, "Malformed order-check response")
 
+    if not check_result:
+        # An empty body ({} from a contentless response) is not a clearance —
+        # never let it authorize an unvetted order.
+        return (False, "Empty order-check response — order not verified")
+
     forward_flag = check_result.get("forward")
     if forward_flag is False:
         check_list = check_result.get("checkResultList") or []
@@ -265,6 +270,30 @@ def _check_result_allows_order(check_result):
         return (False, str(check_result.get("msg") or "Order check failed"))
 
     return (True, "")
+
+
+def _webull_place_result(status_code, content, payload):
+    """Interpret a Webull place-order HTTP response into a ``{"success", "msg"}``
+    dict (or the confirming payload itself).
+
+    ``content`` is the raw response body (falsy when empty); ``payload`` is the
+    parsed JSON, or ``None`` when the body was empty or unparseable. An empty
+    body is NEVER a success — a real placement returns a JSON payload with an
+    order identifier — so an empty 2xx must not be booked as a filled trade.
+    """
+    if not content:
+        return {
+            "success": False,
+            "msg": f"Empty response from order place (HTTP {status_code}) — order not confirmed",
+        }
+    if payload is None:
+        return {
+            "success": False,
+            "msg": f"Invalid JSON from order place: HTTP {status_code}",
+        }
+    if isinstance(payload, dict):
+        return payload
+    return {"success": False, "msg": "Unexpected order response payload"}
 
 
 def _raw_webull_place_order(wb, account_id, ticker, action, order_type, qty, price):
@@ -309,24 +338,14 @@ def _raw_webull_place_order(wb, account_id, ticker, action, order_type, qty, pri
         timeout=wb.timeout,
     )
 
-    if not place_resp.content:
-        return {
-            "success": 200 <= place_resp.status_code < 300,
-            "msg": f"HTTP {place_resp.status_code}",
-        }
-
-    try:
-        payload = place_resp.json()
-    except ValueError:
-        return {
-            "success": False,
-            "msg": f"Invalid JSON from order place: HTTP {place_resp.status_code}",
-        }
-
-    if isinstance(payload, dict):
-        return payload
-
-    return {"success": False, "msg": "Unexpected order response payload"}
+    content = place_resp.content
+    payload = None
+    if content:
+        try:
+            payload = place_resp.json()
+        except ValueError:
+            payload = None
+    return _webull_place_result(place_resp.status_code, content, payload)
 
 
 async def _place_webull_order_with_fallback(
