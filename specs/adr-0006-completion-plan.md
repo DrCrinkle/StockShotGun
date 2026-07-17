@@ -102,6 +102,61 @@ TDD process); this section is the correction layer.
   double-buy. Tests that intentionally place legs at real account ids set
   `account_scoped_trade=True` on their fakes (simulating the future
   account-scoped broker) — each carries a justification comment.
+- **Post-merge P1 (PR review) — Fennel's stopgap re-introduced the exact
+  undercount C1 was meant to prevent, so it's fixed here.** C1's stopgap
+  (`multi_account=False` on Fennel + the account-blind guard) closed the
+  N² *live-order* multiplication, but left a subtler gap: `propose_order`
+  still gated ONE "primary" leg while `fennelTrade` fanned out internally
+  over every session account_id — so with N Fennel accounts, enforcement's
+  estimate/leg-count/per-order-limit/daily-limit/audit all reflected 1
+  order while N were actually placed. Every safety number was understated
+  by N (not a double-buy, but a live-order that enforcement never gated at
+  all). Fixed by completing the mechanism the guard was reserved for
+  instead of leaving it inert:
+  - `execution/in_process.py`: `place_at_broker` now calls
+    `trade_fn(side, qty, ticker, price, account_id=account_id)` — the
+    leg's own account — whenever `spec.account_scoped_trade` is True;
+    blind specs (everyone else) are called exactly as before
+    (`trade_fn(side, qty, ticker, price)`, no kwarg, no signature change
+    for them).
+  - `brokers/fennel.py`: `fennelTrade` gained an optional `account_id`
+    kwarg. When given one (the engine's path, always, now), it places
+    exactly ONE order via a new shared helper (`_fennel_submit_order`) —
+    the internal loop over `account_ids` does NOT run on this path. When
+    omitted (no caller does this anymore), the legacy blind fan-out loop
+    still runs unchanged, calling the same shared helper per account —
+    kept for back-compat only.
+  - `brokers/registry.py`: Fennel flips back to `multi_account=True` (real
+    per-account leg discovery via `make_session_accounts_fn`) AND gains
+    `account_scoped_trade=True` — the two flags travel together now that
+    the trade fn actually honors per-account dispatch. `BrokerSpec` gained
+    the `account_scoped_trade` field (threaded through
+    `build_broker_mcp_spec`, ADR 0004 single-source-of-truth) so this is a
+    one-line registry change per broker as more migrate.
+  - Net effect: `propose_order`'s leg_count/estimate and `execute_order`'s
+    per-leg dispatch both reflect every real Fennel account, 1:1 with live
+    orders. The guard from C1 is unchanged in behavior and still protects
+    the other 12 (still account-blind) brokers.
+  - Tests: `test_fennel_spec_discovers_single_primary_leg` (the C1-era
+    golden) is superseded by its inverse,
+    `test_fennel_spec_discovers_real_per_account_legs`
+    (`tests/agentic/test_multi_account_discovery.py`) — 2 session
+    account_ids now discover 2 real legs, not one `"primary"` placeholder.
+    `test_registry_built_specs_are_never_account_scoped`
+    (`tests/agentic/test_broker_mcp_server.py`) is superseded by
+    `test_registry_built_specs_are_account_scoped_only_for_migrated_brokers`,
+    which pins Fennel as the one exception rather than asserting none
+    exist. New: `tests/test_fennel.py` exercises `fennelTrade` directly
+    (session pre-seeded past `get_fennel_session`'s already-initialized
+    branch, `http_client.post` monkeypatched) — the account-scoped call
+    hits the SDK exactly once, for exactly the given account, never
+    touching the other session accounts. New:
+    `test_fennel_like_account_scoped_broker_enforcement_accounting_matches_live_orders`
+    (`tests/agentic/test_router.py`) pins the P1 end to end: a 2-account
+    account-scoped spec mints 2 gated legs with the estimate reflecting
+    both, `execute_order` places exactly 2 orders (never 4 — no internal
+    fan-out multiplication), and each trade-fn call receives its own
+    `account_id`.
 - **Final-review C2 — automate completion tracking compared rendered labels
   against bare broker names.** `completed_brokers_by_source` accumulated
   `status["successful"]` (rendered `_leg_label` output, `"Broker:acct"` for

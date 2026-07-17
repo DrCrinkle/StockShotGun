@@ -302,12 +302,14 @@ def _multi_account_spec(
     *,
     account_scoped_trade: bool = True,
 ) -> BrokerMCPSpec:
-    """Simulates a FUTURE account-scoped multi-account broker (default):
-    `account_scoped_trade=True` lets its real-account-id legs place. Pass
-    False to simulate today's account-blind trade fns and exercise the
-    dispatch guard (final-review C1)."""
-    async def fake_trade(side, qty, ticker, price):
-        log.append((name, side, qty, ticker, price))
+    """Simulates an account-scoped multi-account broker (default, like Fennel
+    post-ADR-0006-completion): `account_scoped_trade=True` lets its
+    real-account-id legs place, and `fake_trade` accepts the `account_id`
+    keyword `place_at_broker` passes in that case. Pass
+    `account_scoped_trade=False` to simulate an account-blind trade fn and
+    exercise the dispatch guard (final-review C1)."""
+    async def fake_trade(side, qty, ticker, price, account_id=None):
+        log.append((name, side, qty, ticker, price, account_id))
         return {"ok": True}
 
     async def fake_holdings(ticker=None):
@@ -366,6 +368,63 @@ def test_router_fans_out_per_account_for_multi_account_broker(core: EnforcementC
     assert result["failure_count"] == 0
     accounts_hit = {r["account_id"] for r in result["results"]}
     assert accounts_hit == {"taxable", "ira", "primary"}
+
+
+def test_fennel_like_account_scoped_broker_enforcement_accounting_matches_live_orders(
+    core: EnforcementCore,
+):
+    """The P1 pin: enforcement accounting must reflect every live order.
+
+    Before the fix, Fennel minted ONE gated "primary" leg while its trade fn
+    fanned out internally over every session account — with 2 accounts,
+    `propose_order`'s estimate/leg-count said 1 while `execute_order`
+    actually placed 2 (N) live orders: every safety number (estimate,
+    per-order/daily limits, audit) was understated by N.
+
+    This test simulates the fixed shape (a 2-account, account-scoped spec —
+    exactly what Fennel's registry entry now is): `propose_order` must mint
+    2 legs with the estimate reflecting BOTH, and `execute_order` must place
+    exactly 2 orders — one per leg, each trade-fn call receiving its OWN
+    account_id — with no internal fan-out multiplication (2 calls, never 4)."""
+    log: list[Any] = []
+    spec = _multi_account_spec("FennelLike", ["acct-1", "acct-2"], log)
+    router = Router(
+        broker_servers={spec.name: BrokerMCPServer(spec, core=core)},
+        core=core,
+        provider=NullAccountStatusProvider(),
+    )
+    proposal = asyncio.run(
+        router.propose_order(
+            ticker="TSLA",
+            qty=3.0,
+            side="buy",
+            brokers=["FennelLike"],
+            price=5.0,
+            dry_run=False,
+        )
+    )
+    # Enforcement accounting reflects BOTH accounts, not one "primary" leg.
+    assert proposal["leg_count"] == 2
+    assert proposal["accounts_by_broker"]["FennelLike"] == ["acct-1", "acct-2"]
+    # Estimate = qty * price * leg_count = 3 * 5 * 2 = 30, not 15.
+    assert proposal["estimated_usd"] == 30.0
+
+    result = asyncio.run(
+        router.execute_order(proposal_id=proposal["proposal_id"], dry_run=False)
+    )
+    assert result["success_count"] == 2
+    assert result["failure_count"] == 0
+
+    # Exactly 2 live SDK calls — no internal fan-out multiplication (never 4).
+    assert len(log) == 2
+    # Each trade-fn invocation received its OWN account_id (recording fake
+    # appends (name, side, qty, ticker, price, account_id) — see
+    # `_multi_account_spec`).
+    accounts_dispatched = {entry[-1] for entry in log}
+    assert accounts_dispatched == {"acct-1", "acct-2"}
+    # And the account_ids match the per-leg PlaceResult accounting.
+    accounts_hit = {r["account_id"] for r in result["results"]}
+    assert accounts_hit == {"acct-1", "acct-2"}
 
 
 def test_multi_account_fan_out_with_blind_trade_fn_fails_per_leg(

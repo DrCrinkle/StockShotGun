@@ -58,13 +58,18 @@ def _fake_spec(name: str = "FakeBroker") -> tuple[BrokerMCPSpec, list[Any]]:
 
     `account_scoped_trade=True` because these tests place legs at a REAL
     account id ("acc1") to exercise token gating / breaker semantics — they
-    simulate a future account-scoped broker. The account-blind dispatch
-    guard (final-review C1) has its own tests below.
+    simulate an account-scoped broker (like Fennel post-ADR-0006-completion).
+    `fake_trade` therefore accepts the `account_id` keyword `place_at_broker`
+    passes whenever `account_scoped_trade` is True (real trade fns like
+    `fennelTrade` take the same kwarg — see `brokers/fennel.py`). The
+    account-blind dispatch guard (final-review C1) has its own tests below.
     """
     calls: list[Any] = []
 
-    async def fake_trade(side: str, qty: float, ticker: str, price: float | None) -> Any:
-        calls.append(("trade", side, qty, ticker, price))
+    async def fake_trade(
+        side: str, qty: float, ticker: str, price: float | None, account_id: str | None = None
+    ) -> Any:
+        calls.append(("trade", side, qty, ticker, price, account_id))
         return {"ok": True, "fill_qty": qty, "fill_price": price or 0.0}
 
     async def fake_holdings(ticker: str | None = None) -> Any:
@@ -266,17 +271,22 @@ def test_account_blind_spec_still_places_primary_leg(core: EnforcementCore):
     assert calls and calls[0][0] == "trade"
 
 
-def test_registry_built_specs_are_never_account_scoped():
-    """Structural pin: `build_broker_mcp_spec` must not mark any real broker
-    account-scoped while `TradeFn` has no account parameter — the guard's
-    safety for all current brokers depends on it."""
+def test_registry_built_specs_are_account_scoped_only_for_migrated_brokers():
+    """Structural pin (supersedes the old "never account-scoped" golden —
+    ADR 0006 completion flipped Fennel's trade fn to accept `account_id`):
+    `build_broker_mcp_spec` must mark account-scoped ONLY the brokers whose
+    trade fn actually accepts the `account_id` kwarg. Fennel is the first
+    (and, today, only) migrated broker; the guard's safety for the other 12
+    — still account-blind — depends on this staying False for them."""
+    migrated = {"Fennel"}
     for broker_name in registry.all_names():
         spec = build_broker_mcp_spec(registry.get(broker_name))
-        assert spec.account_scoped_trade is False, broker_name
+        expected = broker_name in migrated
+        assert spec.account_scoped_trade is expected, broker_name
 
 
 def test_broker_sdk_failure_records_circuit_state(core: EnforcementCore):
-    async def boom(side, qty, ticker, price):
+    async def boom(side, qty, ticker, price, account_id=None):
         raise RuntimeError("simulated SDK explosion")
 
     async def empty_holdings(ticker=None):

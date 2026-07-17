@@ -50,15 +50,32 @@ class BrokerSpec:
     # per leg AND whose session payload exposes real per-account ids for
     # fan-out. The execution layer maps this flag to the
     # session_manager_accounts discovery closure (one leg per account_id);
-    # everyone else fans out a single "primary" leg. Today NO broker
-    # qualifies: `TradeFn(side, qty, ticker, price)` has no account
-    # parameter, so every trade fn is account-blind — per-account legs on an
-    # account-blind fn multiply orders (N accounts -> N legs x internal
-    # fan-out = N^2 live orders; final-review C1). Do not flip this to True
-    # for any broker until account_id is threaded through TradeFn (see ADR
-    # 0006 open questions). Kept as a flag so this module imports no
-    # execution internals.
+    # everyone else fans out a single "primary" leg. Pair this with
+    # `account_scoped_trade=True` (below) — a trade fn that is still
+    # account-blind (`TradeFn(side, qty, ticker, price)`, no account
+    # parameter) must NOT be paired with `multi_account=True`: per-account
+    # legs on an account-blind fn multiply orders (N accounts -> N legs x
+    # internal fan-out = N^2 live orders; final-review C1). Fennel is the
+    # first (and, today, only) broker with both flags True — see its entry
+    # below. Kept as a flag so this module imports no execution internals.
     multi_account: bool = False
+    # True only when the resolved TRADE FN accepts an `account_id: str`
+    # keyword arg and, when given one, places exactly ONE order for that
+    # account (no internal fan-out over other accounts). The execution
+    # layer (`execution/in_process.py:place_at_broker`) passes
+    # `account_id=<leg's account>` to the trade fn ONLY when this flag is
+    # True — every other (blind) trade fn is still called
+    # `trade_fn(side, qty, ticker, price)` with no account kwarg, so
+    # flipping this on for a broker whose trade fn doesn't accept the kwarg
+    # is a hard TypeError at dispatch time, not a silent double-buy. A real
+    # (non-"primary") account-id leg on a spec with this flag False fails
+    # loudly instead of dispatching blind
+    # (`reason="account_scoped_dispatch_unsupported"`). Fennel completed
+    # this migration (ADR 0006 completion, P1 fix) — its trade fn now takes
+    # an optional `account_id` kwarg and places a single order per call when
+    # given one. Every other broker's trade fn remains account-blind, so
+    # this stays False for all of them until they migrate the same way.
+    account_scoped_trade: bool = False
     enabled: bool = True
     notes: str = ""
 
@@ -125,13 +142,22 @@ _SPECS: tuple[BrokerSpec, ...] = (
         trade="brokers.fennel:fennelTrade",
         holdings="brokers.fennel:fennelGetHoldings",
         session_getter="brokers.fennel:get_fennel_session",
-        # multi_account=False on purpose: fennelTrade fans out internally
-        # over ALL session account_ids (brokers/fennel.py). Per-account legs
-        # would each trigger that internal loop — 2 accounts = 2 legs x 2
-        # internal orders = 4 live orders, a double-place (final-review C1).
-        # One "primary" leg + internal fan-out is the correct dispatch shape
-        # until account_id is threaded through TradeFn.
-        multi_account=False,
+        # ADR 0006 completion (P1 fix): `fennelTrade` now accepts an
+        # optional `account_id` kwarg (`brokers/fennel.py`) and, when given
+        # one, places exactly ONE order for that account instead of looping
+        # over every session account_id. That closes the enforcement-
+        # accounting gap where `propose_order` gated ONE "primary" leg while
+        # the broker call placed N live orders (N = account count) — every
+        # safety number (estimate, per-order/daily limits, audit) was
+        # understated by N. `multi_account=True` now drives real per-account
+        # leg discovery (`make_session_accounts_fn`) and
+        # `account_scoped_trade=True` tells `place_at_broker` to dispatch
+        # each leg with its own `account_id` — one gated leg per live order,
+        # 1:1. (Previously pinned `multi_account=False` + internal fan-out
+        # as a stopgap; that shape is retired — see
+        # `test_multi_account_discovery.py`'s superseded golden.)
+        multi_account=True,
+        account_scoped_trade=True,
         notes="Personal access token",
     ),
     BrokerSpec(

@@ -31,6 +31,12 @@ from enforcement import (
 )
 from execution.telemetry import logged_tool
 
+# Blind shape: (side, qty, ticker, price) — the common contract every trade
+# fn satisfies. Account-scoped trade fns (spec.account_scoped_trade=True,
+# e.g. Fennel) ADDITIONALLY accept an `account_id: str` keyword-only arg;
+# `place_at_broker` passes it only when the flag is set, so this Callable
+# alias undersells account-scoped fns' real signature but keeps the simpler
+# shape as the documented default every new broker starts from.
 TradeFn = Callable[[str, float, str, float | None], Awaitable[Any]]
 HoldingsFn = Callable[[str | None], Awaitable[Any]]
 ValidateFn = Callable[[str, float, str, float | None], Awaitable[Any]]
@@ -115,15 +121,20 @@ class BrokerMCPSpec:
     requires_mfa: bool = False
     supports_fractional: bool = False
     # True only when `trade_fn` can place on ONE specific account per call.
-    # `TradeFn(side, qty, ticker, price)` has no account parameter, so every
-    # real broker spec today is account-blind and this stays False —
-    # `build_broker_mcp_spec` never sets it. Dispatching a leg with a real
-    # (non-"primary") account_id to an account-blind trade fn cannot target
-    # that account, and for internally-fanning fns (Fennel) it multiplies
-    # orders (final-review C1). `place_at_broker` fails such legs loudly with
+    # When True, `place_at_broker` calls
+    # `trade_fn(side, qty, ticker, price, account_id=account_id)` — the
+    # leg's own account, no internal fan-out. When False (the default —
+    # every broker except Fennel), `trade_fn` is account-blind
+    # (`TradeFn(side, qty, ticker, price)`, no account kwarg): dispatching a
+    # leg with a real (non-"primary") account_id to it cannot target that
+    # account, and for internally-fanning fns it multiplies orders
+    # (final-review C1). `place_at_broker` fails such legs loudly with
     # reason="account_scoped_dispatch_unsupported" instead of placing blind.
-    # Flip to True only once account_id is threaded through TradeFn (ADR 0006
-    # open questions); tests may set it on fakes that simulate that future.
+    # `build_broker_mcp_spec` threads this straight from the registry's
+    # `BrokerSpec.account_scoped_trade` (ADR 0006 completion) — Fennel is
+    # the first broker with it True; the guard below still protects the
+    # other 12 (all still account-blind). Tests may also set it on fakes
+    # that simulate a not-yet-migrated broker.
     account_scoped_trade: bool = False
     notes: str = ""
 
@@ -136,10 +147,15 @@ def build_broker_mcp_spec(spec: "registry.BrokerSpec") -> BrokerMCPSpec:
     ``multi_account`` flag maps to the session-manager-backed account discovery
     closure; everyone else fans out a single ``"primary"`` leg.
 
-    ``account_scoped_trade`` is deliberately NEVER set here: registry trade
-    fns share the account-blind ``TradeFn(side, qty, ticker, price)``
-    signature, so no real broker can honor a per-account leg today
-    (final-review C1). It stays at the dataclass default (False).
+    ``account_scoped_trade`` threads straight through from the registry's
+    ``BrokerSpec.account_scoped_trade`` (ADR 0006 completion). It defaults to
+    False for every broker whose trade fn is still account-blind
+    (``TradeFn(side, qty, ticker, price)``, no account kwarg) — dispatching a
+    real-account-id leg to one of those would multiply orders for
+    internally-fanning fns (final-review C1), so ``place_at_broker``'s guard
+    keeps rejecting them. Fennel is the first broker to flip it True: its
+    trade fn now accepts an ``account_id`` kwarg and places exactly one
+    order per call when given one.
     """
     return BrokerMCPSpec(
         name=spec.name,
@@ -151,6 +167,7 @@ def build_broker_mcp_spec(spec: "registry.BrokerSpec") -> BrokerMCPSpec:
             if spec.multi_account
             else _default_single_account
         ),
+        account_scoped_trade=spec.account_scoped_trade,
         requires_mfa=spec.requires_mfa,
         supports_fractional=spec.supports_fractional,
         notes=spec.notes,
@@ -247,15 +264,17 @@ class InProcessBroker:
         # a REAL account (not the "primary" placeholder every single-account
         # discovery path assigns) cannot be honored by an account-blind
         # trade_fn: the fn can't target that account, and internally-fanning
-        # fns (Fennel) would place once per session account PER LEG —
+        # fns would place once per session account PER LEG —
         # N accounts x N legs = N^2 live orders. Fail the leg loudly instead
         # of silently placing account-blind. Applies to dry-run legs too so
-        # rehearsals predict live behavior. Today every real spec is
-        # account-blind (TradeFn has no account param), and every real leg is
-        # "primary" (all registry specs have multi_account=False), so this
-        # never fires in production — it exists to make any future
-        # multi_account=True + blind-fn combination fail per leg rather than
-        # double-buy.
+        # rehearsals predict live behavior. Fennel completed the migration
+        # (ADR 0006 completion, P1 fix) — its spec now sets
+        # `account_scoped_trade=True`, so its real-account legs pass this
+        # guard and dispatch through the account_id-keyword path below. The
+        # other 12 registry specs remain account-blind (`multi_account=False`
+        # for all of them today), so the guard still protects them and stays
+        # ready for any future broker that flips `multi_account=True` before
+        # its trade fn accepts `account_id`.
         if account_id and account_id != "primary" and not self.spec.account_scoped_trade:
             return PlaceResult(
                 ok=False,
@@ -318,7 +337,23 @@ class InProcessBroker:
 
         await rate_limiter.wait_if_needed(self.spec.name)
         try:
-            await self.spec.trade_fn(side, qty, ticker, price)
+            # Account-scoped dispatch (ADR 0006 completion): pass this leg's
+            # own account_id ONLY when the spec declares its trade fn
+            # accepts it. Blind trade fns (every broker except Fennel today)
+            # are never called with the kwarg, so they stay exactly as they
+            # were pre-migration — this is additive, not a signature change
+            # for them.
+            if self.spec.account_scoped_trade:
+                # `TradeFn`'s declared type is the blind 4-arg shape (see the
+                # alias's docstring above); account-scoped trade fns
+                # additionally accept `account_id` by convention, not by
+                # type — this is the one call site that relies on that
+                # convention, gated on the spec flag.
+                await self.spec.trade_fn(  # type: ignore[call-arg]
+                    side, qty, ticker, price, account_id=account_id
+                )
+            else:
+                await self.spec.trade_fn(side, qty, ticker, price)
         except Exception as e:  # SDK exceptions vary widely — surface as a leg-failure
             self.core.record_leg_outcome(
                 token=confirmation_token,

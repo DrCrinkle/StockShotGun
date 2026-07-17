@@ -261,16 +261,27 @@ migrate. No data migration — proposals remain ephemeral (ADR 0005).
   the MCP boundary (callables don't serialize), so it can't simply move into the
   engine as-is. Candidate follow-up: when `validate_functions` is `None`, resolve
   validators from `brokers/registry.py` directly inside `validate_targets`.
-- Threading `account_id` through `TradeFn` is the real long-term fix for
-  account-scoped dispatch. Today `TradeFn(side, qty, ticker, price)` is
-  account-blind, so per-account legs cannot be honored: Fennel is pinned to
-  `multi_account=False` (its trade fn fans out internally over all session
-  accounts — per-account legs would multiply orders, final-review C1), and
-  `InProcessBroker.place_at_broker` fails any real-account-id leg on a spec
-  without `account_scoped_trade` (`reason="account_scoped_dispatch_unsupported"`).
-  Once `TradeFn` gains an account parameter, `build_broker_mcp_spec` can set
-  `account_scoped_trade=True` per broker, flip `multi_account=True` in the
-  registry, and true per-account fan-out (ADR 0001) becomes safe end to end.
+- ~~Threading `account_id` through `TradeFn`~~ — **mechanism now exists and
+  Fennel has migrated (post-merge P1 fix, PR review).** `place_at_broker`
+  (`execution/in_process.py`) calls
+  `trade_fn(side, qty, ticker, price, account_id=account_id)` whenever
+  `BrokerMCPSpec.account_scoped_trade` is True; every other (blind) trade fn
+  is still called with no account kwarg, so this is additive, not a
+  signature break. `brokers/fennel.py`'s `fennelTrade` accepts the optional
+  `account_id` kwarg and places exactly one order per call when given one
+  (no internal fan-out on that path); `brokers/registry.py`'s Fennel
+  `BrokerSpec` now sets `multi_account=True` + `account_scoped_trade=True`
+  together, so real per-account fan-out (ADR 0001) is safe end to end for
+  Fennel specifically. `InProcessBroker.place_at_broker`'s guard is
+  unchanged in behavior and still fails any real-account-id leg on a spec
+  without `account_scoped_trade`
+  (`reason="account_scoped_dispatch_unsupported"`) — it protects the other
+  12 brokers, whose trade fns remain account-blind
+  (`TradeFn(side, qty, ticker, price)`, no account parameter). Remaining
+  work: migrate those brokers the same way (add the `account_id` kwarg to
+  each trade fn, flip both registry flags) as multi-account support becomes
+  relevant for them — nothing engine-side needs to change per broker beyond
+  that.
 - Fill-vs-marking crash window (final-review I1): `automate` marks a signal
   executed immediately AFTER its order's `execute_order` returns — a crash
   between the broker fill and `mark_buy_signals_executed` leaves a filled
