@@ -5,6 +5,7 @@ import urwid
 import asyncio
 import traceback
 from collections.abc import Hashable
+from typing import Any, Callable
 
 from tui.config import BROKERS
 from tui.widgets import EditWithCallback, ResponseBox
@@ -19,17 +20,141 @@ from tui.input_handler import (
     setup_tui_input_interception,
     restore_original_input,
 )
-from agentic.cli_bridge import (
-    apply_main_py_gate_batch,
-    execute_via_router,
-    preflight_validate,
-    record_main_py_outcome_batch,
+from brokers import session_manager
+from cli.common import (
+    _leg_label,
+    aggregate_execution_results,
+    get_engine,
+    render_execution_result,
 )
 from enforcement import GateError
 from robin_stocks.robinhood.helper import (
     set_output as set_robinhood_output,
     get_output as get_robinhood_output,
 )
+
+
+async def submit_orders_via_engine(
+    orders: list[dict[str, Any]],
+    *,
+    engine: Any,
+    progress_fn: Callable[..., None],
+) -> dict[str, Any]:
+    """Propose-then-execute a batch of TUI orders on the ExecutionEngine
+    (ADR 0006), returning the legacy `{successful, failed, skipped,
+    statuses}` shape the TUI's response panel and broker-status widgets
+    already know how to read.
+
+    Two phases, mirroring `apply_main_py_gate_batch` -> `execute_via_router`
+    (the retired `agentic.cli_bridge` path this replaces):
+
+      Phase 1 — propose EVERY order first. `GateError` raised here (all
+      orders rejected before any of them execute) propagates to the caller
+      unchanged — the TUI's `except GateError` handling around this call is
+      what displays the rejection and clears the queue, exactly as it did
+      for `apply_main_py_gate_batch`.
+
+      Phase 2 — execute every proposal in order. This is interactive UI code
+      and must NEVER raise on a rejected execution (unlike the CLI/batch/
+      automate paths, which abort the whole process on an execute-time
+      rejection). A `rejected=True` execution instead renders as an
+      all-failed leg set for that order's selected brokers — the same
+      outcome `execute_via_router` produced when `result.get("rejected")`
+      was true (it marked every selected broker as failed and kept going).
+      `render_execution_result` doesn't know the order's originally
+      selected brokers (a rejection carries no broker/account list), so the
+      synthetic all-failed status is built here rather than in the shared
+      renderer.
+    """
+    def _progress(*args: Any, **kwargs: Any) -> None:
+        """Best-effort UI update. The progress callback is purely cosmetic
+        (it writes to the TUI response panel); a throwing callback must NEVER
+        abort order execution or corrupt the aggregate result, so every
+        invocation is swallowed — mirroring the retired bridge's try/except
+        around each `progress_fn` call.
+        """
+        try:
+            progress_fn(*args, **kwargs)
+        except Exception:
+            pass
+
+    proposals: list[dict[str, Any]] = []
+    for order in orders:
+        proposal = await engine.propose_order(
+            ticker=str(order["ticker"]),
+            qty=order["quantity"],
+            side=str(order["action"]),
+            brokers=list(order["selected_brokers"]),
+            price=order.get("price"),
+            dry_run=False,
+        )
+        proposals.append(proposal)
+
+    rendered_results: list[dict[str, Any]] = []
+    for order, proposal in zip(orders, proposals):
+        ticker = str(order["ticker"])
+        action = str(order["action"])
+        qty = order["quantity"]
+        order_brokers = [str(b) for b in order.get("selected_brokers", [])]
+
+        _progress(
+            f"[tui] executing proposal {proposal['proposal_id'][:12]}… for "
+            f"{action} {qty} {ticker} ({proposal['leg_count']} leg(s))"
+        )
+
+        execution = await engine.execute_order(
+            proposal_id=proposal["proposal_id"],
+            dry_run=False,
+        )
+
+        if execution.get("rejected"):
+            _progress(
+                f"✗ Order rejected by enforcement gate "
+                f"({execution.get('reason')}): {execution.get('detail')}"
+            )
+            rendered = {
+                "successful": 0,
+                "failed": len(order_brokers),
+                "skipped": 0,
+                "statuses": [
+                    {
+                        "ticker": ticker,
+                        "action": action,
+                        "successful": [],
+                        "failed": order_brokers,
+                        "skipped": [],
+                        "reason": execution.get("reason"),
+                        "detail": execution.get("detail"),
+                    }
+                ],
+            }
+        else:
+            rendered = render_execution_result(execution)
+            # Emit per-leg progress from the raw execution legs (not the
+            # rendered status, which collapses legs to bare broker labels and
+            # discards each leg's reason/detail). This restores the retired
+            # bridge's `✗ {broker}: {reason} - {detail}` diagnostics, with a
+            # graceful fallback to `✗ {broker}: failed` when a failed leg
+            # carries neither reason nor detail (no dangling `- ` or `None`).
+            for leg in execution.get("results") or []:
+                label = _leg_label(leg.get("broker", ""), leg.get("account_id"))
+                if leg.get("ok"):
+                    _progress(f"✓ {label}: {leg.get('detail') or 'placed'}")
+                else:
+                    reason = leg.get("reason")
+                    detail = leg.get("detail")
+                    if reason and detail:
+                        _progress(f"✗ {label}: {reason} - {detail}")
+                    elif reason:
+                        _progress(f"✗ {label}: {reason}")
+                    elif detail:
+                        _progress(f"✗ {label}: {detail}")
+                    else:
+                        _progress(f"✗ {label}: failed")
+
+        rendered_results.append(rendered)
+
+    return aggregate_execution_results(rendered_results)
 
 
 def run_tui():
@@ -319,11 +444,40 @@ def run_tui():
         ]
 
         try:
-            # Pre-flight each order before gating; drop legs that fail broker
-            # validation and any order left with no executable broker.
+            # Initialize broker sessions BEFORE any engine call — the same
+            # step every CLI path takes (cli/trade.py, cli/batch.py,
+            # cli/automate.py). Without it, `propose_order`'s account
+            # discovery reads `session_manager.sessions` cold (empty on the
+            # first submission), and only the trade fns' lazy `get_session`
+            # calls populate it — so discovery would silently differ between
+            # the first and later submissions (final-review I2). Nothing else
+            # in the TUI guarantees this: `session_cache` only *reads*
+            # session status, and the holdings screen initializes lazily via
+            # the broker fns themselves.
+            brokers_to_initialize = sorted(
+                {
+                    broker
+                    for order in orders
+                    for broker in order.get("selected_brokers", [])
+                }
+            )
+            try:
+                await session_manager.initialize_selected_sessions(
+                    brokers_to_initialize
+                )
+            except Exception as exc:
+                response_box.add_response(
+                    f"✗ Failed to initialize broker sessions: {exc}",
+                    force_redraw=True,
+                )
+                return
+
+            # Pre-flight each order before proposing; drop legs that fail
+            # broker validation and any order left with no executable broker.
+            engine = await get_engine()
             executable_orders = []
             for order in orders:
-                validated, skipped = await preflight_validate(
+                validated, skipped = await engine.validate_targets(
                     selected_brokers=list(order.get("selected_brokers", [])),
                     action=order["action"],
                     quantity=order["quantity"],
@@ -348,9 +502,18 @@ def run_tui():
                 return
             orders[:] = executable_orders
 
-            # F5 v0.3 — gate every TUI-submitted order before fan-out.
+            # ADR 0006 — one propose path for every caller. `propose_order`
+            # raises GateError on the FIRST rejection, aborting the whole
+            # batch before anything executes — same fail-fast contract
+            # `apply_main_py_gate_batch` gave this call site.
             try:
-                tui_proposals = await apply_main_py_gate_batch(orders)
+                results = await submit_orders_via_engine(
+                    orders,
+                    engine=engine,
+                    progress_fn=lambda msg, force_redraw=False: response_box.add_response(
+                        msg, force_redraw=force_redraw
+                    ),
+                )
             except GateError as gate_err:
                 response_box.add_response(
                     f"✗ Order rejected by enforcement gate "
@@ -360,22 +523,6 @@ def run_tui():
                 orders.clear()
                 update_order_summary()
                 return
-
-            # F5 v0.4 — Router-driven per-leg-token execution for the TUI.
-            results = await execute_via_router(
-                proposals=tui_proposals,
-                orders=orders,
-                dry_run=False,
-                progress_fn=lambda msg, force_redraw=False: response_box.add_response(
-                    msg, force_redraw=force_redraw
-                ),
-            )
-
-            await record_main_py_outcome_batch(
-                proposals=tui_proposals,
-                orders=orders,
-                results=results,
-            )
 
             # Build summary with total broker counts across all orders
             summary_parts = [f"✅ {results['successful']} succeeded"]
@@ -449,10 +596,27 @@ def run_tui():
         }
 
         try:
-            # Pre-flight the retried orders before gating, same as submit.
+            # Re-initialize sessions for the retried brokers (same
+            # final-review I2 rationale as submit_all_orders): a broker that
+            # timed out during the original submission likely has no usable
+            # cached session, and `initialize_selected_sessions` is
+            # idempotent for brokers whose session is already live.
+            try:
+                await session_manager.initialize_selected_sessions(
+                    sorted(timed_out_brokers)
+                )
+            except Exception as exc:
+                response_box.add_response(
+                    f"✗ Failed to initialize broker sessions: {exc}",
+                    force_redraw=True,
+                )
+                return
+
+            # Pre-flight the retried orders before proposing, same as submit.
+            engine = await get_engine()
             executable_retry = []
             for order in retry_orders:
-                validated, skipped = await preflight_validate(
+                validated, skipped = await engine.validate_targets(
                     selected_brokers=list(order.get("selected_brokers", [])),
                     action=order["action"],
                     quantity=order["quantity"],
@@ -475,9 +639,17 @@ def run_tui():
                 return
             retry_orders[:] = executable_retry
 
-            # F5 v0.3 — gate the retried orders too.
+            # ADR 0006 — propose every retried order before executing any of
+            # them; a GateError here aborts the whole retry, same contract
+            # `apply_main_py_gate_batch` gave this call site.
             try:
-                retry_proposals = await apply_main_py_gate_batch(retry_orders)
+                results = await submit_orders_via_engine(
+                    retry_orders,
+                    engine=engine,
+                    progress_fn=lambda msg, force_redraw=False: response_box.add_response(
+                        msg, force_redraw=force_redraw
+                    ),
+                )
             except GateError as gate_err:
                 response_box.add_response(
                     f"✗ Retry rejected by enforcement gate "
@@ -485,22 +657,6 @@ def run_tui():
                     force_redraw=True,
                 )
                 return
-
-            # F5 v0.4 — Router-driven retry path.
-            results = await execute_via_router(
-                proposals=retry_proposals,
-                orders=retry_orders,
-                dry_run=False,
-                progress_fn=lambda msg, force_redraw=False: response_box.add_response(
-                    msg, force_redraw=force_redraw
-                ),
-            )
-
-            await record_main_py_outcome_batch(
-                proposals=retry_proposals,
-                orders=retry_orders,
-                results=results,
-            )
 
             response_box.add_response(
                 (

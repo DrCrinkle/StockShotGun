@@ -33,16 +33,25 @@ EXPECTED_TOOLS = {
 
 
 def _fake_spec() -> BrokerMCPSpec:
-    async def fake_trade(side: str, qty: float, ticker: str, price: float | None) -> Any:
+    async def fake_trade(
+        side: str, qty: float, ticker: str, price: float | None, account_id: str | None = None
+    ) -> Any:
         return {"ok": True}
 
     async def fake_holdings(ticker: str | None = None) -> Any:
         return {ticker or "ALL": 0.0}
 
+    # account_scoped_trade=True: the place_at_broker round-trip below places
+    # a leg at the real account id "acc1" — simulating an account-scoped
+    # broker (like Fennel post-ADR-0006-completion), so `fake_trade` accepts
+    # the `account_id` keyword `place_at_broker` passes when the flag is set.
+    # The account-blind dispatch guard (final-review C1) is covered in
+    # tests/agentic/test_broker_mcp_server.py.
     return BrokerMCPSpec(
         name="FakeBroker",
         trade_fn=fake_trade,
         holdings_fn=fake_holdings,
+        account_scoped_trade=True,
     )
 
 

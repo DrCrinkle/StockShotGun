@@ -1,6 +1,6 @@
 # ADR 0006: Execution Engine as Core — Router Is the Engine, CLI/TUI/MCP Are Adapters
 
-- **Status**: Proposed (Draft — 2026-05-31)
+- **Status**: Accepted (2026-07-02)
 - **Amends**: ADR 0003 (reframes "Router as agent surface" → "Router as execution core")
 - **Relates**: ADR 0004 (registry), ADR 0005 (self-describing proposal)
 
@@ -189,21 +189,32 @@ AFTER — one engine, thin adapters, MCP isolated to the edge
    `execution/engine.py` still re-exports the engine body from
    `agentic/router/_server.py` — relocating that body is the next step and
    completes the direction flip (then it joins the layering test).
-3. **Repoint the main CLI.** Rewrite `cli/trade.py` to call
+3. **Repoint the main CLI.** ✅ *Done 2026-07-02.* `cli/trade.py` now calls
    `engine.propose_order` + `engine.execute_order` (the calls `agentic/cli.py`
-   already makes). Drop the direct `gate_order` call. *Main CLI now gets real
-   per-account discovery for free* (fixes Context #1), and `--dry-run` can become a
-   true full-pipeline rehearsal — `propose_order(dry_run=True)` +
-   `execute_order(dry_run=True)` runs limits/freeze/reconciliation without placing
-   orders, replacing the credentials-only readiness check (fixes Context #2). Both
-   are visible, intentional diffs to golden-test in step 0.
-4. **Repoint TUI + batch + automate.** Same substitution in `tui/app.py`,
-   `cli/batch.py`, `cli/automate.py`.
-5. **Delete `cli_bridge.py`.** Replace its result reshaping with a
-   `render_execution_result()` in `cli/common.py`. `preflight_validate` becomes
-   `engine.validate_targets`.
-6. **Lock the layering.** Add a test asserting no module under `execution/` or
-   `enforcement/` imports `agentic/`.
+   already made). The direct `gate_order` call is gone. *Main CLI gets real
+   per-account discovery for free* (fixes Context #1). **DECISION:** `--dry-run`
+   is a full-pipeline rehearsal — `propose_order(dry_run=True)` +
+   `execute_order(dry_run=True)` runs limits/freeze/reconciliation/token-minting
+   without placing orders; the credentials-only readiness check
+   (`_build_dry_run_readiness`) is retired from the dry-run path (fixes Context
+   #2). This resolves the open question below in favor of full rehearsal over a
+   separate `--rehearse` flag. Both changes are golden-tested (per-account fan-out
+   and dry-run-is-rehearsal pins in `tests/test_cli_trade_golden.py`).
+4. **Repoint TUI + batch + automate.** ✅ *Done 2026-07-02.* Same substitution in
+   `tui/app.py` (`submit_all_orders`, `retry_timed_out_brokers`), `cli/batch.py`,
+   and `cli/automate.py`. `automate`'s own dry-run path flips the same way as
+   step 3. `cli/batch.py` and `tui/app.py` preflight through
+   `engine.validate_targets` (step 5) ahead of propose/execute.
+5. **Delete `cli_bridge.py`.** ✅ *Done 2026-07-02.* Its result reshaping is
+   replaced by `render_execution_result()` / `aggregate_execution_results()` in
+   `cli/common.py`. `preflight_validate` is now `ExecutionEngine.validate_targets`
+   (`execution/engine.py`). `gate_error_to_exit_code` relocated to
+   `cli/common.py` (all three callers — `trade.py`, `batch.py`, `automate.py` —
+   import it from there). `grep -rn cli_bridge src tests` returns zero.
+6. **Lock the layering.** ✅ *Done 2026-07-02.* `tests/test_execution_layering.py`
+   now covers `execution/engine.py` (joining the step-2 modules) plus a full
+   sweep of every `.py` under `enforcement/` for `agentic` imports — the
+   full-package layering lock the ADR called for.
 
 ## Consequences
 
@@ -224,6 +235,11 @@ AFTER — one engine, thin adapters, MCP isolated to the edge
   step 1 keeping every import valid until each caller is repointed.
 - **`place_order` one-shot vs explicit two-step.** Keep both: interactive CLI may
   want propose → show estimate → confirm → execute; scripts/agents want one call.
+- **Per-leg result counting.** `render_execution_result` counts `successful`/
+  `failed`/`skipped` per LEG, not per broker — a broker with a taxable and an IRA
+  account contributes 2 to the counts, not 1. This is the direct, intentional
+  consequence of the per-account fan-out above; it shipped as part of that work
+  and is golden-tested in `tests/test_render_execution_result.py`.
 
 ## Reversibility
 
@@ -233,11 +249,43 @@ migrate. No data migration — proposals remain ephemeral (ADR 0005).
 
 ## Open questions
 
-- Should `--dry-run` route through the engine as a real dry proposal (full-pipeline
-  rehearsal), or do operators rely on today's fast credentials-only readiness
-  check? Possibly keep both (`--dry-run` = readiness, `--rehearse` = full pipeline).
 - Package name: `execution/` vs `core/`. `execution/` reads as a sibling of
   `enforcement/` (both neutral libs); `core/` risks becoming a junk drawer.
 - Should `run_sweep` / `sell_arrived` stay on the engine, or move to an
   `rsa/` service that *uses* the engine? They're orchestration over execution, not
   execution itself — arguably a fourth adapter, not engine surface.
+- `validate_targets(validate_functions=...)` takes caller-supplied callables — an
+  adapter-shaped seam on a core-engine method. Five near-identical call sites
+  (`cli/trade.py`, `cli/batch.py`, `cli/automate.py`, `tui/app.py` ×2) each build
+  the same dict from the broker registry before calling it; the seam can't cross
+  the MCP boundary (callables don't serialize), so it can't simply move into the
+  engine as-is. Candidate follow-up: when `validate_functions` is `None`, resolve
+  validators from `brokers/registry.py` directly inside `validate_targets`.
+- ~~Threading `account_id` through `TradeFn`~~ — **mechanism now exists and
+  Fennel has migrated (post-merge P1 fix, PR review).** `place_at_broker`
+  (`execution/in_process.py`) calls
+  `trade_fn(side, qty, ticker, price, account_id=account_id)` whenever
+  `BrokerMCPSpec.account_scoped_trade` is True; every other (blind) trade fn
+  is still called with no account kwarg, so this is additive, not a
+  signature break. `brokers/fennel.py`'s `fennelTrade` accepts the optional
+  `account_id` kwarg and places exactly one order per call when given one
+  (no internal fan-out on that path); `brokers/registry.py`'s Fennel
+  `BrokerSpec` now sets `multi_account=True` + `account_scoped_trade=True`
+  together, so real per-account fan-out (ADR 0001) is safe end to end for
+  Fennel specifically. `InProcessBroker.place_at_broker`'s guard is
+  unchanged in behavior and still fails any real-account-id leg on a spec
+  without `account_scoped_trade`
+  (`reason="account_scoped_dispatch_unsupported"`) — it protects the other
+  12 brokers, whose trade fns remain account-blind
+  (`TradeFn(side, qty, ticker, price)`, no account parameter). Remaining
+  work: migrate those brokers the same way (add the `account_id` kwarg to
+  each trade fn, flip both registry flags) as multi-account support becomes
+  relevant for them — nothing engine-side needs to change per broker beyond
+  that.
+- Fill-vs-marking crash window (final-review I1): `automate` marks a signal
+  executed immediately AFTER its order's `execute_order` returns — a crash
+  between the broker fill and `mark_buy_signals_executed` leaves a filled
+  order's signal `pending`, re-executing it (double-trade) on the next run.
+  Candidate fix: a persisted `executing` signal state written BEFORE
+  dispatch, so a crashed run surfaces as "needs manual reconciliation"
+  rather than silently re-executing.

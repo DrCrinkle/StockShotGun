@@ -36,7 +36,7 @@ from rsa_store import RsaStore  # type: ignore[import-untyped]
 
 
 def _holdings_spec(name: str, qty_map: dict[str, float]) -> BrokerMCPSpec:
-    async def fake_trade(side, qty, ticker, price):
+    async def fake_trade(side, qty, ticker, price, account_id=None):
         return {"ok": True}
 
     async def fake_holdings(ticker=None):
@@ -44,7 +44,19 @@ def _holdings_spec(name: str, qty_map: dict[str, float]) -> BrokerMCPSpec:
             return qty_map
         return {ticker: qty_map.get(ticker, 0.0)}
 
-    return BrokerMCPSpec(name=name, trade_fn=fake_trade, holdings_fn=fake_holdings)
+    # account_scoped_trade=True: the RSA fixtures record positions under the
+    # real account id "acc1", and sell_arrived mints legs from those ids —
+    # these tests simulate an account-scoped broker (like Fennel
+    # post-ADR-0006-completion) so the end-to-end sell can execute, and
+    # `fake_trade` accepts the `account_id` keyword `place_at_broker` passes
+    # in that case. The account-blind dispatch guard (final-review C1)
+    # is covered in tests/agentic/test_broker_mcp_server.py / test_router.py.
+    return BrokerMCPSpec(
+        name=name,
+        trade_fn=fake_trade,
+        holdings_fn=fake_holdings,
+        account_scoped_trade=True,
+    )
 
 
 @pytest.fixture

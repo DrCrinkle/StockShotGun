@@ -8,26 +8,15 @@ from brokers.base import http_client, rate_limiter, retry_operation
 API_BASE = "https://api.fennel.com"
 
 
-async def fennelTrade(side, qty, ticker, price):
-    """Execute a trade on Fennel using official API.
+async def _fennel_submit_order(access_token, account_id, side, qty, ticker, price):
+    """POST one order to `/order/create` for exactly ONE Fennel account_id.
 
-    Returns:
-        True: Trade executed successfully on all accounts
-        False: Trade failed on all accounts
-        None: No credentials (broker skipped)
+    The single SDK call shared by both the account-scoped path
+    (`fennelTrade(..., account_id=...)`) and the legacy blind loop below —
+    same headers, same enum mapping, same endpoint. Never raises; returns
+    True/False so callers can tally success without duplicating
+    error-handling.
     """
-    await rate_limiter.wait_if_needed("Fennel")
-
-    from brokers.session_manager import session_manager
-
-    fennel_session = await session_manager.get_session("Fennel")
-    if not fennel_session:
-        print("No Fennel credentials supplied, skipping")
-        return None
-
-    access_token = fennel_session["access_token"]
-    account_ids = fennel_session["account_ids"]
-
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Accept": "application/json",
@@ -40,48 +29,102 @@ async def fennelTrade(side, qty, ticker, price):
     side_enum = 1 if side.lower() == "buy" else 2
     order_type = 1 if not price else 2  # Market if no price, Limit if price given
 
+    order_data = {
+        "account_id": account_id,
+        "symbol": ticker.upper(),
+        "shares": qty,
+        "limit_price": float(price) if price else 0,
+        "side": side_enum,
+        "type": order_type,
+        "time_in_force": 1,  # DAY
+        "route": "EXCHANGE_ATS_SDP",
+    }
+
+    try:
+        response = await http_client.post(
+            f"{API_BASE}/order/create",
+            headers=headers,
+            json=order_data,
+            timeout=30.0,
+        )
+
+        if response.status_code == 200:
+            action_str = "Bought" if side.lower() == "buy" else "Sold"
+            order_type_str = "market" if not price else f"limit @ ${price}"
+            print(
+                f"{action_str} {qty} shares of {ticker} on Fennel account {account_id} ({order_type_str})"
+            )
+            return True
+        else:
+            error_msg = response.text or "Unknown error"
+            print(
+                f"Failed to place order for {ticker} on Fennel account {account_id}: {error_msg}"
+            )
+            return False
+
+    except Exception as e:
+        print(
+            f"Error placing order for {ticker} on Fennel account {account_id}: {str(e)}"
+        )
+        traceback.print_exc()
+        return False
+
+
+async def fennelTrade(side, qty, ticker, price, account_id=None):
+    """Execute a trade on Fennel using official API.
+
+    Args:
+        account_id: when given (the engine's account-scoped dispatch path —
+            see `brokers/registry.py`'s Fennel `BrokerSpec.account_scoped_trade`
+            and `execution/in_process.py:place_at_broker`), places exactly
+            ONE order for that account and returns a bool for that single
+            call. No internal loop runs in this branch.
+
+            When omitted (`None`), falls back to the legacy blind behavior:
+            fans out over every account_id cached in the session. Nothing in
+            this codebase calls `fennelTrade` this way anymore — the
+            registry now marks Fennel `account_scoped_trade=True`, so
+            `place_at_broker` always supplies `account_id` — but the branch
+            is kept for any direct/legacy caller so it still behaves as
+            documented rather than raising.
+
+    Returns:
+        True: Trade executed successfully (on the given account, or on at
+            least one account in the legacy fan-out)
+        False: Trade failed (on the given account, or on every account in
+            the legacy fan-out)
+        None: No credentials (broker skipped)
+    """
+    await rate_limiter.wait_if_needed("Fennel")
+
+    from brokers.session_manager import session_manager
+
+    fennel_session = await session_manager.get_session("Fennel")
+    if not fennel_session:
+        print("No Fennel credentials supplied, skipping")
+        return None
+
+    access_token = fennel_session["access_token"]
+
+    if account_id is not None:
+        # Account-scoped dispatch: one call, one account, one live order.
+        # The old internal loop below never runs on this path.
+        return await _fennel_submit_order(
+            access_token, account_id, side, qty, ticker, price
+        )
+
+    # Legacy blind path — no account_id supplied. Fans out internally over
+    # every session account, same as before ADR 0006 completion.
+    account_ids = fennel_session["account_ids"]
+
     success_count = 0
     failure_count = 0
 
-    for account_id in account_ids:
-        order_data = {
-            "account_id": account_id,
-            "symbol": ticker.upper(),
-            "shares": qty,
-            "limit_price": float(price) if price else 0,
-            "side": side_enum,
-            "type": order_type,
-            "time_in_force": 1,  # DAY
-            "route": "EXCHANGE_ATS_SDP",
-        }
-
-        try:
-            response = await http_client.post(
-                f"{API_BASE}/order/create",
-                headers=headers,
-                json=order_data,
-                timeout=30.0,
-            )
-
-            if response.status_code == 200:
-                action_str = "Bought" if side.lower() == "buy" else "Sold"
-                order_type_str = "market" if not price else f"limit @ ${price}"
-                print(
-                    f"{action_str} {qty} shares of {ticker} on Fennel account {account_id} ({order_type_str})"
-                )
-                success_count += 1
-            else:
-                error_msg = response.text or "Unknown error"
-                print(
-                    f"Failed to place order for {ticker} on Fennel account {account_id}: {error_msg}"
-                )
-                failure_count += 1
-
-        except Exception as e:
-            print(
-                f"Error placing order for {ticker} on Fennel account {account_id}: {str(e)}"
-            )
-            traceback.print_exc()
+    for aid in account_ids:
+        ok = await _fennel_submit_order(access_token, aid, side, qty, ticker, price)
+        if ok:
+            success_count += 1
+        else:
             failure_count += 1
 
     # Return True if at least one account succeeded

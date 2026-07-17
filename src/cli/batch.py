@@ -1,16 +1,11 @@
-"""`--from-file` batch order handler: validate a JSON order file, then gate and
-execute every order through the Router."""
+"""`--from-file` batch order handler: validate a JSON order file, then propose
+and execute every order through the ExecutionEngine (ADR 0006) — one propose
+path, one execute path, per order, shared with the CLI/TUI/operator CLI/MCP
+server."""
 
 import json
 from typing import Any, cast
 
-from agentic.cli_bridge import (
-    apply_main_py_gate_batch,
-    execute_via_router,
-    gate_error_to_exit_code,
-    preflight_validate,
-    record_main_py_outcome_batch,
-)
 from enforcement import GateError
 from cli_runtime import (  # type: ignore[import-untyped]
     CliRuntimeError,
@@ -24,10 +19,13 @@ from brokers.registry import broker_functions_map  # type: ignore[import-untyped
 BROKER_FUNCTIONS = broker_functions_map()
 
 from cli.common import (
-    _build_dry_run_readiness,
     _default_brokers_for_trade,
     _mock_batch_results,
     _raise_parser_error,
+    aggregate_execution_results,
+    gate_error_to_exit_code,
+    get_engine,
+    render_execution_result,
 )
 
 
@@ -160,11 +158,6 @@ async def _run_batch_from_file(args, parser, context):
         for order in orders:
             order["selected_brokers"] = args.broker
 
-    trade_functions = {
-        broker_name: BROKER_FUNCTIONS[broker_name]["trade"]
-        for broker_name in brokers_to_use
-        if broker_name in BROKER_FUNCTIONS and "trade" in BROKER_FUNCTIONS[broker_name]
-    }
     if context.mock_brokers:
         results = _mock_batch_results(orders)
         if context.output_format != "json":
@@ -177,39 +170,6 @@ async def _run_batch_from_file(args, parser, context):
             "messages": ["Mock mode: no live broker calls were executed"],
         }
 
-    if context.dry_run:
-        dry_run_orders = []
-        total_ready = 0
-        for order in orders:
-            readiness, ready_brokers = _build_dry_run_readiness(order, trade_functions)
-            total_ready += len(ready_brokers)
-            dry_run_orders.append(
-                {
-                    "order": order,
-                    "ready_brokers": ready_brokers,
-                    "readiness": readiness,
-                }
-            )
-
-        if context.output_format != "json":
-            print(f"\nDRY RUN BATCH: {len(orders)} order(s)")
-            for idx, entry in enumerate(dry_run_orders, start=1):
-                order = entry["order"]
-                print(
-                    f"  [{idx}] {order['action'].upper()} {order['quantity']} {order['ticker']} @ ${order['price'] if order['price'] is not None else 'market'}"
-                )
-                print(f"      Ready brokers: {len(entry['ready_brokers'])}")
-
-        exit_code = (
-            ExitCode.SUCCESS if total_ready > 0 else ExitCode.CONFIG_CREDENTIAL_MISSING
-        )
-        return exit_code, {
-            "dry_run": True,
-            "batch": True,
-            "order_count": len(orders),
-            "orders": dry_run_orders,
-        }
-
     try:
         await session_manager.initialize_selected_sessions(brokers_to_use)
     except Exception as exc:
@@ -219,7 +179,9 @@ async def _run_batch_from_file(args, parser, context):
             details={"brokers": brokers_to_use},
         ) from exc
 
-    # Pre-flight each order's brokers BEFORE gating; drop legs that fail
+    engine = await get_engine()
+
+    # Pre-flight each order's brokers BEFORE proposing; drop legs that fail
     # validation and drop any order left with no executable broker, so the
     # batch fails fast on infeasible legs instead of mid-fan-out.
     validation_skipped: list[tuple[str, str]] = []
@@ -231,7 +193,7 @@ async def _run_batch_from_file(args, parser, context):
             for b in order_brokers
             if b in BROKER_FUNCTIONS and "validate" in BROKER_FUNCTIONS.get(b, {})
         }
-        validated, skipped = await preflight_validate(
+        validated, skipped = await engine.validate_targets(
             selected_brokers=order_brokers,
             action=order["action"],
             quantity=order["quantity"],
@@ -265,26 +227,19 @@ async def _run_batch_from_file(args, parser, context):
         }
     orders = executable_orders
 
-    if context.output_format != "json":
-        print(
-            f"\nBATCH RUN: {len(orders)} order(s) across {len(brokers_to_use)} broker(s): {', '.join(brokers_to_use)}\n"
-        )
+    is_rehearsal = bool(context.dry_run)
 
-    # F5 v0.3 — gate every order in the batch BEFORE order_processor fans out.
-    # First-rejection aborts the batch (operators want clean fail-fast semantics
-    # on batch input, not half-executed orders).
-    try:
-        batch_proposals = await apply_main_py_gate_batch(orders)
-    except GateError as gate_err:
-        raise CliRuntimeError(
-            f"Batch rejected by enforcement gate ({gate_err.reason}): {gate_err}",
-            ExitCode(gate_error_to_exit_code(gate_err)),
-            details={
-                "reason": gate_err.reason,
-                "order_count": len(orders),
-                "brokers": brokers_to_use,
-            },
-        ) from gate_err
+    if context.output_format != "json":
+        header = (
+            f"\nDRY RUN BATCH: {len(orders)} order(s) across "
+            f"{len(brokers_to_use)} broker(s): {', '.join(brokers_to_use)}\n"
+            if is_rehearsal
+            else f"\nBATCH RUN: {len(orders)} order(s) across "
+            f"{len(brokers_to_use)} broker(s): {', '.join(brokers_to_use)}\n"
+        )
+        print(header)
+        if is_rehearsal:
+            print("DRY RUN — full pipeline rehearsal, no orders placed")
 
     cli_messages = []
 
@@ -296,23 +251,104 @@ async def _run_batch_from_file(args, parser, context):
         else:
             print(message)
 
-    # F5 v0.4 — Router-driven per-leg-token execution for the batch.
-    results = await execute_via_router(
-        proposals=batch_proposals,
-        orders=orders,
-        dry_run=False,
-        progress_fn=cli_response_fn,
-    )
+    if is_rehearsal and context.output_format == "json":
+        # Text mode already printed this in the header block above; only
+        # the JSON envelope's `messages` list still needs it (dedup fix,
+        # same as cli/trade.py).
+        cli_response_fn("DRY RUN — full pipeline rehearsal, no orders placed")
+
+    # ADR 0006 — one propose path for every caller. Two phases, mirroring the
+    # original `apply_main_py_gate_batch` -> `execute_via_router` split:
+    #
+    #   Phase 1 — propose EVERY order first. The first GateError raises and
+    #   aborts the whole batch BEFORE any order is executed (operators get a
+    #   clean "fix the batch and re-run" signal rather than partial execution
+    #   against half-vetted orders — this is load-bearing: gating all orders
+    #   before executing any of them is what `apply_main_py_gate_batch` did).
+    #
+    #   Phase 2 — execute every gated proposal in order. `--dry-run` is a
+    #   full-pipeline rehearsal — propose and execute both run with
+    #   dry_run=True end to end.
+    proposals: list[dict[str, Any]] = []
+    for order in orders:
+        try:
+            proposal = await engine.propose_order(
+                ticker=str(order["ticker"]),
+                qty=order["quantity"],
+                side=str(order["action"]),
+                brokers=list(order["selected_brokers"]),
+                price=order.get("price"),
+                dry_run=is_rehearsal,
+            )
+        except GateError as gate_err:
+            raise CliRuntimeError(
+                f"Batch rejected by enforcement gate ({gate_err.reason}): {gate_err}",
+                ExitCode(gate_error_to_exit_code(gate_err)),
+                details={
+                    "reason": gate_err.reason,
+                    "order_count": len(orders),
+                    "brokers": brokers_to_use,
+                    "ticker": order["ticker"],
+                    "qty": order["quantity"],
+                    "action": order["action"],
+                },
+            ) from gate_err
+        proposals.append(proposal)
+
+    rendered_results = []
+    for order, proposal in zip(orders, proposals):
+        ticker = str(order["ticker"])
+        action = str(order["action"])
+        qty = order["quantity"]
+        order_brokers = list(order["selected_brokers"])
+
+        cli_response_fn(
+            f"[batch] executing proposal {proposal['proposal_id'][:12]}… for "
+            f"{action} {qty} {ticker} ({proposal['leg_count']} leg(s))"
+        )
+
+        execution = await engine.execute_order(
+            proposal_id=proposal["proposal_id"],
+            dry_run=is_rehearsal,
+        )
+
+        # A rejection at execute time means nothing was placed anywhere for
+        # this order — this must NOT read as success. Aborts the whole batch,
+        # same as a propose-time GateError. Orders that already executed
+        # earlier in this loop are not lost — their rendered results ride
+        # along in `details` so JSON error output isn't silently missing
+        # completed work.
+        if execution.get("rejected"):
+            raise CliRuntimeError(
+                f"Execution rejected by enforcement gate "
+                f"({execution.get('reason')}): {execution.get('detail')}",
+                ExitCode.FULL_BROKER_FAILURE,
+                details={
+                    "reason": execution.get("reason"),
+                    "detail": execution.get("detail"),
+                    "proposal_id": proposal["proposal_id"],
+                    "brokers": order_brokers,
+                    "ticker": ticker,
+                    "qty": qty,
+                    "action": action,
+                    "completed_results": aggregate_execution_results(rendered_results),
+                    "completed_orders": len(rendered_results),
+                },
+            )
+
+        rendered = render_execution_result(execution)
+        for status in rendered["statuses"]:
+            for broker in status["successful"]:
+                cli_response_fn(f"[batch] ✓ {broker}: placed")
+            for broker in status["failed"]:
+                cli_response_fn(f"[batch] ✗ {broker}: failed")
+        rendered_results.append(rendered)
+
+    results = aggregate_execution_results(rendered_results)
 
     # Fold pre-flight skips into the aggregate skip count.
     if validation_skipped:
         results["skipped"] += len(validation_skipped)
-
-    await record_main_py_outcome_batch(
-        proposals=batch_proposals,
-        orders=orders,
-        results=results,
-    )
 
     if context.output_format != "json":
         print(f"\n{'=' * 60}")
@@ -325,6 +361,7 @@ async def _run_batch_from_file(args, parser, context):
 
     return compute_trade_exit_code(results), {
         "batch": True,
+        "dry_run": is_rehearsal,
         "order_count": len(orders),
         "brokers": brokers_to_use,
         "results": results,

@@ -295,9 +295,21 @@ def test_router_loads_all_real_brokers(core: EnforcementCore):
     }
 
 
-def _multi_account_spec(name: str, accounts: list[str], log: list[Any]) -> BrokerMCPSpec:
-    async def fake_trade(side, qty, ticker, price):
-        log.append((name, side, qty, ticker, price))
+def _multi_account_spec(
+    name: str,
+    accounts: list[str],
+    log: list[Any],
+    *,
+    account_scoped_trade: bool = True,
+) -> BrokerMCPSpec:
+    """Simulates an account-scoped multi-account broker (default, like Fennel
+    post-ADR-0006-completion): `account_scoped_trade=True` lets its
+    real-account-id legs place, and `fake_trade` accepts the `account_id`
+    keyword `place_at_broker` passes in that case. Pass
+    `account_scoped_trade=False` to simulate an account-blind trade fn and
+    exercise the dispatch guard (final-review C1)."""
+    async def fake_trade(side, qty, ticker, price, account_id=None):
+        log.append((name, side, qty, ticker, price, account_id))
         return {"ok": True}
 
     async def fake_holdings(ticker=None):
@@ -311,6 +323,7 @@ def _multi_account_spec(name: str, accounts: list[str], log: list[Any]) -> Broke
         trade_fn=fake_trade,
         holdings_fn=fake_holdings,
         list_accounts_fn=fake_list,
+        account_scoped_trade=account_scoped_trade,
     )
 
 
@@ -355,6 +368,199 @@ def test_router_fans_out_per_account_for_multi_account_broker(core: EnforcementC
     assert result["failure_count"] == 0
     accounts_hit = {r["account_id"] for r in result["results"]}
     assert accounts_hit == {"taxable", "ira", "primary"}
+
+
+def test_fennel_like_account_scoped_broker_enforcement_accounting_matches_live_orders(
+    core: EnforcementCore,
+):
+    """The P1 pin: enforcement accounting must reflect every live order.
+
+    Before the fix, Fennel minted ONE gated "primary" leg while its trade fn
+    fanned out internally over every session account — with 2 accounts,
+    `propose_order`'s estimate/leg-count said 1 while `execute_order`
+    actually placed 2 (N) live orders: every safety number (estimate,
+    per-order/daily limits, audit) was understated by N.
+
+    This test simulates the fixed shape (a 2-account, account-scoped spec —
+    exactly what Fennel's registry entry now is): `propose_order` must mint
+    2 legs with the estimate reflecting BOTH, and `execute_order` must place
+    exactly 2 orders — one per leg, each trade-fn call receiving its OWN
+    account_id — with no internal fan-out multiplication (2 calls, never 4)."""
+    log: list[Any] = []
+    spec = _multi_account_spec("FennelLike", ["acct-1", "acct-2"], log)
+    router = Router(
+        broker_servers={spec.name: BrokerMCPServer(spec, core=core)},
+        core=core,
+        provider=NullAccountStatusProvider(),
+    )
+    proposal = asyncio.run(
+        router.propose_order(
+            ticker="TSLA",
+            qty=3.0,
+            side="buy",
+            brokers=["FennelLike"],
+            price=5.0,
+            dry_run=False,
+        )
+    )
+    # Enforcement accounting reflects BOTH accounts, not one "primary" leg.
+    assert proposal["leg_count"] == 2
+    assert proposal["accounts_by_broker"]["FennelLike"] == ["acct-1", "acct-2"]
+    # Estimate = qty * price * leg_count = 3 * 5 * 2 = 30, not 15.
+    assert proposal["estimated_usd"] == 30.0
+
+    result = asyncio.run(
+        router.execute_order(proposal_id=proposal["proposal_id"], dry_run=False)
+    )
+    assert result["success_count"] == 2
+    assert result["failure_count"] == 0
+
+    # Exactly 2 live SDK calls — no internal fan-out multiplication (never 4).
+    assert len(log) == 2
+    # Each trade-fn invocation received its OWN account_id (recording fake
+    # appends (name, side, qty, ticker, price, account_id) — see
+    # `_multi_account_spec`).
+    accounts_dispatched = {entry[-1] for entry in log}
+    assert accounts_dispatched == {"acct-1", "acct-2"}
+    # And the account_ids match the per-leg PlaceResult accounting.
+    accounts_hit = {r["account_id"] for r in result["results"]}
+    assert accounts_hit == {"acct-1", "acct-2"}
+
+
+def test_multi_account_fan_out_with_blind_trade_fn_fails_per_leg(
+    core: EnforcementCore,
+):
+    """Final-review C1 guard, engine-level: a multi-account discovery paired
+    with an account-BLIND trade fn (today's only kind) must fail each real-
+    account leg loudly — never place N blind orders."""
+    log: list[Any] = []
+    spec = _multi_account_spec(
+        "BlindMulti", ["taxable", "ira"], log, account_scoped_trade=False
+    )
+    router = Router(
+        broker_servers={spec.name: BrokerMCPServer(spec, core=core)},
+        core=core,
+        provider=NullAccountStatusProvider(),
+    )
+    proposal = asyncio.run(
+        router.propose_order(
+            ticker="TSLA",
+            qty=1.0,
+            side="buy",
+            brokers=["BlindMulti"],
+            price=5.0,
+            dry_run=False,
+        )
+    )
+    assert proposal["leg_count"] == 2
+    result = asyncio.run(
+        router.execute_order(proposal_id=proposal["proposal_id"], dry_run=False)
+    )
+    assert result["success_count"] == 0
+    assert result["failure_count"] == 2
+    assert all(
+        r["reason"] == "account_scoped_dispatch_unsupported"
+        for r in result["results"]
+    )
+    assert log == []  # zero live orders placed
+
+
+def test_discover_accounts_dedupes_order_preserving(core: EnforcementCore):
+    """Final-review I3: duplicate account ids in a broker's session account
+    list must yield ONE leg each (two legs = two orders on one account)."""
+    log: list[Any] = []
+    spec = _multi_account_spec(
+        "DupeBroker", ["a1", "a1", "a2", "a1", "a2"], log
+    )
+    router = Router(
+        broker_servers={spec.name: BrokerMCPServer(spec, core=core)},
+        core=core,
+        provider=NullAccountStatusProvider(),
+    )
+    discovered = asyncio.run(router._discover_accounts(["DupeBroker"]))
+    assert discovered == {"DupeBroker": ["a1", "a2"]}
+
+    proposal = asyncio.run(
+        router.propose_order(
+            ticker="TSLA",
+            qty=1.0,
+            side="buy",
+            brokers=["DupeBroker"],
+            price=5.0,
+            dry_run=False,
+        )
+    )
+    assert proposal["leg_count"] == 2
+    assert proposal["accounts_by_broker"] == {"DupeBroker": ["a1", "a2"]}
+
+
+def test_execute_order_missing_broker_server_is_per_leg_failure(
+    fake_router, core: EnforcementCore
+):
+    """Final-review M1: a proposal leg whose broker server is gone at execute
+    time must come back as a per-leg `broker_unavailable` failure, not a raw
+    KeyError aborting the whole fan-out."""
+    router, trade_log = fake_router
+    proposal = asyncio.run(
+        router.propose_order(
+            ticker="TSLA",
+            qty=1.0,
+            side="buy",
+            brokers=["FakeA", "FakeB"],
+            price=5.0,
+            dry_run=False,
+        )
+    )
+    del router.broker_servers["FakeB"]
+    result = asyncio.run(
+        router.execute_order(proposal_id=proposal["proposal_id"], dry_run=False)
+    )
+    assert result["success_count"] == 1
+    assert result["failure_count"] == 1
+    by_broker = {r["broker"]: r for r in result["results"]}
+    assert by_broker["FakeA"]["ok"]
+    missing = by_broker["FakeB"]
+    assert missing["ok"] is False
+    assert missing["reason"] == "broker_unavailable"
+    assert missing["account_id"] == "primary"
+    assert missing["detail"]
+    # Only FakeA's SDK was touched.
+    assert all(entry[0] == "FakeA" for entry in trade_log)
+
+
+def test_execute_order_exception_leg_keeps_full_leg_shape(
+    fake_router, core: EnforcementCore
+):
+    """Final-review M1: a leg whose dispatch RAISES (rather than returning a
+    PlaceResult) must still render as a full leg dict — account_id, reason,
+    detail — so renderers and completion tracking treat it like any other
+    failed leg."""
+    router, _ = fake_router
+    proposal = asyncio.run(
+        router.propose_order(
+            ticker="TSLA",
+            qty=1.0,
+            side="buy",
+            brokers=["FakeA"],
+            price=5.0,
+            dry_run=False,
+        )
+    )
+
+    async def explode(**kwargs):
+        raise RuntimeError("transport blew up")
+
+    router.broker_servers["FakeA"].place_at_broker = explode  # type: ignore[method-assign]
+    result = asyncio.run(
+        router.execute_order(proposal_id=proposal["proposal_id"], dry_run=False)
+    )
+    assert result["failure_count"] == 1
+    leg = result["results"][0]
+    assert leg["ok"] is False
+    assert leg["broker"] == "FakeA"
+    assert leg["account_id"] == "primary"
+    assert leg["reason"] == "exception"
+    assert "transport blew up" in leg["detail"]
 
 
 def test_broker_server_provider_reads_observed_qty(core: EnforcementCore):
