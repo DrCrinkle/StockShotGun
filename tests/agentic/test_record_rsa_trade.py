@@ -264,6 +264,135 @@ def test_second_buy_after_first_trade_fully_sold_is_not_a_duplicate(
     assert len(trades) == 2
 
 
+def test_bad_expected_split_date_is_refused_and_writes_nothing(router_and_db):
+    router, db_path = router_and_db
+    execution = _execution([_leg("Fennel", "acct1")])
+
+    out = _run(router.record_rsa_trade(
+        ticker="AREB",
+        split_ratio="1:25",
+        expected_split_date="05/15/2026",
+        execution=execution,
+    ))
+
+    assert out["ok"] is False
+    assert "expected_split_date" in out["error"]
+    assert "05/15/2026" in out["error"]
+
+    store = RsaStore(str(db_path))
+    assert store.list_trades() == []
+    store.close()
+
+
+def test_good_iso_expected_split_date_still_lands(router_and_db):
+    router, db_path = router_and_db
+    execution = _execution([_leg("Fennel", "acct1")])
+
+    out = _run(router.record_rsa_trade(
+        ticker="AREB",
+        split_ratio="1:25",
+        expected_split_date="2026-05-15",
+        execution=execution,
+    ))
+
+    assert out["ok"] is True
+    store = RsaStore(str(db_path))
+    trade_row = store.get_trade(out["trade_id"])
+    store.close()
+    assert trade_row["expected_split_date"] == "2026-05-15"
+
+
+def test_fractional_qty_is_refused_and_writes_nothing(router_and_db):
+    router, db_path = router_and_db
+    execution = _execution([_leg("Fennel", "acct1")], qty=1.5)
+
+    out = _run(router.record_rsa_trade(
+        ticker="AREB", split_ratio="1:25", execution=execution
+    ))
+
+    assert out["ok"] is False
+    assert "1.5" in out["error"]
+
+    store = RsaStore(str(db_path))
+    assert store.list_trades() == []
+    store.close()
+
+
+def test_whole_number_float_qty_is_accepted(router_and_db):
+    router, db_path = router_and_db
+    execution = _execution([_leg("Fennel", "acct1")], qty=2.0)
+
+    out = _run(router.record_rsa_trade(
+        ticker="AREB", split_ratio="1:25", execution=execution
+    ))
+
+    assert out["ok"] is True
+    store = RsaStore(str(db_path))
+    positions = store.get_raw_positions(out["trade_id"])
+    store.close()
+    assert positions[0]["pre_split_qty"] == 2
+
+
+def test_partially_sold_same_key_trade_is_still_a_duplicate(router_and_db):
+    """The duplicate guard blocks until ALL positions of the open trade are
+    sold — a trade with even one unsold position is still OPEN, so an
+    identical re-submission must still be refused."""
+    router, db_path = router_and_db
+    execution = _execution(
+        [_leg("Fennel", "acct1"), _leg("Public", "primary")]
+    )
+
+    first = _run(router.record_rsa_trade(
+        ticker="AREB", split_ratio="1:25", execution=execution
+    ))
+    assert first["ok"] is True
+
+    store = RsaStore(str(db_path))
+    positions = store.get_raw_positions(first["trade_id"])
+    # Sell only ONE of the two positions — the trade is partially sold,
+    # not fully sold, so it must remain OPEN for duplicate-blocking purposes.
+    store.record_sweep(
+        position_id=positions[0]["id"],
+        status=SweepStatus.SHARE_ARRIVED,
+        observed_qty=1,
+        expected_post_qty=1,
+        observed_at="2026-05-20T00:00:00",
+    )
+    store.mark_sold(positions[0]["id"], sold_at="2026-06-01T00:00:00")
+    store.close()
+
+    second = _run(router.record_rsa_trade(
+        ticker="AREB", split_ratio="1:25", execution=execution
+    ))
+    assert second["ok"] is False
+    assert "duplicate" in second["error"].lower()
+    assert second.get("trade_id") == first["trade_id"]
+
+    store = RsaStore(str(db_path))
+    trades = store.list_trades()
+    store.close()
+    assert len(trades) == 1
+
+
+def test_ticker_mismatch_between_argument_and_execution_is_refused(
+    router_and_db,
+):
+    router, db_path = router_and_db
+    execution = _execution([_leg("Fennel", "acct1")], ticker="AREB")
+
+    out = _run(router.record_rsa_trade(
+        ticker="OTHER", split_ratio="1:25", execution=execution
+    ))
+
+    assert out["ok"] is False
+    assert "AREB" in out["error"]
+    assert "OTHER" in out["error"]
+
+    store = RsaStore(str(db_path))
+    assert store.list_trades() == []
+    store.close()
+
+
 def _run(coro):
     import asyncio
 

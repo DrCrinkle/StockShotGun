@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from datetime import date
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from brokers import registry
@@ -745,9 +746,11 @@ class ExecutionEngine:
           - `execution["results"]` has zero `ok=True` legs — nothing was
             actually bought.
 
-        Duplicate-call guard: if an OPEN trade (no position in it has been
-        sold yet) already exists for the same `ticker` + `split_ratio` with
-        an IDENTICAL set of (broker, account_id, pre_split_qty) positions,
+        Duplicate-call guard: if an OPEN trade (one whose positions have
+        NOT ALL been sold yet — a trade stops blocking duplicates only once
+        every one of its positions is sold) already exists for the same
+        `ticker` + `split_ratio` with an IDENTICAL set of (broker,
+        account_id, pre_split_qty) positions,
         this call is refused as a probable re-submission of the same
         execution rather than silently minting a second `trade_id` for the
         same buy — `rsa_trades` has no natural key of its own (unlike
@@ -762,6 +765,21 @@ class ExecutionEngine:
         `rsa_trades` row so the play can be traced back to the
         `calendar_signals` row it came from.
         """
+        execution_ticker = execution.get("ticker")
+        if (
+            execution_ticker is not None
+            and str(execution_ticker).upper() != ticker.upper()
+        ):
+            return {
+                "ok": False,
+                "error": (
+                    f"ticker mismatch: called with ticker={ticker!r} but "
+                    f"execution['ticker']={execution_ticker!r} — refusing to "
+                    "record a trade that would be unsweepable under the "
+                    "wrong symbol"
+                ),
+            }
+
         if execution.get("dry_run"):
             return {
                 "ok": False,
@@ -786,12 +804,22 @@ class ExecutionEngine:
 
         qty = execution.get("qty")
         try:
-            pre_split_qty = int(qty)  # type: ignore[arg-type]
+            qty_float = float(qty)  # type: ignore[arg-type]
         except (TypeError, ValueError):
             return {
                 "ok": False,
                 "error": f"execution qty {qty!r} is not a valid integer quantity",
             }
+        if not qty_float.is_integer() or qty_float < 1:
+            return {
+                "ok": False,
+                "error": (
+                    f"execution qty {qty!r} is not a whole number >= 1 — "
+                    "fractional RSA buys aren't supported by the "
+                    "pre_split_qty model"
+                ),
+            }
+        pre_split_qty = int(qty_float)
 
         from sweep import parse_ratio  # type: ignore[import-untyped]
 
@@ -802,6 +830,18 @@ class ExecutionEngine:
                 "ok": False,
                 "error": f"invalid split_ratio {split_ratio!r}: {exc}",
             }
+
+        if expected_split_date is not None:
+            try:
+                date.fromisoformat(expected_split_date)
+            except ValueError as exc:
+                return {
+                    "ok": False,
+                    "error": (
+                        "expected_split_date must be ISO YYYY-MM-DD, got "
+                        f"{expected_split_date!r}: {exc}"
+                    ),
+                }
 
         new_position_keys = sorted(
             (leg["broker"], leg.get("account_id") or "", pre_split_qty)
