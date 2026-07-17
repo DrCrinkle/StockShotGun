@@ -99,7 +99,10 @@ def test_happy_path_creates_trade_and_positions(router_and_db):
         execution=execution,
     ))
 
-    assert out == {"ok": True, "trade_id": out["trade_id"], "position_count": 3}
+    assert out["ok"] is True
+    assert out["position_count"] == 3
+    assert isinstance(out["trade_id"], int)
+    assert set(out.keys()) == {"ok", "trade_id", "position_count"}
 
     store = RsaStore(str(db_path))
     trade_row = store.get_trade(out["trade_id"])
@@ -391,6 +394,36 @@ def test_ticker_mismatch_between_argument_and_execution_is_refused(
     store = RsaStore(str(db_path))
     assert store.list_trades() == []
     store.close()
+
+
+def test_ticker_is_normalized_to_upper_for_dedup_and_storage(router_and_db):
+    """A lowercase ticker arg must be normalized before it's used for dedup
+    or storage — otherwise "areb" vs "AREB" passes the case-insensitive
+    mismatch gate but escapes the (case-sensitive) dedup comparison and
+    persists a non-canonical symbol."""
+    router, db_path = router_and_db
+    execution = _execution(
+        [_leg("Fennel", "acct1"), _leg("Public", "primary")], ticker="AREB"
+    )
+
+    first = _run(router.record_rsa_trade(
+        ticker="areb", split_ratio="1:25", execution=execution
+    ))
+    assert first["ok"] is True
+
+    second = _run(router.record_rsa_trade(
+        ticker="AREB", split_ratio="1:25", execution=execution
+    ))
+    assert second["ok"] is False
+    assert "duplicate" in second["error"].lower()
+    assert second.get("trade_id") == first["trade_id"]
+
+    store = RsaStore(str(db_path))
+    trades = store.list_trades()
+    trade_row = store.get_trade(first["trade_id"])
+    store.close()
+    assert len(trades) == 1
+    assert trade_row["ticker"] == "AREB"
 
 
 def _run(coro):

@@ -145,7 +145,18 @@ def build_router_fastmcp_server(router: ExecutionEngine) -> Any:
 
         Pass the exact dict `execute_order` returned. Refuses dry-run
         (rehearsal) executions and executions with zero successful legs —
-        both return `{"ok": False, "error": ...}` and write nothing.
+        both return `{"ok": False, "error": ...}` and write nothing. Also
+        refuses if `ticker` disagrees with `execution["ticker"]` — don't
+        override one to match the other, fix whichever call built the
+        mismatched args.
+
+        If this looks like a re-submission of an already-recorded trade
+        (same ticker+ratio+legs, not yet fully sold), it returns
+        `{ok: False, ...}` but still includes the existing `trade_id` —
+        treat that as "already captured, proceed" rather than a hard
+        failure. This is the path you'll hit retrying after a timeout: call
+        again with the same args and use the returned `trade_id`.
+
         `signal_id` links back to the `calendar_signals` row when the buy
         came from a scanned signal.
         """

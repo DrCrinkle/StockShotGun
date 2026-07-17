@@ -780,6 +780,8 @@ class ExecutionEngine:
                 ),
             }
 
+        ticker = ticker.upper()
+
         if execution.get("dry_run"):
             return {
                 "ok": False,
