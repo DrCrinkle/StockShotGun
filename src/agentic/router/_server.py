@@ -130,6 +130,34 @@ def build_router_fastmcp_server(router: ExecutionEngine) -> Any:
         return await router.sell_arrived(trade_id=trade_id, price=price)
 
     @app.tool()
+    async def record_rsa_trade(
+        ticker: str,
+        split_ratio: str,
+        execution: dict[str, Any],
+        expected_split_date: str | None = None,
+        signal_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Call this immediately after a successful LIVE `execute_order` for
+        an RSA buy — without it the play cannot be swept or sold: `run_sweep`
+        and `sell_arrived` only ever see trades that exist as `rsa_trades` /
+        `rsa_positions` rows, and nothing else creates those rows for an
+        agent-driven buy.
+
+        Pass the exact dict `execute_order` returned. Refuses dry-run
+        (rehearsal) executions and executions with zero successful legs —
+        both return `{"ok": False, "error": ...}` and write nothing.
+        `signal_id` links back to the `calendar_signals` row when the buy
+        came from a scanned signal.
+        """
+        return await router.record_rsa_trade(
+            ticker=ticker,
+            split_ratio=split_ratio,
+            execution=execution,
+            expected_split_date=expected_split_date,
+            signal_id=signal_id,
+        )
+
+    @app.tool()
     async def propose_order(
         ticker: str,
         qty: float,
