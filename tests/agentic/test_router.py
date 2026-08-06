@@ -31,6 +31,7 @@ EXPECTED_ROUTER_TOOLS = {
     "get_rsa_trade",
     "run_sweep",
     "sell_arrived",
+    "record_rsa_trade",
     "recap_ingest",
     "scan_signals",
     "dismiss_signal",

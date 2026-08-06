@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from datetime import date
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from brokers import registry
@@ -714,6 +715,196 @@ class ExecutionEngine:
                 for c in arrived
             ],
         }
+
+    @logged_tool(tool="router.record_rsa_trade")
+    async def record_rsa_trade(
+        self,
+        *,
+        ticker: str,
+        split_ratio: str,
+        execution: dict[str, Any],
+        expected_split_date: str | None = None,
+        signal_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Persist an `rsa_trades` row + one `rsa_positions` row per
+        successfully executed leg, closing the agent trade-capture gap: an
+        agent buying through `propose_order`/`execute_order` produces no
+        `rsa_trades`/`rsa_positions` rows on its own, so `run_sweep` and
+        `sell_arrived` (which key off those tables) can never see the play.
+
+        `execution` is the exact dict returned by `execute_order` for the
+        buy — `execution["qty"]` is the single order quantity bound to every
+        leg (one `OrderIntent` fans out to N targets at one qty), and each
+        entry in `execution["results"]` with `ok=True` becomes one
+        `rsa_positions` row keyed (trade_id, broker, account_id) recording
+        that qty as `pre_split_qty` — the row shape `run_sweep`/`sell_arrived`
+        already expect (see `rsa_store.RsaStore.create_trade`/`add_position`).
+
+        Refuses (`ok: False`, no rows written) when:
+          - `execution["dry_run"]` is true — a rehearsal never bought
+            anything real; recording it would fabricate a trade.
+          - `execution["results"]` has zero `ok=True` legs — nothing was
+            actually bought.
+
+        Duplicate-call guard: if an OPEN trade (one whose positions have
+        NOT ALL been sold yet — a trade stops blocking duplicates only once
+        every one of its positions is sold) already exists for the same
+        `ticker` + `split_ratio` with an IDENTICAL set of (broker,
+        account_id, pre_split_qty) positions,
+        this call is refused as a probable re-submission of the same
+        execution rather than silently minting a second `trade_id` for the
+        same buy — `rsa_trades` has no natural key of its own (unlike
+        `rsa_positions`, which enforces UNIQUE(trade_id, broker,
+        account_id)), so this dedupe has to happen here. It is a best-effort
+        heuristic, not a hard constraint: a legitimate second buy of the
+        same ticker/ratio (different quantities, different accounts, or
+        made after the first trade's positions were already sold) is NOT
+        blocked.
+
+        `signal_id` is optional and, when supplied, is written onto the
+        `rsa_trades` row so the play can be traced back to the
+        `calendar_signals` row it came from.
+        """
+        execution_ticker = execution.get("ticker")
+        if (
+            execution_ticker is not None
+            and str(execution_ticker).upper() != ticker.upper()
+        ):
+            return {
+                "ok": False,
+                "error": (
+                    f"ticker mismatch: called with ticker={ticker!r} but "
+                    f"execution['ticker']={execution_ticker!r} — refusing to "
+                    "record a trade that would be unsweepable under the "
+                    "wrong symbol"
+                ),
+            }
+
+        ticker = ticker.upper()
+
+        if execution.get("dry_run"):
+            return {
+                "ok": False,
+                "error": (
+                    "refusing to record a trade from a dry-run (rehearsal) "
+                    "execution — no live buy occurred, so there is nothing "
+                    "to sweep or sell"
+                ),
+            }
+
+        ok_legs = [
+            leg for leg in execution.get("results", []) if leg.get("ok")
+        ]
+        if not ok_legs:
+            return {
+                "ok": False,
+                "error": (
+                    "execution has zero successful (ok=True) legs — "
+                    "nothing was bought, nothing to record"
+                ),
+            }
+
+        qty = execution.get("qty")
+        try:
+            qty_float = float(qty)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return {
+                "ok": False,
+                "error": f"execution qty {qty!r} is not a valid integer quantity",
+            }
+        if not qty_float.is_integer() or qty_float < 1:
+            return {
+                "ok": False,
+                "error": (
+                    f"execution qty {qty!r} is not a whole number >= 1 — "
+                    "fractional RSA buys aren't supported by the "
+                    "pre_split_qty model"
+                ),
+            }
+        pre_split_qty = int(qty_float)
+
+        from sweep import parse_ratio  # type: ignore[import-untyped]
+
+        try:
+            parse_ratio(split_ratio)
+        except Exception as exc:  # noqa: BLE001 — surface as ok:false, not a raise
+            return {
+                "ok": False,
+                "error": f"invalid split_ratio {split_ratio!r}: {exc}",
+            }
+
+        if expected_split_date is not None:
+            try:
+                date.fromisoformat(expected_split_date)
+            except ValueError as exc:
+                return {
+                    "ok": False,
+                    "error": (
+                        "expected_split_date must be ISO YYYY-MM-DD, got "
+                        f"{expected_split_date!r}: {exc}"
+                    ),
+                }
+
+        new_position_keys = sorted(
+            (leg["broker"], leg.get("account_id") or "", pre_split_qty)
+            for leg in ok_legs
+        )
+
+        store = self._open_rsa_store()
+        try:
+            for existing in store.list_trades():
+                if (
+                    existing["ticker"] != ticker
+                    or existing["split_ratio"] != split_ratio
+                ):
+                    continue
+                existing_positions = store.list_positions(existing["id"])
+                if not existing_positions:
+                    continue
+                # Only an OPEN trade counts as a duplicate target — one
+                # whose positions haven't all been sold off yet. A trade
+                # that already completed its sell cycle is a closed play;
+                # buying the same ticker/ratio again afterwards is a fresh
+                # (legitimate) play, not a re-submission of the old one.
+                if all(p["sold_at"] is not None for p in existing_positions):
+                    continue
+                existing_keys = sorted(
+                    (p["broker"], p["account_id"], int(p["pre_split_qty"]))
+                    for p in existing_positions
+                )
+                if existing_keys == new_position_keys:
+                    return {
+                        "ok": False,
+                        "error": (
+                            f"duplicate: open trade #{existing['id']} for "
+                            f"{ticker} {split_ratio} already has an "
+                            "identical set of positions"
+                        ),
+                        "trade_id": int(existing["id"]),
+                    }
+
+            trade_id = store.create_trade(
+                ticker=ticker,
+                split_ratio=split_ratio,
+                expected_split_date=expected_split_date,
+                signal_id=signal_id,
+            )
+            position_count = 0
+            for leg in ok_legs:
+                store.add_position(
+                    trade_id=trade_id,
+                    broker=leg["broker"],
+                    account_id=leg.get("account_id"),
+                    pre_split_qty=pre_split_qty,
+                )
+                position_count += 1
+            return {
+                "ok": True,
+                "trade_id": trade_id,
+                "position_count": position_count,
+            }
+        finally:
+            store.close()
 
     @logged_tool(tool="router.list_brokers")
     async def list_brokers(self) -> dict[str, Any]:
