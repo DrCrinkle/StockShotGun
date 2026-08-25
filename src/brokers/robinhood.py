@@ -36,17 +36,26 @@ async def _get_symbol_for_instrument(instrument_url: str) -> str:
 
 
 async def _get_latest_prices(symbols: List[str]) -> Dict[str, float]:
-    """Fetch latest prices for a list of symbols in a single API call."""
+    """Fetch latest prices for a list of symbols in a single API call.
+
+    Uses rh.get_quotes and keys each row by its own "symbol" field.
+    rh.get_latest_price is deliberately avoided: it routes the request
+    through an unordered set and strips rows for unquotable tickers, so
+    positional zip against the requested order misassigns prices.
+    """
     if not symbols:
         return {}
 
-    prices = await asyncio.to_thread(rh.get_latest_price, symbols)
+    quotes = await asyncio.to_thread(rh.get_quotes, symbols)
     price_map: Dict[str, float] = {}
-    for symbol, price in zip(symbols, prices):
+    for quote in quotes or []:
+        if not quote:
+            continue  # unquotable instrument (e.g. delisted ticker)
+        price = quote.get("last_extended_hours_trade_price") or quote.get("last_trade_price")
         try:
-            price_map[symbol] = float(price)
-        except (TypeError, ValueError):
-            price_map[symbol] = 0.0
+            price_map[quote["symbol"]] = float(price)
+        except (KeyError, TypeError, ValueError):
+            continue
     return price_map
 
 
