@@ -3,11 +3,13 @@
     "ssg-router": {
       "type": "stdio",
       "command": ".venv/bin/python",
-      "args": ["-m", "agentic.router"],
+      "args": [
+        "-m",
+        "agentic.router"
+      ],
       "cwd": "${CLAUDE_PLUGIN_ROOT}/..",
       "env": {
-        "PYTHONPATH": "${CLAUDE_PLUGIN_ROOT}/../src",
-        "SSG_DB_PATH": "${SSG_DB_PATH}"
+        "PYTHONPATH": "${CLAUDE_PLUGIN_ROOT}/../src"
       }
     }
   }

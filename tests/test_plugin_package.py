@@ -103,8 +103,16 @@ def test_mcp_manifests_declare_the_router_with_an_explicit_cwd():
         # wrapper. Without it the store path resolves against whatever
         # directory the client happened to launch from.
         assert root_var in server["cwd"], f"{path} lost its cwd anchor"
-        assert "SSG_DB_PATH" in server["env"], f"{path} must pass SSG_DB_PATH through"
         assert "bash" not in server["command"]
+        # SSG_DB_PATH must NOT be declared here. A self-referential
+        # {"SSG_DB_PATH": "${SSG_DB_PATH}"} passes the placeholder through
+        # verbatim when the variable is unset, and the engine's absolute-path
+        # guard then refuses to start the router. The process inherits the
+        # variable from its parent environment instead.
+        assert "SSG_DB_PATH" not in server["env"], (
+            f"{path} must not declare SSG_DB_PATH; an unset value is passed "
+            "through as the literal '${SSG_DB_PATH}' and kills the server"
+        )
 
 
 def test_marketplace_points_at_the_plugin_directory():

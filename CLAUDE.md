@@ -516,7 +516,9 @@ actually exists. Full design: `specs/rsa-agent-plugin.md`.
 
 **Store path:** `SSG_DB_PATH` overrides the SQLite store location and must be absolute
 (`resolve_store_path()` in `src/execution/engine.py`). Unset keeps the historical relative
-default, so CLI and TUI behaviour is unchanged.
+default, so CLI and TUI behaviour is unchanged. The plugin's `mcp.json` does NOT declare it:
+the router inherits it from its parent environment, because an unset `"${SSG_DB_PATH}"`
+passthrough reaches the process as a literal placeholder and the guard then refuses to start.
 
 ## Agent skills
 

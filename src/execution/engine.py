@@ -59,6 +59,15 @@ def resolve_store_path() -> str:
     if raw is None or not raw.strip():
         return DEFAULT_RSA_STORE_PATH
     path = raw.strip()
+    if path.startswith("${") and path.endswith("}"):
+        # An MCP manifest that declares env as {"SSG_DB_PATH": "${SSG_DB_PATH}"}
+        # passes the placeholder through verbatim when the variable is unset.
+        # Say so, rather than reporting it as a merely relative path.
+        raise ValueError(
+            f"SSG_DB_PATH is an unexpanded placeholder ({path!r}) — the variable "
+            "was not set in the launching environment. Export an absolute path, "
+            "or drop the passthrough and let the process inherit it."
+        )
     if not os.path.isabs(path):
         raise ValueError(
             f"SSG_DB_PATH must be an absolute path, got {path!r} — a relative "

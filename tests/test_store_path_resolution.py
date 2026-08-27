@@ -87,3 +87,12 @@ def test_explicit_argument_still_wins(monkeypatch, tmp_path):
         rsa_store_path="/tmp/explicit.sqlite3",
     )
     assert engine.rsa_store_path == "/tmp/explicit.sqlite3"
+
+
+def test_unexpanded_placeholder_is_reported_as_such(monkeypatch):
+    """An MCP manifest declaring env as {"SSG_DB_PATH": "${SSG_DB_PATH}"} passes
+    the placeholder through verbatim when the variable is unset. That killed the
+    plugin's router on first load; the error must name the real cause."""
+    monkeypatch.setenv("SSG_DB_PATH", "${SSG_DB_PATH}")
+    with pytest.raises(ValueError, match="unexpanded placeholder"):
+        resolve_store_path()

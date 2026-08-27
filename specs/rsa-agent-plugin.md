@@ -95,8 +95,7 @@ Required by spec: `$schema` and `name` only. `name` must be 1-64 chars, lowercas
       "args": ["-m", "agentic.router"],
       "cwd": "${PLUGIN_ROOT}/..",
       "env": {
-        "PYTHONPATH": "${PLUGIN_ROOT}/../src",
-        "SSG_DB_PATH": "${SSG_DB_PATH}"
+        "PYTHONPATH": "${PLUGIN_ROOT}/../src"
       }
     }
   }
@@ -110,6 +109,8 @@ This replaces the current global registration in `~/.claude.json`:
 ```
 
 The `bash -lc "cd ... && exec"` wrapper existed only because there was nowhere to declare a working directory. `cwd` removes the need for a shell in the chain.
+
+**`SSG_DB_PATH` is deliberately NOT declared here.** The first version passed it through as `{"SSG_DB_PATH": "${SSG_DB_PATH}"}`, and on first load the variable was unset, so the placeholder reached the process verbatim. The engine's absolute-path guard refused it and the router died with `CONNECTION_CLOSED` — the guard doing exactly its job, on the manifest that introduced the problem. The router inherits its parent environment, so the operator exports the variable there (a `settings.json` `env` entry, a shell profile) and the manifest stays portable.
 
 ## The skill
 
