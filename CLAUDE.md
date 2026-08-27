@@ -489,6 +489,35 @@ Broker-specific SDKs:
   - `DRY_RUN=true` previews orders without submitting
   - Order status is read from Chase's own codes (`FULLY_EXECUTED` / `PARTIALLY_EXECUTED` = filled)
 
+## Agent plugin (`plugin/`)
+
+The agent-facing half of this repo ships as an [Agent Plugins](https://agent-plugins.org)
+1.0.0 package at `plugin/`, installable straight from the repo via
+`.claude-plugin/marketplace.json`.
+
+- `plugin/skills/rsa-operator/` — the RSA operator skill plus its reference workflows
+  (`review.md`, `sweep.md`, `status.md`) and judgment docs
+  (`fractional-treatment.md`, `broker-settlement.md`).
+- `plugin/plugin.json` + `plugin/mcp.json` — portable manifests. `plugin/.claude-plugin/plugin.json`
+  + `plugin/.mcp.json` — Claude Code equivalents. Both pairs must agree; a test enforces it.
+- The router is launched with an explicit `cwd`, not a `bash -lc "cd ..."` wrapper.
+
+**The boundary (ADR 0006, `ISA.md`): the app is hands and ledger, the skill is the brain.**
+Judgment — whether a split's terms round fractional shares up at the beneficial-owner
+level, whether a signal clears thresholds, when to sell — lives in skill prose. It does
+NOT get implemented in `src/`. `src/signals/nasdaq.py` stays a mechanical fetch/parse
+layer and never learns what a good play is.
+
+Because the skill's reference docs describe this codebase's own tool contract, they can
+drift silently. `tests/test_plugin_package.py` is the guard: it validates the manifests,
+checks Agent Skills frontmatter conformance, asserts no personal or host-specific content
+leaked into the public package, and verifies every repo path and script the docs name
+actually exists. Full design: `specs/rsa-agent-plugin.md`.
+
+**Store path:** `SSG_DB_PATH` overrides the SQLite store location and must be absolute
+(`resolve_store_path()` in `src/execution/engine.py`). Unset keeps the historical relative
+default, so CLI and TUI behaviour is unchanged.
+
 ## Agent skills
 
 ### Issue tracker

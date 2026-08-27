@@ -1,0 +1,15 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "ssg-router": {
+      "type": "stdio",
+      "command": ".venv/bin/python",
+      "args": ["-m", "agentic.router"],
+      "cwd": "${PLUGIN_ROOT}/..",
+      "env": {
+        "PYTHONPATH": "${PLUGIN_ROOT}/../src",
+        "SSG_DB_PATH": "${SSG_DB_PATH}"
+      }
+    }
+  }
+}
