@@ -1,0 +1,14 @@
+{
+  "name": "stockshotgun",
+  "owner": {
+    "name": "DrCrinkle",
+    "url": "https://github.com/DrCrinkle"
+  },
+  "plugins": [
+    {
+      "name": "stockshotgun-rsa",
+      "source": "./plugin",
+      "description": "Reverse-split-arbitrage operator for StockShotGun: multi-broker fan-out, RSA ledger, and human-gated buy/sell workflows over the ssg-router MCP."
+    }
+  ]
+}

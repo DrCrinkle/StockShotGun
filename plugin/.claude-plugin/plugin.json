@@ -1,0 +1,15 @@
+{
+  "name": "stockshotgun-rsa",
+  "version": "0.1.0",
+  "description": "Reverse-split-arbitrage operator: multi-broker order fan-out, RSA position ledger, and human-gated buy/sell workflows over the ssg-router MCP.",
+  "license": "MIT",
+  "homepage": "https://github.com/DrCrinkle/StockShotGun",
+  "repository": "https://github.com/DrCrinkle/StockShotGun",
+  "keywords": [
+    "trading",
+    "reverse-split",
+    "arbitrage",
+    "mcp",
+    "brokers"
+  ]
+}

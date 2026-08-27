@@ -15,7 +15,8 @@ stdlib (plus lazy in-method imports for `automation_recap`, `signals.nasdaq`,
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
 from datetime import date
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
@@ -39,6 +40,32 @@ if TYPE_CHECKING:
 DEFAULT_PLACEHOLDER_ACCOUNT_ID = "primary"
 DEFAULT_RSA_STORE_PATH = "logs/automation.sqlite3"
 DEFAULT_AUTOMATION_STORE_PATH = "logs/automation.sqlite3"
+
+
+def resolve_store_path() -> str:
+    """Resolve the SQLite store path for the RSA + automation tables.
+
+    `SSG_DB_PATH` wins when set, and MUST be absolute. A relative store path
+    lets the process working directory decide which live database a real-money
+    write lands in; the router survived that only because its registration
+    wrapped it in `bash -lc "cd <repo> && ..."`. Launched from a plugin
+    manifest there is no such crutch, so the path is stated explicitly or the
+    process refuses to start.
+
+    Unset (or blank) keeps the historical relative default, so the CLI and TUI
+    behave exactly as before.
+    """
+    raw = os.getenv("SSG_DB_PATH")
+    if raw is None or not raw.strip():
+        return DEFAULT_RSA_STORE_PATH
+    path = raw.strip()
+    if not os.path.isabs(path):
+        raise ValueError(
+            f"SSG_DB_PATH must be an absolute path, got {path!r} — a relative "
+            "store path lets the working directory choose which live database "
+            "is written"
+        )
+    return path
 
 
 class NullAccountStatusProvider:
@@ -199,8 +226,8 @@ class ExecutionEngine:
     broker_servers: dict[str, BrokerPort]
     core: EnforcementCore
     provider: AccountStatusProvider
-    rsa_store_path: str = DEFAULT_RSA_STORE_PATH
-    automation_store_path: str = DEFAULT_AUTOMATION_STORE_PATH
+    rsa_store_path: str = field(default_factory=resolve_store_path)
+    automation_store_path: str = field(default_factory=resolve_store_path)
     # Injectable for tests; None = fetch from the real Nasdaq calendar.
     calendar_fetcher: Callable[[], Awaitable[list["CalendarSignal"]]] | None = None
 
