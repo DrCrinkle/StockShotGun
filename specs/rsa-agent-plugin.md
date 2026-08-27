@@ -150,7 +150,7 @@ Ported from the existing `_RSATRADER/SKILL.md`, minus everything personal.
 | Voice Notification | personal shim only |
 | Execution Log | personal shim only |
 | Customization (LifeOS path) | `RSA_PREFERENCES` env var |
-| "Taylor" | "the operator" |
+| operator's name | "the operator" |
 
 The Gotchas section carries the highest value and ports unchanged: dismiss-never-promote, `record_rsa_trade`'s three distinct refusal modes (check `trade_id`, not just `ok`), NULL `effective_date` as dangerous rather than benign, `dry_run=true` as a full-pipeline rehearsal, the account-scoped dispatch guard on the 12 account-blind brokers, approved-is-not-executed, and never operating on the live DB with test data.
 
@@ -215,9 +215,9 @@ The sweep workflow judges each position against its own broker's tier, never aga
 
 `~/.claude/skills/_RSATRADER/SKILL.md` reduces to frontmatter plus three blocks:
 
-1. The voice-notify curl to `localhost:31337/notify`.
+1. The host's notification call (a local HTTP notify endpoint, in this case).
 2. The execution-log JSONL append to `MEMORY/SKILLS/execution.jsonl`.
-3. `RSA_PREFERENCES` pointed at `~/.claude/LIFEOS/USER/SKILLCUSTOMIZATIONS/_RSATRADER/PREFERENCES.md`, and `SSG_DB_PATH` pointed at the live store.
+3. `RSA_PREFERENCES` pointed at the operator's own preferences file, and `SSG_DB_PATH` pointed at the live store (absolute).
 
 Body reduces to: defer to the plugin's `rsa-operator` skill for all methodology. `Workflows/`, Gotchas, and Examples are deleted here. `Tools/DailyDigest.sh` and `Tools/DigestHealth.sh` stay, being Pulse cron jobs with no meaning outside LifeOS. The `_RSATRADER` trigger vocabulary is retained so existing phrasing keeps working.
 
