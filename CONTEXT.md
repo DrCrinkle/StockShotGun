@@ -128,7 +128,7 @@ second RSA opportunity on that ticker. Informational only — stored in buy sign
 
 ---
 
-## Signal System (automation_recap.py)
+## Signal System (`src/automation_recap.py`)
 
 StockShotGun has a signal system that parses structured **Recaps** from the RSA
 community forum (reversesplitarbitrage.com) into actionable buy and sell signals.
@@ -137,7 +137,7 @@ manually via TUI or CLI.
 
 ### Recap
 Structured text published periodically in the RSA forum chat. Contains several
-sections parsed by `automation_recap.py`:
+sections parsed by `src/automation_recap.py`:
 
 | Section | Parsed? | Purpose |
 |---|---|---|
@@ -177,8 +177,8 @@ internally in the sweep code.
 
 ### Calendar Signal
 A second, independent signal source alongside Recaps: the Nasdaq corporate-actions
-splits calendar (`src/signals/nasdaq.py`), polled via `python3 main.py signals scan`
-and stored in the `calendar_signals` table (`automation_recap.py`). Reverse splits
+splits calendar (`src/signals/nasdaq.py`), polled via `./stockshotgun signals scan`
+and stored in the `calendar_signals` table (`src/automation_recap.py`). Reverse splits
 only (forward splits are filtered out at parse time). Fields: `ticker`, `ratio`
 (`N:D`), `effective_date`, `source`, `status` (`new` → `promoted` | `dismissed` |
 `expired`). Idempotent — rescanning bumps `last_seen` on existing rows without

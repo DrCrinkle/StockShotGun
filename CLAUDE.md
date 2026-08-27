@@ -12,12 +12,15 @@ The application supports both CLI and TUI (Terminal User Interface) modes for fl
 
 ### Core Components
 
-**brokers/** - Modular broker integrations
-- Each broker has its own module (12 brokers supported: Robinhood, Tradier, TastyTrade, Public, Firstrade, Fennel, Schwab, BBAE, DSPAC, SoFi, Webull, Wells Fargo)
+**src/brokers/** - Modular broker integrations
+- Each broker has its own module (13 brokers supported: Robinhood, Tradier, TastyTrade, Public, Firstrade, Fennel, Schwab, BBAE, DSPAC, SoFi, Webull, Wells Fargo, Chase)
 - All broker modules follow a consistent pattern with two main functions:
   - `{broker}Trade(side, qty, ticker, price)` - Execute trades
   - `{broker}GetHoldings(ticker=None)` - Retrieve holdings
-- Most brokers use API-based authentication, while Wells Fargo uses browser automation (see Browser Automation Pattern section)
+- Most brokers use API-based authentication; Wells Fargo and Chase use browser automation (see Browser Automation Pattern section)
+- `registry.py` - Single source of truth for broker identity and lazy function bindings (ADR 0004)
+- `_redbridge_broker.py` - Shared factory behind BBAE and DSPAC (both Redbridge Securities); each broker module is a ~13-line shim over `make_redbridge_broker`
+- `browser_utils.py` - Shared zendriver plumbing (`create_browser`, `stop_browser`, page-readiness polling) used by Wells Fargo and Chase
 - `base.py` - Shared infrastructure including:
   - `BrokerConfig` - Centralized broker configuration (credentials, session keys, enabled status)
   - `http_client` - Shared async HTTP client with connection pooling and HTTP/2 support
@@ -29,29 +32,29 @@ The application supports both CLI and TUI (Terminal User Interface) modes for fl
   - Supports selective broker initialization to reduce startup time
   - Each broker module provides a `get_{broker}_session()` function
 
-**tui/** - Terminal User Interface components
+**src/tui/** - Terminal User Interface components
 - `app.py` - Main TUI application entry point with `run_tui()` function
-- `broker_functions.py` - Maps broker names to their trade/holdings functions
+- `config.py` - TUI configuration and display constants
 - `holdings_view.py` - Display broker holdings in the TUI
 - `response_handler.py` - Manages broker response display
 - `input_handler.py` - Intercepts Python's `input()` for TUI compatibility
 - `session_cache.py` - Caches session status to avoid redundant initialization
-- `widgets.py` - Custom urwid widgets for the TUI
+- (`broker_functions.py` is gone — broker name→function maps come from `brokers.registry.broker_functions_map()`)
 
-**main.py** - Application entry point
+**src/main.py** - Application entry point (launched from the repo root via the `./stockshotgun` shim, which puts `src/` on `sys.path`)
 - If arguments provided → CLI mode
 - If no arguments → TUI mode
 - Handles broker selection via `--broker` flag or defaults to all configured brokers
-- Dispatches to `cli/` handlers, which execute orders through `ExecutionEngine` (see below)
+- Dispatches to `src/cli/` handlers, which execute orders through `ExecutionEngine` (see below)
 
-**execution/engine.py** - `ExecutionEngine`, the execution core (ADR 0006)
+**src/execution/engine.py** - `ExecutionEngine`, the execution core (ADR 0006)
 - Every surface — CLI (`trade`/`batch`/`automate`), TUI, and the agentic/MCP router — is a thin adapter over this one engine
 - Core API: `propose_order(...)` → `execute_order(proposal_id, ...)` (two-phase propose/execute), plus `validate_targets(...)` for pre-flight broker validation
-- Adapters reach it via `cli/common.py`'s `get_engine()` (lazy singleton) and render its native per-leg result via `render_execution_result()` / `aggregate_execution_results()`
-- `order_processor.py` is retired — the `OrderBatchProcessor` direct-broker fan-out is gone; only a `current_broker` context var survives (consumed by `tui/response_handler.py` to label output)
+- Adapters reach it via `src/cli/common.py`'s `get_engine()` (lazy singleton) and render its native per-leg result via `render_execution_result()` / `aggregate_execution_results()`
+- `src/order_processor.py` is retired — the `OrderBatchProcessor` direct-broker fan-out is gone; only a `current_broker` context var survives (consumed by `src/tui/response_handler.py` to label output)
 - Full history and rationale: `docs/adr/0006-execution-engine-as-core.md` (Accepted)
 
-**setup.py** - Interactive credential setup wizard
+**src/setup.py** - Interactive credential setup wizard
 - Validates existing credentials before prompting for new ones
 - Stores credentials in `.env` file (never commit this file)
 
@@ -59,17 +62,17 @@ The application supports both CLI and TUI (Terminal User Interface) modes for fl
 
 1. **Async-First Architecture**: All broker operations use `asyncio` for concurrent execution. `ExecutionEngine.execute_order` fans out per-account (not just per-broker — a broker with taxable + IRA accounts submits both legs concurrently), so trades are submitted simultaneously rather than sequentially.
 
-2. **Engine-as-Core, Adapters at the Edge (ADR 0006)**: CLI, TUI, and the agentic/MCP router are all thin clients of the same `ExecutionEngine` (`execution/engine.py`) — one propose path, one execute path, one result type. This provides:
+2. **Engine-as-Core, Adapters at the Edge (ADR 0006)**: CLI, TUI, and the agentic/MCP router are all thin clients of the same `ExecutionEngine` (`src/execution/engine.py`) — one propose path, one execute path, one result type. This provides:
    - Real per-account fan-out for every caller, not just agents
    - `--dry-run` as a full-pipeline rehearsal: `propose_order(dry_run=True)` + `execute_order(dry_run=True)` exercises limits, freeze list, reconciliation, and token minting with no orders placed — not a credentials-only readiness check
-   - Consistent error handling and status reporting via `render_execution_result` / `aggregate_execution_results` (`cli/common.py`)
-   - Enforcement gates (limits, freeze, circuit breaker, audit) run once, in `enforcement/`, for every surface
+   - Consistent error handling and status reporting via `render_execution_result` / `aggregate_execution_results` (`src/cli/common.py`)
+   - Enforcement gates (limits, freeze, circuit breaker, audit) run once, in `src/enforcement/`, for every surface
    - See `docs/adr/0006-execution-engine-as-core.md` for the full before/after and migration history
 
-3. **Centralized Configuration**: `brokers/registry.py` is the single source of truth for broker identity and function bindings (ADR 0004). `BrokerConfig`, the session manager, the CLI/TUI function maps, and the agentic router all derive from it. When adding a new broker:
+3. **Centralized Configuration**: `src/brokers/registry.py` is the single source of truth for broker identity and function bindings (ADR 0004). `BrokerConfig`, the session manager, the CLI/TUI function maps, and the agentic router all derive from it. When adding a new broker:
    - Create the broker module with trade/holdings/validate/get_session functions
-   - Add ONE `BrokerSpec(...)` entry to `_SPECS` in `brokers/registry.py` (lazy `"module:symbol"` refs — importing the registry imports no broker SDK)
-   - Add a rate limit to `RateLimiter.BROKER_LIMITS` in `brokers/base.py`
+   - Add ONE `BrokerSpec(...)` entry to `_SPECS` in `src/brokers/registry.py` (lazy `"module:symbol"` refs — importing the registry imports no broker SDK)
+   - Add a rate limit to `RateLimiter.BROKER_LIMITS` in `src/brokers/base.py`
 
 4. **Session Management**: The `BrokerSessionManager` handles authentication and session lifecycle. Sessions are lazy-loaded and cached to minimize login overhead.
 
@@ -99,9 +102,9 @@ The application implements several patterns to ensure true concurrent execution 
        # ... API calls
    ```
 
-   Per-broker rate limits are configured in `brokers/base.py` in the `RateLimiter.BROKER_LIMITS` dict.
+   Per-broker rate limits are configured in `src/brokers/base.py` in the `RateLimiter.BROKER_LIMITS` dict.
 
-3. **Shared HTTP Client**: Use the shared async client from `brokers/base.py` for connection pooling and HTTP/2 support:
+3. **Shared HTTP Client**: Use the shared async client from `src/brokers/base.py` for connection pooling and HTTP/2 support:
    ```python
    from .base import http_client
 
@@ -123,7 +126,7 @@ The application implements several patterns to ensure true concurrent execution 
        return session_manager.sessions.get("mybroker")
    ```
 
-5. **API Response Caching**: Use `api_cache` from `brokers/base.py` for frequently-accessed static data:
+5. **API Response Caching**: Use `api_cache` from `src/brokers/base.py` for frequently-accessed static data:
    ```python
    from .base import api_cache
 
@@ -141,66 +144,85 @@ The application implements several patterns to ensure true concurrent execution 
 
 ### Setup and Installation
 ```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Or using virtual environment
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+# Install dependencies (uv owns the lockfile; there is no requirements.txt)
+uv sync
 
 # Configure credentials
-python3 main.py setup
+./stockshotgun setup
 ```
+
+Package layout is src-based (`[tool.setuptools.package-dir] "" = "src"`), so
+`brokers`, `cli`, `execution`, `enforcement`, `agentic`, `tui`, and `signals` are
+top-level importable modules rooted at `src/`. The `./stockshotgun` shim prepends
+`src/` to `sys.path`; invoking modules directly needs `PYTHONPATH=src`.
 
 ### Running the Application
 ```bash
 # TUI mode (interactive)
-python3 main.py
+./stockshotgun
 
 # CLI mode - buy/sell orders
-python3 main.py buy 10 TSLA              # Market order to all configured brokers
-python3 main.py sell 5 AAPL 175.50       # Limit order to all configured brokers
-python3 main.py buy 10 TSLA --broker Fennel --broker Public  # Specific brokers
+./stockshotgun buy 10 TSLA              # Market order to all configured brokers
+./stockshotgun sell 5 AAPL 175.50       # Limit order to all configured brokers
+./stockshotgun buy 10 TSLA --broker Fennel --broker Public  # Specific brokers
 
 # View holdings
-python3 main.py holdings TSLA --broker Fennel
+./stockshotgun holdings TSLA --broker Fennel
 
 # Scan the Nasdaq splits calendar for reverse-split signals, then list what's staged
-python3 main.py signals scan
-python3 main.py signals list --status new
+./stockshotgun signals scan
+./stockshotgun signals list --status new
 
 # Aggregate JSON snapshot of RSA state (trades + positions + signal counts) for Pulse polling
-python3 main.py status
+./stockshotgun status
+
+# Equivalent without the shim
+python3 src/main.py buy 10 TSLA
+```
+
+### Agentic / MCP surfaces
+```bash
+# JSON agent CLI (propose → execute), MCP router, single-broker MCP server
+PYTHONPATH=src uv run python -m agentic.cli --json list-brokers
+PYTHONPATH=src uv run python -m agentic.router
+PYTHONPATH=src uv run python -m agentic.broker Fennel
 ```
 
 ### Type Checking and Linting
 ```bash
-# Type checking with mypy
-mypy . --show-error-codes --pretty --ignore-missing-imports
+# Full gate: mypy + py_compile + smoke tests
+scripts/verify.sh
 
-# Compile check (syntax validation)
-python3 -m py_compile main.py brokers/*.py tui/*.py setup.py
+# Individually
+uv run --python 3.14 mypy . --show-error-codes --pretty --ignore-missing-imports
+uv run --python 3.14 python -m py_compile stockshotgun src/main.py src/setup.py \
+    src/order_processor.py src/brokers/*.py src/tui/*.py
+```
+
+### Tests
+```bash
+# Use the project venv — system python3 lacks h2 and other deps
+.venv/bin/python -m pytest -q
 ```
 
 ## Adding a New Broker
 
 ### Standard Pattern (API-based brokers)
 
-1. **Create broker module** in `brokers/{broker}.py` with:
+1. **Create broker module** in `src/brokers/{broker}.py` with:
    - `{broker}Trade(side, qty, ticker, price)` - async function
    - `{broker}GetHoldings(ticker=None)` - async function
    - `get_{broker}_session(session_manager)` - session initialization
    - **IMPORTANT**: Wrap all blocking SDK calls with `await asyncio.to_thread()` (see Concurrency Patterns above)
    - **IMPORTANT**: Add `await rate_limiter.wait_if_needed("BrokerName")` at the start of trade/holdings functions
-   - Use shared `http_client` from `brokers/base.py` instead of creating new HTTP clients
+   - Use shared `http_client` from `src/brokers/base.py` instead of creating new HTTP clients
    - Cache static data (account IDs, profiles) in session initialization
 
 ### Browser Automation Pattern (Wells Fargo)
 
 For brokers requiring browser automation (like Wells Fargo), use a class-based encapsulation pattern:
 
-1. **Create a client class** in `brokers/{broker}.py`:
+1. **Create a client class** in `src/brokers/{broker}.py`:
    - Encapsulate browser state, authentication, and operations in a class
    - Implement async context manager (`__aenter__`, `__aexit__`) for automatic cleanup
    - Use lazy authentication (browser created on first operation)
@@ -261,7 +283,7 @@ For brokers requiring browser automation (like Wells Fargo), use a class-based e
    - Use comprehensive debugging (can be commented out later)
    - Proper error handling with browser cleanup in exception handlers
 
-2. **Update `brokers/registry.py`** (single source of truth — ADR 0004):
+2. **Update `src/brokers/registry.py`** (single source of truth — ADR 0004):
    - Add ONE `BrokerSpec(...)` to the `_SPECS` tuple: `name`, `session_key`,
      `env_vars`, lazy `"module:symbol"` refs for `trade` / `holdings` /
      `validate` (optional) / `session_getter`, and flags (`requires_mfa`,
@@ -270,11 +292,11 @@ For brokers requiring browser automation (like Wells Fargo), use a class-based e
      the agentic router's spec loader all derive from this automatically — no
      other registration edits.
 
-3. **Update `brokers/base.py`**:
+3. **Update `src/brokers/base.py`**:
    - Add rate limit to `RateLimiter.BROKER_LIMITS` dict (requests per second).
      Rate limits are not yet part of the registry.
 
-4. **Update `setup.py`**:
+4. **Update `src/setup.py`**:
    - Add broker credentials to the `brokers` dict with env_vars and prompts
 
 The agentic MCP server for the new broker needs no new files — the generic
@@ -282,24 +304,27 @@ The agentic MCP server for the new broker needs no new files — the generic
 
 ## Supported Brokers
 
-The following 12 brokers are currently integrated and enabled:
+The following 13 brokers are currently integrated and enabled (canonical order = `_SPECS` order in `src/brokers/registry.py`, which is also the fan-out order):
 
 | Broker | Auth Method | Required Env Vars | MFA/Special Notes |
 |--------|-------------|-------------------|-------------------|
 | **Robinhood** | Username/Password | `ROBINHOOD_USER`, `ROBINHOOD_PASS`, `ROBINHOOD_MFA` | Requires MFA code |
 | **Tradier** | API Token | `TRADIER_ACCESS_TOKEN` | Simple token auth |
-| **TastyTrade** | Username/Password | `TASTY_USER`, `TASTY_PASS` | Standard API auth |
+| **TastyTrade** | OAuth 2.0 | `TASTY_CLIENT_ID`, `TASTY_CLIENT_SECRET`, `TASTY_REFRESH_TOKEN` | SDK-based (`tastytrade`) |
 | **Public** | API Token | `PUBLIC_API_SECRET` | Simple token auth |
 | **Firstrade** | Username/Password | `FIRSTRADE_USER`, `FIRSTRADE_PASS`, `FIRSTRADE_MFA` | Requires MFA code |
-| **Fennel** | Personal Access Token | `FENNEL_ACCESS_TOKEN` | Get from Fennel dashboard |
+| **Fennel** | Personal Access Token | `FENNEL_ACCESS_TOKEN` | Get from Fennel dashboard; only broker with `multi_account` + `account_scoped_trade` (one gated leg per live order) |
 | **Schwab** | OAuth 2.0 | `SCHWAB_API_KEY`, `SCHWAB_API_SECRET`, `SCHWAB_CALLBACK_URL`, `SCHWAB_TOKEN_PATH` | Token cached in `tokens/` |
 | **BBAE** | Username/Password | `BBAE_USER`, `BBAE_PASS` | May require CAPTCHA/OTP |
 | **DSPAC** | Username/Password | `DSPAC_USER`, `DSPAC_PASS` | May require CAPTCHA/OTP |
-| **SoFi** | Username/Password | `SOFI_USER`, `SOFI_PASS` | Standard API auth |
-| **Webull** | Pre-obtained credentials | `WEBULL_ACCESS_TOKEN`, `WEBULL_REFRESH_TOKEN`, `WEBULL_UUID`, `WEBULL_ACCOUNT_ID`, `WEBULL_DID` | Chrome extension required (see Notes) |
-| **Wells Fargo** | Browser automation | `WELLSFARGO_USER`, `WELLSFARGO_PASS`, optional: `WELLSFARGO_PHONE_SUFFIX` | Uses Zendriver, may need manual CAPTCHA |
+| **SoFi** | Username/Password | `SOFI_USER`, `SOFI_PASS`, optional: `SOFI_TOTP` | `curl_cffi` with `impersonate="chrome"` (TLS fingerprint), no SDK |
+| **Webull** | Pre-obtained credentials | `WEBULL_PROFILES` (JSON, multi-profile) | Chrome extension required (see Notes); configure via `./stockshotgun setup` |
+| **Wells Fargo** | Browser automation | `WELLSFARGO_USER`, `WELLSFARGO_PASS`, optional: `WELLSFARGO_PHONE_SUFFIX` | Zendriver; may need manual CAPTCHA |
+| **Chase** | Browser automation | `CHASE_USER`, `CHASE_PASS` | Zendriver via `browser_utils`; `ChaseClient` class pattern |
 
-All brokers support both `Trade` and `GetHoldings` operations.
+All 13 brokers support both `Trade` and `GetHoldings`. Nine also expose a `Validate`
+function (all but Public, Fennel, Wells Fargo, and Chase) — `resolve_validate()`
+returns `None` for those, and `validate_targets(...)` skips them.
 
 ## Common Patterns
 
@@ -390,58 +415,66 @@ async def get_mybroker_session(session_manager):
 
 - `.env` - Credentials (NEVER commit, in .gitignore)
 - `tokens/` - OAuth tokens for brokers like Schwab
-- `.venv/` - Virtual environment (if using venv)
-- `requirements.txt` - Python dependencies
+- `.venv/` - Virtual environment (`uv sync` creates it; use `.venv/bin/python` for tests)
+- `pyproject.toml` + `uv.lock` - Python dependencies (no `requirements.txt`)
+- `stockshotgun` - Root launcher shim that puts `src/` on `sys.path`
+- `scripts/verify.sh` - mypy + py_compile + smoke-test gate
 
 ### Environment Variables
 
 The application uses environment variables for configuration, stored in `.env` file:
 
 **Global Settings:**
-- `HEADLESS` - Browser headless mode for Wells Fargo (default: `true`)
+- `HEADLESS` - Browser headless mode for the zendriver brokers. `browser_utils.create_browser` defaults to `true`, but the Wells Fargo and Chase wrappers read it with a `false` default — so those two run headed unless `HEADLESS=true`
+- `BROWSER_PATH` - Override the Chrome/Chromium binary zendriver launches
+- `DRY_RUN` - Chase-side dry-run switch (order preview, no submit)
 
 **Broker Credentials:** (see Supported Brokers table for complete list)
 - Each broker requires specific environment variables for authentication
-- Use `python3 main.py setup` to interactively configure credentials
+- Use `./stockshotgun setup` to interactively configure credentials
 - Never commit `.env` file - it's in `.gitignore`
 
 ### Key Dependencies
 
-- **urwid** (3.0.2) - Terminal UI framework for the TUI mode
-- **python-dotenv** (1.1.1) - Environment variable management from `.env` file
+Pinned in `pyproject.toml` (source of truth — update there, not here):
+
+- **urwid** (3.0.5) - Terminal UI framework for the TUI mode
+- **python-dotenv** (1.2.1) - Environment variable management from `.env` file
 - **pyotp** (2.9.0) - One-time password (MFA/2FA) support
-- **httpx** (0.28.1) - Modern async HTTP client with HTTP/2 support
-- **zendriver** (0.14.2) - Browser automation for Wells Fargo (Chrome DevTools Protocol)
-- **beautifulsoup4** (4.12.3) - HTML parsing for web scraping
-- **curl-cffi** (0.7.3) - HTTP client with TLS fingerprint spoofing
+- **httpx[http2]** (0.28.1) - Modern async HTTP client with HTTP/2 support
+- **zendriver** (0.15.2) - Browser automation for Wells Fargo and Chase (Chrome DevTools Protocol)
+- **selectolax** (>=0.4.7) - HTML parsing (replaced beautifulsoup4)
+- **curl-cffi** (0.14.0) - HTTP client with TLS fingerprint spoofing (SoFi)
+- **mcp** (>=1.27.1) - MCP server/client for the agentic router and per-broker servers
 
 Broker-specific SDKs:
-- **tastytrade** (10.2.3) - TastyTrade API client
-- **firstrade** (0.0.33) - Firstrade API client
-- **schwab-py** (1.4.0) - Schwab OAuth and trading API
+- **tastytrade** (12.0.2) - TastyTrade API client
+- **firstrade** (0.0.38) - Firstrade API client
+- **schwab-py** (1.5.1) - Schwab OAuth and trading API
 - **robin-stocks** (3.4.0) - Robinhood API wrapper
-- **bbae-invest-api** (0.1.3) - BBAE broker API
-- **dspac-invest-api** (0.1.3) - DSPAC broker API
-- **webull** (git) - Webull API (custom fork for api_login support)
+- **bbae-invest-api** (0.1.5) - BBAE broker API
+- **dspac-invest-api** (0.1.4) - DSPAC broker API
+- **webull** (git pin) - Webull API (custom fork for api_login support)
 
 ## Notes
 
-- The project uses Python 3.13+ and async/await throughout
+- The project requires Python 3.14+ (`requires-python = ">=3.14"`) and uses async/await throughout
 - TUI is built with urwid library for terminal interfaces
 - Each broker may have different authentication methods (API keys, username/password, OAuth, browser automation)
 
 ### Broker-Specific Notes
 
 - **Fennel**: Uses personal access tokens from their dashboard, not email/password authentication
-- **BBAE/DSPAC**: May require CAPTCHA or OTP codes during initial login
+- **BBAE/DSPAC**: Both are Redbridge Securities brokers sharing one implementation via `src/brokers/_redbridge_broker.py`'s `make_redbridge_broker` factory — fix one and both get it. May require CAPTCHA or OTP codes during initial login
 - **Schwab**: Uses OAuth with token persistence in `tokens/` directory
 - **Webull**: Due to Webull API changes (Sept 2025), traditional username/password login is broken. Instead, use pre-obtained credentials from a browser session:
   1. Install Chrome extension: https://github.com/ImNotOssy/webull/releases/tag/1
   2. Login to Webull in Chrome with extension active
   3. Extension captures credentials (access_token, refresh_token, uuid, account_id)
-  4. Add these to your .env file (supports comma-separated account IDs for multiple accounts)
-  5. The integration uses `api_login()` method instead of traditional login
-  6. Multiple accounts: `WEBULL_ACCOUNT_ID=12345678,87654321` or the system will auto-discover them
+  4. Run `./stockshotgun setup` to write them into `WEBULL_PROFILES` (a JSON array — one entry per profile, each with its own accounts and optional `trading_pin`)
+  5. The integration uses `api_login()` instead of traditional login
+  6. Trades are skipped for any profile with no trade token — add `trading_pin` to that profile
+  7. Background: https://github.com/tedchou12/webull/issues/456
 - **Wells Fargo**: Uses browser automation (Zendriver) instead of API:
   - Requires `WELLSFARGO_USER` and `WELLSFARGO_PASS` environment variables
   - Optional: `WELLSFARGO_PHONE_SUFFIX` for MFA (last 4 digits of phone)
@@ -450,6 +483,11 @@ Broker-specific SDKs:
   - Implements class-based pattern with `WellsFargoClient` for state management
   - Automatically discovers multiple accounts (WELLSTRADE, IRAs) from single login
   - Browser session is cached within a single client instance for efficiency
+- **Chase**: Also zendriver-based, built on the shared `src/brokers/browser_utils.py` helpers:
+  - Requires `CHASE_USER` and `CHASE_PASS`
+  - `ChaseClient` class pattern mirroring Wells Fargo; runs headed unless `HEADLESS=true`
+  - `DRY_RUN=true` previews orders without submitting
+  - Order status is read from Chase's own codes (`FULLY_EXECUTED` / `PARTIALLY_EXECUTED` = filled)
 
 ## Agent skills
 
